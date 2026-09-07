@@ -54,6 +54,15 @@ const LONG_PRESS_MS = 180;
  *  enough to comfortably cover the browser's own dispatch delay (typically under 300ms) without
  *  being so wide it could ever swallow a real, deliberate mouse click on a hybrid touch+mouse device. */
 const SYNTHETIC_MOUSE_GRACE_MS = 600;
+/** How long after a real touch event a `contextmenu` still counts as the same long-press that's
+ *  already arming a drag, not a genuine desktop right-click — see the `onContextMenu` handler's own
+ *  comment. Deliberately wider than `SYNTHETIC_MOUSE_GRACE_MS` (that one only has to cover a browser's
+ *  OWN dispatch delay after touch already ended; this has to cover the full run-up to whichever OS/
+ *  browser long-press threshold actually fires `contextmenu`, commonly quoted anywhere from ~500ms to
+ *  ~750ms depending on platform) — generous on purpose, since the failure mode of too narrow (a stray
+ *  context menu fighting a drag) is far more disruptive than too wide (a hybrid touch+mouse device
+ *  right-clicking within a second of its last touch, an already-rare sequence). */
+const TOUCH_CONTEXTMENU_SUPPRESS_MS = 1000;
 /** How close together two genuine quick taps (see `lastQuickTapAtRef`'s own comment) have to land to
  *  count as a double-tap — the touch equivalent of a mouse `onDoubleClick`, which fires natively and
  *  reliably for a real double-CLICK but, confirmed elsewhere in this app already (`MediaLibrary.tsx`'s
@@ -529,7 +538,12 @@ function TimelineClipComponent({
           const now = Date.now();
           if (now - lastQuickTapAtRef.current < DOUBLE_TAP_MS) {
             lastQuickTapAtRef.current = 0;
-            useEditorStore.getState().setMobileSheet("inspector");
+            // Gated on `isMobile` — same fix, same reasoning, and the same confirmed report as this
+            // element's own `onDoubleClick` handler just below: this `onUp`-tracked rapid-press check
+            // fires for a real MOUSE double-click too (it's driven by `beginDrag`'s unified mouse+touch
+            // press handling, not a touch-only path), so without this guard a fast desktop double-click
+            // opened this same redundant mobile sheet on top of the already-visible permanent column.
+            if (isMobile) useEditorStore.getState().setMobileSheet("inspector");
           } else {
             lastQuickTapAtRef.current = now;
           }
@@ -698,6 +712,26 @@ function TimelineClipComponent({
       // gesture. Reported directly: a desktop/webview double-click was doing this unconditionally.
       onDoubleClick={() => {
         if (isMobile) useEditorStore.getState().setMobileSheet("inspector");
+      }}
+      // NOT desktop-only, contrary to an earlier version of this comment: a touch long-press ALSO
+      // dispatches a native `contextmenu` event on every major mobile browser (standard behavior, a
+      // real reported conflict here — not a testing artifact), which would otherwise fire this at the
+      // exact same moment the SAME long-press is already arming a drag (`beginDrag`'s own
+      // `longPressArmed` path). `lastTouchAtRef` (see its own doc comment) is what already tells a
+      // touch-originated event apart from a genuine mouse one elsewhere in this file for exactly this
+      // "browser fires a synthetic/derived event shortly after a real touch" class of problem — reused
+      // here rather than inventing a second detection mechanism. A real right-click always leaves
+      // `lastTouchAtRef` far in the past (or at its initial 0), so this never suppresses one.
+      // Right-clicking a clip already part of a multi-selection keeps that whole selection (so the
+      // menu's own Duplicate/Delete act on all of them, matching what a left-click would do); right-
+      // clicking an UNselected clip replaces the selection with just this one, same as a plain click
+      // already does.
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (Date.now() - lastTouchAtRef.current < TOUCH_CONTEXTMENU_SUPPRESS_MS) return;
+        if (!selected) select([clip.id]);
+        useEditorStore.getState().setContextMenu({ x: e.clientX, y: e.clientY, clipId: clip.id });
       }}
       style={{
         left: start * pixelsPerSecond,
@@ -901,29 +935,58 @@ function TimelineClipComponent({
           )}
         </>
       )}
-      <span className="pointer-events-none relative z-10 block truncate bg-gradient-to-b from-black/40 to-transparent px-2 py-1 text-[11px] font-medium text-white/90">
+      {/* Video/audio clips: normal flow, pinned to the top with a downward fade — a label sitting over
+          a thumbnail/waveform reads as an overlay on top of that content, not content of its own.
+          Text clips have neither (just their own solid fill), so the SAME top-pinned label left a
+          visibly empty band below it inside a short row — `absolute inset-0 flex items-center`
+          instead centers it in whatever height the row actually has, with no gradient needed since
+          there's no thumbnail underneath for it to fade over. */}
+      <span
+        className={`pointer-events-none z-10 truncate px-2 py-1 text-[11px] font-medium text-white/90 ${
+          isText ? "absolute inset-0 flex items-center" : "relative block bg-gradient-to-b from-black/40 to-transparent"
+        }`}
+      >
         {assetName}
       </span>
 
-      {!track.locked && (
+      {!track.locked && selected && (
         <>
-          {/* Trim handles. Wider below `lg` (12px vs 8px) since a fingertip needs a bigger target
-              than a mouse cursor does — an edge that's hard to grab is the single most common source
-              of frustration in a timeline, and on touch an 8px hit area is close to ungrabbable. */}
+          {/* Trim handles — SELECTED clips only, same "select it, then its manipulation handles
+              appear" convention the on-canvas Transform/TextTransform handles already use for
+              position/scale/rotation; showing a grab affordance on every clip at once (the previous
+              behavior) cluttered a busy timeline with handles for clips nobody was about to touch.
+              Wider below `lg` (16px vs 8px) since a fingertip needs a bigger target than a mouse
+              cursor does — an edge that's hard to grab is the single most common source of frustration
+              in a timeline, and on touch an 8px hit area is close to ungrabbable. Deliberately kept
+              INSIDE the clip's own bounds, never protruding past its edges — clips routinely sit flush
+              against each other with zero gap in a tightly cut timeline, and a handle drawn outside
+              would visually overlap the neighboring clip, making it ambiguous which of the two you're
+              about to grab. Desktop keeps the plain `group-hover`-revealed strip (a mouse can already
+              see exactly where the cursor sits, so a bare highlight on approach is enough); below `lg`,
+              a FULL-HEIGHT rounded bar flush against the edge is the persistent affordance instead —
+              the same shape most mobile-first video editors settle on for this exact control: tall
+              enough to read as "the whole edge of this clip is grabbable," not just a short
+              center-anchored grip that leaves the corners looking ungrabbable, and still light enough
+              (rounded only on the outward side, moderate width/opacity) not to read as a heavy bar
+              slapped across the clip. */}
           <div
             role="separator"
             aria-label={t("Trim clip start")}
             onMouseDown={(e) => beginDrag(e, "trim-in")}
             onTouchStart={(e) => beginDrag(e, "trim-in")}
-            className="absolute inset-y-0 left-0 z-10 w-3 touch-none cursor-ew-resize bg-white/0 transition group-hover:bg-white/25 lg:w-2"
-          />
+            className="absolute inset-y-0 left-0 z-10 flex w-4 touch-none cursor-ew-resize items-center transition group-hover:bg-white/25 lg:w-2"
+          >
+            <span aria-hidden className="h-full w-1.5 rounded-r-full bg-white/85 lg:hidden" />
+          </div>
           <div
             role="separator"
             aria-label={t("Trim clip end")}
             onMouseDown={(e) => beginDrag(e, "trim-out")}
             onTouchStart={(e) => beginDrag(e, "trim-out")}
-            className="absolute inset-y-0 right-0 z-10 w-3 touch-none cursor-ew-resize bg-white/0 transition group-hover:bg-white/25 lg:w-2"
-          />
+            className="absolute inset-y-0 right-0 z-10 flex w-4 touch-none cursor-ew-resize items-center justify-end transition group-hover:bg-white/25 lg:w-2"
+          >
+            <span aria-hidden className="h-full w-1.5 rounded-l-full bg-white/85 lg:hidden" />
+          </div>
         </>
       )}
     </div>

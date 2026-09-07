@@ -20,6 +20,7 @@ import { DEFAULT_TEXT_STYLE, IDENTITY_CURVE, PROJECT_SCHEMA_VERSION } from "./ty
 import { FONT_REGISTRY } from "./fonts.ts";
 import { TRANSITION_TYPE_OPTIONS } from "../timeline/transitions.ts";
 import { TEXT_ANIMATION_TYPE_OPTIONS } from "../timeline/textAnimation.ts";
+import { PIXEL_EFFECT_TYPE_OPTIONS } from "../timeline/pixelEffects.ts";
 
 /** Thrown when a project file can't be trusted. Callers surface the message to the user rather than
  *  loading a half-understood project and letting the damage show up later as a corrupted edit. */
@@ -423,6 +424,23 @@ function parseClipTextAnimation(raw: unknown): Clip["textAnimation"] {
   };
 }
 
+/** Mirrors `parseClipTextAnimation`'s exact shape, for `Clip.pixelEffect` instead — same "unknown/
+ *  missing type drops the whole field, speed clamped to a sane range" leniency. Was missing entirely
+ *  until this fix: `parseClip` never read `raw.pixelEffect` back at all, so a glitch/water-ripple
+ *  effect survived a save (`serializeProject` writes it out fine) but silently vanished on the very
+ *  next load — every export (which deserializes the saved project fresh before building the FFmpeg
+ *  plan) and every reload on any platform, mobile included. */
+function parseClipPixelEffect(raw: unknown): Clip["pixelEffect"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const type = PIXEL_EFFECT_TYPE_OPTIONS.find((t) => t === r.type);
+  if (!type) return undefined;
+  return {
+    type,
+    ...(typeof r.speed === "number" && Number.isFinite(r.speed) && r.speed > 0 ? { speed: Math.min(10, Math.max(0.1, r.speed)) } : null),
+  };
+}
+
 function parseClip(raw: Record<string, unknown>): Clip {
   const sourceIn = num(raw.sourceIn, "clip in-point");
   const sourceOut = num(raw.sourceOut, "clip out-point");
@@ -436,6 +454,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
   const transitionIn = parseClipTransitionSpec(raw.transitionIn);
   const transitionOut = parseClipTransitionSpec(raw.transitionOut);
   const textAnimation = parseClipTextAnimation(raw.textAnimation);
+  const pixelEffect = parseClipPixelEffect(raw.pixelEffect);
   const textCrop = parseTextCrop(raw.textCrop);
   const transformKeyframes = parseTransformKeyframes(raw.transformKeyframes);
   const effectsKeyframes = parseEffectsKeyframes(raw.effectsKeyframes);
@@ -459,6 +478,8 @@ function parseClip(raw: Record<string, unknown>): Clip {
     ...(transitionIn ? { transitionIn } : null),
     ...(transitionOut ? { transitionOut } : null),
     ...(textAnimation ? { textAnimation } : null),
+    ...(pixelEffect ? { pixelEffect } : null),
+    ...(typeof raw.lutId === "string" ? { lutId: raw.lutId } : null),
     ...(textCrop ? { textCrop } : null),
     ...(textCropKeyframes ? { textCropKeyframes } : null),
     ...(raw.mutedAudio === true ? { mutedAudio: true } : null),
@@ -561,6 +582,10 @@ export function deserializeProject(json: string): Project {
     luts: parseLuts(raw.luts),
     customFonts: parseCustomFonts(raw.customFonts),
     customSfx: parseCustomSfx(raw.customSfx),
+    // Omitted entirely (not present even as an `undefined` value — same conditional-spread shape
+    // `masterGain` above uses) for anything saved before this existed, or any local/desktop project —
+    // see `Project.ownerId`'s own doc comment for why this stays optional.
+    ...(typeof raw.ownerId === "string" && raw.ownerId ? { ownerId: raw.ownerId } : null),
   };
 
   // A clip pointing at an asset that isn't in the file would crash the compositor on first render.

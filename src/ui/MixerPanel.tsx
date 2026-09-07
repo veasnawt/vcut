@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Maximize } from "@veasnawt/vicons";
 import { SetMasterGainCommand, SetTrackFlagCommand, SetTrackGainCommand, SetTrackPanCommand } from "../commands/index.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -8,6 +8,7 @@ import type { Track } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { LevelMeter } from "./LevelMeter.tsx";
 import { RotaryKnob } from "./RotaryKnob.tsx";
+import { useIsMobile } from "./useIsMobile.ts";
 import { VerticalFader } from "./VerticalFader.tsx";
 
 /** How tall a channel strip's own fader+meter get — a fixed value rather than measuring the panel's
@@ -15,8 +16,13 @@ import { VerticalFader } from "./VerticalFader.tsx";
  *  ResizeObserver-driven dynamic height would be the more polished answer, but is real extra machinery
  *  this v1 defers — a modest fixed height that fits comfortably within the row's own default bounds is
  *  enough to be usable today, at the cost of some unused space on a much taller row and vertical
- *  scrolling on a much shorter one (`overflow-y-auto` on the panel root below handles that case). */
+ *  scrolling on a much shorter one (`overflow-y-auto` on the panel root below handles that case).
+ *  Smaller on mobile (`useIsMobile`, not a CSS breakpoint — `heightPx` is a plain number prop on
+ *  `VerticalFader`/`LevelMeter`, not a Tailwind class): a phone's own bottom-panel row has real width
+ *  pressure a desktop's doesn't, and every strip shrinking a bit is what lets more of them actually
+ *  fit before the row needs horizontal scrolling at all — confirmed a real, explicit request. */
 const STRIP_FADER_HEIGHT_PX = 140;
+const STRIP_FADER_HEIGHT_PX_MOBILE = 96;
 
 /** The Pan knob's own full rendered footprint (the 32px circle, its gap, and the "L50/C/R50" readout
  *  line below it — measured directly against the real running control, not guessed from its Tailwind
@@ -80,14 +86,42 @@ function formatPan(pan: number): string {
  *  pan are both live-previewed while dragging via the matching `livePreview*` store fields — see their
  *  own doc comments for why: `PlaybackEngine.tick()` reads them every frame so the audio actually
  *  changes while you drag, not just once you release. */
-function MixerChannelStrip({ track }: { track: Track }) {
+function MixerChannelStrip({
+  track,
+  faderHeight,
+  compact,
+  highlighted,
+}: {
+  track: Track;
+  faderHeight: number;
+  compact: boolean;
+  /** True when the current selection includes a clip on THIS track — see `MixerPanel`'s own comment
+   *  on why: opening the Mixer from a selected audio clip (the toolbar's own Mixer button, reachable
+   *  that way now) lands on the whole project's mixer, not something scoped to just that clip the way
+   *  Auto Captions can be — a highlighted ring on the right strip is what closes that gap instead,
+   *  making it obvious at a glance which one you actually meant to reach. */
+  highlighted: boolean;
+}) {
   const t = useTranslation();
   const run = useEditorStore((s) => s.run);
   const setLivePreviewTrackGain = useEditorStore((s) => s.setLivePreviewTrackGain);
   const setLivePreviewTrackPan = useEditorStore((s) => s.setLivePreviewTrackPan);
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Scrolls itself into view the moment it BECOMES the highlighted strip — a selected clip's own
+  // track could easily be scrolled off either edge of the row already, and a highlight nobody can
+  // see doesn't help find it.
+  useEffect(() => {
+    if (highlighted) ref.current?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  }, [highlighted]);
 
   return (
-    <div className="flex shrink-0 flex-col items-center gap-2 rounded-lg border border-white/[0.06] bg-white/[0.025] px-4 py-3 shadow-sm shadow-black/20">
+    <div
+      ref={ref}
+      className={`flex shrink-0 flex-col items-center rounded-lg border shadow-sm shadow-black/20 transition ${
+        compact ? "gap-1 px-2 py-2" : "gap-2 px-4 py-3"
+      } ${highlighted ? "border-sky-400/60 bg-sky-500/10 ring-1 ring-sky-400/40" : "border-white/[0.06] bg-white/[0.025]"}`}
+    >
       <span className="max-w-[6.5rem] truncate text-xs font-medium text-white/80" title={track.name}>
         {track.name}
       </span>
@@ -108,14 +142,14 @@ function MixerChannelStrip({ track }: { track: Track }) {
         <VerticalFader
           label={t("Volume")}
           gain={track.gain ?? 1}
-          heightPx={STRIP_FADER_HEIGHT_PX}
+          heightPx={faderHeight}
           onPreview={(v) => setLivePreviewTrackGain({ trackId: track.id, gain: v })}
           onCommit={(v) => {
             setLivePreviewTrackGain(null);
             run(new SetTrackGainCommand(track.id, v));
           }}
         />
-        <LevelMeter heightPx={STRIP_FADER_HEIGHT_PX} getLevelDb={() => useEditorStore.getState().playbackEngine?.getTrackLevelDb(track.id) ?? null} />
+        <LevelMeter heightPx={faderHeight} getLevelDb={() => useEditorStore.getState().playbackEngine?.getTrackLevelDb(track.id) ?? null} />
       </div>
       <div className="flex items-center gap-0.5">
         <MixerFlagButton
@@ -151,10 +185,13 @@ function MixerChannelStrip({ track }: { track: Track }) {
 export function MixerPanel({ onFloat }: { onFloat?: () => void } = {}) {
   const t = useTranslation();
   const project = useEditorStore((s) => s.project);
+  const selectedClipIds = useEditorStore((s) => s.selectedClipIds);
   const run = useEditorStore((s) => s.run);
   const setLivePreviewTrackGain = useEditorStore((s) => s.setLivePreviewTrackGain);
   const setLivePreviewTrackPan = useEditorStore((s) => s.setLivePreviewTrackPan);
   const setLivePreviewMasterGain = useEditorStore((s) => s.setLivePreviewMasterGain);
+  const isMobile = useIsMobile();
+  const faderHeight = isMobile ? STRIP_FADER_HEIGHT_PX_MOBILE : STRIP_FADER_HEIGHT_PX;
 
   // A drag abandoned by switching back to Timeline mid-gesture shouldn't leave a stale live override
   // behind — the committed project value (whatever the last real `onCommit` landed, or nothing at all
@@ -205,9 +242,15 @@ export function MixerPanel({ onFloat }: { onFloat?: () => void } = {}) {
         // Master's fader/meter to visibly float lower than every track's own (a real inconsistency,
         // not a deliberate look) — see `PAN_KNOB_FOOTPRINT_PX`'s own comment for the actual fix.
         <div className="scrollbar-none flex min-h-0 flex-1 overflow-x-auto overflow-y-auto">
-          <div className="mx-auto flex items-start gap-3 px-4 py-3">
+          <div className={`mx-auto flex items-start ${isMobile ? "gap-1.5 px-2 py-2" : "gap-3 px-4 py-3"}`}>
             {audioTracks.map((track) => (
-              <MixerChannelStrip key={track.id} track={track} />
+              <MixerChannelStrip
+                key={track.id}
+                track={track}
+                faderHeight={faderHeight}
+                compact={isMobile}
+                highlighted={track.clips.some((c) => selectedClipIds.includes(c.id))}
+              />
             ))}
 
             {/* Visually separated from the per-track strips — the master fader always sits apart from
@@ -215,8 +258,12 @@ export function MixerPanel({ onFloat }: { onFloat?: () => void } = {}) {
                 here: panning the summed mix isn't the same kind of per-channel control. A slightly
                 brighter card + a divider ahead of it (rather than just the divider alone) is what
                 actually reads as "the one that's different," not just "one more strip in the row." */}
-            <div className="ml-1 flex shrink-0 pl-4" style={{ borderLeft: "1px solid rgba(255,255,255,0.08)" }}>
-              <div className="flex flex-col items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-4 py-3 shadow-sm shadow-black/20">
+            <div className={`ml-1 flex shrink-0 ${isMobile ? "pl-2" : "pl-4"}`} style={{ borderLeft: "1px solid rgba(255,255,255,0.08)" }}>
+              <div
+                className={`flex flex-col items-center rounded-lg border border-white/10 bg-white/[0.04] shadow-sm shadow-black/20 ${
+                  isMobile ? "gap-1 px-2 py-2" : "gap-2 px-4 py-3"
+                }`}
+              >
                 <span className="text-xs font-semibold text-white/80">{t("Master")}</span>
                 {/* Invisible stand-in for the Pan knob every track strip has above its own fader — see
                     `PAN_KNOB_FOOTPRINT_PX`'s own comment for why this needs to exist at all. */}
@@ -225,14 +272,14 @@ export function MixerPanel({ onFloat }: { onFloat?: () => void } = {}) {
                   <VerticalFader
                     label={t("Volume")}
                     gain={project?.sequence.masterGain ?? 1}
-                    heightPx={STRIP_FADER_HEIGHT_PX}
+                    heightPx={faderHeight}
                     onPreview={(v) => setLivePreviewMasterGain(v)}
                     onCommit={(v) => {
                       setLivePreviewMasterGain(null);
                       run(new SetMasterGainCommand(v));
                     }}
                   />
-                  <LevelMeter heightPx={STRIP_FADER_HEIGHT_PX} getLevelDb={() => useEditorStore.getState().playbackEngine?.getMasterLevelDb() ?? null} />
+                  <LevelMeter heightPx={faderHeight} getLevelDb={() => useEditorStore.getState().playbackEngine?.getMasterLevelDb() ?? null} />
                 </div>
                 {/* Invisible stand-in for the Mute/Solo row every track strip ends with — see
                     `MUTE_SOLO_ROW_HEIGHT_PX`'s own comment for why this needs to exist at all. */}

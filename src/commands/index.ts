@@ -1,4 +1,5 @@
 import { clipEnd, createClip, createTextAsset, findAsset, findClip, findTrack, newId } from "../project/createProject.ts";
+import { applyTextStylePreset, type TextStylePreset } from "../project/textStylePresets.ts";
 import type { ChromaKeySettings, Asset, Clip, ClipEffects, ClipTransform, ColorGrading, Project, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
 import { DEFAULT_TEXT_STYLE, IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../project/types.ts";
 import {
@@ -185,6 +186,108 @@ export class TrimClipCommand extends TrackScopedCommand {
 
   protected run(project: Project): Project {
     return trimClip(project, this.clipId, this.edge, this.toTime);
+  }
+}
+
+/** Swaps a clip's `assetId` for a newly-created result asset — used by "Remove Object" landing its
+ *  finished render onto the clip it actually processed, replacing what the clip SHOWS rather than
+ *  merely adding the new render to the Media Library and leaving the original clip untouched (which
+ *  is what `editorStore.ts`'s `landInpaintedAsset` originally did — see its own prior doc comment for
+ *  why that was a deliberately incomplete v1 scope cut).
+ *
+ *  `sourceIn`/`sourceOut` reset to span the ENTIRE new asset (0 to its own duration) rather than
+ *  trying to preserve the old clip's own trim points — the new asset IS the processed result of
+ *  exactly the span that was already selected, so its whole duration is what should show. A shorter
+ *  new asset (`bria/video-erase-object`'s own hard 5-second cap can trim a longer source clip) simply
+ *  shrinks the clip's own timeline footprint to match what was actually rendered, honestly reflecting
+ *  reality rather than leaving stale trim points pointing past the end of the new file.
+ *
+ *  Not a `TrackScopedCommand`: this also has to touch `project.assets` (adding the new asset), which
+ *  that base class's per-track memento has no concept of — so this captures/restores its own before
+ *  state instead. Undoing removes the newly-added asset from the project entirely (not just detaching
+ *  it from the clip) — nothing else could have started referencing it in the brief window since
+ *  asset creation and clip assignment happen together as one atomic, undo-able step here. */
+export class ReplaceClipAssetCommand implements Command {
+  label = "Replace Clip";
+  private clipId: string;
+  private newAsset: Asset;
+  private before: { assetId: string; sourceIn: number; sourceOut: number } | null = null;
+
+  constructor(clipId: string, newAsset: Asset) {
+    this.clipId = clipId;
+    this.newAsset = newAsset;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.before = { assetId: found.clip.assetId, sourceIn: found.clip.sourceIn, sourceOut: found.clip.sourceOut };
+
+    const draft = structuredClone(project);
+    draft.assets = [...draft.assets, this.newAsset];
+    const clip = findClip(draft, this.clipId)!.clip;
+    clip.assetId = this.newAsset.id;
+    clip.sourceIn = 0;
+    clip.sourceOut = this.newAsset.duration;
+    draft.updatedAt = Date.now();
+    return draft;
+  }
+
+  revert(project: Project): Project {
+    if (!this.before) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    const draft = structuredClone(project);
+    draft.assets = draft.assets.filter((a) => a.id !== this.newAsset.id);
+    const found = findClip(draft, this.clipId);
+    if (found) {
+      found.clip.assetId = this.before.assetId;
+      found.clip.sourceIn = this.before.sourceIn;
+      found.clip.sourceOut = this.before.sourceOut;
+    }
+    draft.updatedAt = Date.now();
+    return draft;
+  }
+}
+
+/** Swaps ONE clip onto a different asset while leaving its own `sourceIn`/`sourceOut` exactly as they
+ *  are — unlike `ReplaceClipAssetCommand` right above (which resets a clip to span its whole NEW
+ *  asset's duration, correct for landing a freshly-rendered, already-trimmed-to-length Remove Object
+ *  result), this exists for `ExtractAudioCommand`'s own async upgrade: once the server has finished
+ *  deriving a real, independent audio asset for an extracted clip (see `extractAudioAsset`'s own doc
+ *  comment for why that's a separate, optional step rather than something the extraction itself waits
+ *  on), the clip's trim is already correct — it's the SAME range that was already playing the video
+ *  asset's own audio just fine — only WHICH asset it points at needs to change, so the library shows a
+ *  real name/waveform instead of the video's own filename/film-strip. */
+export class SwapClipAssetCommand implements Command {
+  label = "Swap Clip Asset";
+  private clipId: string;
+  private newAsset: Asset;
+  private previousAssetId: string | null = null;
+
+  constructor(clipId: string, newAsset: Asset) {
+    this.clipId = clipId;
+    this.newAsset = newAsset;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previousAssetId = found.clip.assetId;
+
+    const draft = structuredClone(project);
+    draft.assets = [...draft.assets, this.newAsset];
+    findClip(draft, this.clipId)!.clip.assetId = this.newAsset.id;
+    draft.updatedAt = Date.now();
+    return draft;
+  }
+
+  revert(project: Project): Project {
+    if (!this.previousAssetId) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    const draft = structuredClone(project);
+    draft.assets = draft.assets.filter((a) => a.id !== this.newAsset.id);
+    const found = findClip(draft, this.clipId);
+    if (found) found.clip.assetId = this.previousAssetId;
+    draft.updatedAt = Date.now();
+    return draft;
   }
 }
 
@@ -428,6 +531,74 @@ export class DuplicateClipsCommand implements Command {
   revert(project: Project): Project {
     if (!this.previousAssets || !this.previousTracks) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
     return { ...project, assets: this.previousAssets, sequence: { ...project.sequence, tracks: this.previousTracks } };
+  }
+}
+
+/** Detaches a clip's own embedded audio onto a separate clip on an audio track — the same "Detach
+ *  Audio" move most NLEs offer for a video clip. The original clip stays exactly where it is,
+ *  visually unchanged, just silenced (`mutedAudio: true` — the SAME per-clip flag Inspector's own Mute
+ *  toggle already sets, so nothing new for `AudioMixEngine`/export to learn); a genuinely independent
+ *  clip carries the sound instead, referencing the SAME underlying asset rather than a re-encoded copy
+ *  — a video file's own audio stream decodes identically whether the clip placing it sits on a video
+ *  or an audio track, since `audibleClips`/export only ever branch on `track.kind`, never the asset's
+ *  own "video"/"audio" kind label. That's what makes this safe to do with zero server round-trip: no
+ *  new file, no transcode, just a second clip pointing at the same source.
+ *
+ *  Landing position is locked to the ORIGINAL clip's own `timelineStart` — this only exists to stay in
+ *  sync with the picture, so nudging it to dodge a collision (the way a normal "add" would) would be
+ *  wrong here. Instead this tries every existing unlocked audio track in turn for one with that exact
+ *  span free, and only creates a brand new one when none of them do.
+ *
+ *  Not a `TrackScopedCommand`: unlike every other single-clip edit, one apply here can both mint a
+ *  brand-new track AND touch two DIFFERENT tracks' clip arrays at once, one level beyond that base
+ *  class's known-tracks memento — same "snapshot the whole tracks array instead" call
+ *  `DuplicateClipsCommand` right above already makes for the same broader reason. */
+export class ExtractAudioCommand implements Command {
+  label = "Extract Audio";
+  readonly newClipId = newId("c");
+  private readonly newTrackId: string;
+
+  private clipId: string;
+  private previousTracks: Track[] | null = null;
+
+  constructor(clipId: string) {
+    this.clipId = clipId;
+    this.newTrackId = newId("a");
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previousTracks = project.sequence.tracks;
+
+    const start = found.clip.timelineStart;
+    const end = start + (found.clip.sourceOut - found.clip.sourceIn);
+    const fits = (t: Track) => t.kind === "audio" && !t.locked && !t.clips.some((c) => c.timelineStart < end && clipEnd(c) > start);
+
+    const working = project.sequence.tracks.some(fits) ? project : addTrack(project, "audio", this.newTrackId);
+    const draft = structuredClone(working);
+    const targetTrack = draft.sequence.tracks.find(fits);
+    const original = findClip(draft, this.clipId);
+    if (!targetTrack || !original) throw new EditError("That clip no longer exists");
+
+    const newClip = createClip({
+      assetId: original.clip.assetId,
+      sourceIn: original.clip.sourceIn,
+      sourceOut: original.clip.sourceOut,
+      timelineStart: start,
+    });
+    newClip.id = this.newClipId;
+    targetTrack.clips.push(newClip);
+    targetTrack.clips.sort((a, b) => a.timelineStart - b.timelineStart);
+    original.clip.mutedAudio = true;
+
+    draft.updatedAt = Date.now();
+    return draft;
+  }
+
+  revert(project: Project): Project {
+    if (!this.previousTracks) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return { ...project, sequence: { ...project.sequence, tracks: this.previousTracks } };
   }
 }
 
@@ -962,6 +1133,29 @@ export class SetClipTextAnimationCommand implements Command {
   }
 }
 
+/** Builds one command applying `animation` to every TEXT clip among `clipIds` at once — a single
+ *  `SetClipTextAnimationCommand` when only one clip in the list is text, a `BatchCommand` wrapping one
+ *  such command per text clip when more than one is, or `null` when none of them are (nothing to
+ *  apply). A clip id that doesn't resolve, or resolves to a non-text asset, is silently skipped —
+ *  same "not every selected clip has to qualify" precedent `DuplicateClipsCommand` already sets for
+ *  clips on locked tracks. This is the shared core behind both the toolbar's Animation tool and
+ *  Inspector's own multi-select panel (see `editorStore.ts`'s `applyTextAnimationToSelection`, the
+ *  only caller) — kept here, next to the single-clip command it's built from, rather than inline in
+ *  the store, so it has the same direct, no-Zustand-required test coverage every other command here
+ *  gets. */
+export function buildTextAnimationCommand(project: Project, clipIds: string[], animation: Clip["textAnimation"] | null): Command | null {
+  const commands: Command[] = [];
+  for (const clipId of clipIds) {
+    const found = findClip(project, clipId);
+    if (!found) continue;
+    const asset = findAsset(project, found.clip.assetId);
+    if (!asset || asset.kind !== "text") continue;
+    commands.push(new SetClipTextAnimationCommand(clipId, animation));
+  }
+  if (commands.length === 0) return null;
+  return commands.length > 1 ? new BatchCommand("Set Text Animation", commands) : commands[0];
+}
+
 /** Mirrors `SetClipTextAnimationCommand`'s exact shape, for `Clip.pixelEffect` instead. */
 export class SetClipPixelEffectCommand implements Command {
   label = "Set Pixel Effect";
@@ -1246,6 +1440,48 @@ export class SetTextCommand implements Command {
   }
 }
 
+/** `buildTextAnimationCommand`'s counterpart for `preset` — same shape, same "text clips only, non-
+ *  text ones silently skipped" contract, same `null`-when-nothing-qualifies result. Addressed by the
+ *  clip's own ASSET id (`SetTextCommand`'s own addressing, since content+style live there — see
+ *  `Asset.textContent`'s own doc comment), one asset per selected text clip by construction (VCut
+ *  never shares one text asset across two clips — see `PasteClipsCommand`'s own doc comment on always
+ *  cloning a fresh one), so applying by asset id here never accidentally restyles a clip outside the
+ *  selection. */
+export function buildTextStylePresetCommand(project: Project, clipIds: string[], preset: TextStylePreset): Command | null {
+  const commands: Command[] = [];
+  for (const clipId of clipIds) {
+    const found = findClip(project, clipId);
+    if (!found) continue;
+    const asset = findAsset(project, found.clip.assetId);
+    if (!asset || asset.kind !== "text") continue;
+    const style = asset.textStyle ?? DEFAULT_TEXT_STYLE;
+    commands.push(new SetTextCommand(asset.id, asset.textContent ?? "", applyTextStylePreset(style, preset)));
+  }
+  if (commands.length === 0) return null;
+  return commands.length > 1 ? new BatchCommand("Apply Text Style", commands) : commands[0];
+}
+
+/** `buildTextStylePresetCommand`'s counterpart for a genuine PARTIAL patch (font family, size,
+ *  alignment — fields a preset deliberately never touches, see `TextStylePreset`'s own doc comment)
+ *  rather than a full preset-derived style. Each qualifying clip's own CURRENT style is merged with
+ *  `patch` independently — clip A keeping its red color while gaining clip B's font size, not every
+ *  clip in the selection ending up with an identical style the way a preset apply does. Same "text
+ *  clips only, non-text ones silently skipped, null when nothing qualifies" contract as its sibling
+ *  builders above. */
+export function buildTextStylePatchCommand(project: Project, clipIds: string[], patch: Partial<TextStyle>): Command | null {
+  const commands: Command[] = [];
+  for (const clipId of clipIds) {
+    const found = findClip(project, clipId);
+    if (!found) continue;
+    const asset = findAsset(project, found.clip.assetId);
+    if (!asset || asset.kind !== "text") continue;
+    const style = asset.textStyle ?? DEFAULT_TEXT_STYLE;
+    commands.push(new SetTextCommand(asset.id, asset.textContent ?? "", { ...style, ...patch }));
+  }
+  if (commands.length === 0) return null;
+  return commands.length > 1 ? new BatchCommand("Edit Text", commands) : commands[0];
+}
+
 /** Lands an Auto Captions job's finished segments on the timeline — a fresh text ASSET plus a CLIP
  *  for every caption, all on one new text track, in ONE undo-able step.
  *
@@ -1259,6 +1495,18 @@ export class SetTextCommand implements Command {
  *  the prior `assets`/`tracks` ARRAYS by reference (cheap, safe — arrays are never mutated in place
  *  anywhere in this codebase, only replaced, the same assumption `RemoveTrackCommand`'s own full-track
  *  memento already relies on) and restores them verbatim on revert. */
+/** Matches exactly the track names `AddCaptionsCommand.apply` itself generates below ("Captions",
+ *  "Captions 2", "Captions 3", ...) — the one shared source of truth for "is this track one Auto
+ *  Captions/Script created" so `editorStore.ts`'s `clearCaptions` can find every one of them without
+ *  re-deriving the naming scheme independently and risking the two drifting apart. Deliberately name-
+ *  based rather than a new `Track` field: every caption track is otherwise a perfectly ordinary text
+ *  track (same undo/redo, same serialization, no schema migration needed for existing projects), and
+ *  a user who renames one is making exactly the statement "this isn't just captions to me anymore" —
+ *  `clearCaptions` should leave a renamed track alone. */
+export function isAutoGeneratedCaptionsTrackName(name: string): boolean {
+  return /^Captions(?: \d+)?$/.test(name);
+}
+
 export class AddCaptionsCommand implements Command {
   label = "Add Captions";
   /** Fixed at construction, not per-apply, so redo recreates the SAME track — see
@@ -1268,21 +1516,41 @@ export class AddCaptionsCommand implements Command {
    *  the segments themselves never change between an apply and a later redo. */
   private readonly assets: Asset[];
   private readonly clips: Clip[];
+  /** Every clip id this command is about to create, in the same order as `segments` — public (same
+   *  precedent as `AddTrackCommand.trackId`/`AddClipCommand.clipId`) so `landCaptions` (editorStore.ts)
+   *  can select the whole batch and jump the playhead to the first one the instant the job lands,
+   *  without a second lookup back into the project for "whichever clips this just added". */
+  readonly clipIds: string[];
   private previousAssets: Asset[] | null = null;
   private previousTracks: Track[] | null = null;
 
-  constructor(segments: { content: string; start: number; end: number }[], sequenceHeight: number) {
+  constructor(
+    segments: { content: string; start: number; end: number }[],
+    sequenceHeight: number,
+    preset?: TextStylePreset,
+    animation?: Clip["textAnimation"]
+  ) {
     // Solid background box (the "caption," not "title," look — see DEFAULT_TEXT_STYLE's own comment
     // on why a background box isn't the default there) and a bottom-third vertical position, computed
     // proportionally to the sequence's own height so it lands somewhere sensible whether the project
     // is portrait, landscape, or square, rather than a fixed pixel offset tuned for only one shape.
     // `offsetY` is relative to the frame's own vertical CENTER (see `textLayout.ts`'s block-position
-    // math), so a positive value here moves the block DOWN.
-    const style: TextStyle = { ...DEFAULT_TEXT_STYLE, fontSize: 48, backgroundColor: "#000000", offsetY: Math.round(sequenceHeight * 0.32) };
+    // math), so a positive value here moves the block DOWN. `preset` (chosen up front in the Script/
+    // Captions dialogs, see their own doc comments) layers its color/bold/background/outline/shadow on
+    // TOP of this base look — `applyTextStylePreset` never touches fontSize/position, so the caption-
+    // specific size and bottom-third placement above survive regardless of which preset is picked.
+    let style: TextStyle = { ...DEFAULT_TEXT_STYLE, fontSize: 48, backgroundColor: "#000000", offsetY: Math.round(sequenceHeight * 0.32) };
+    if (preset) style = applyTextStylePreset(style, preset);
     this.assets = segments.map((s) => createTextAsset(s.content, style));
-    this.clips = segments.map((s, i) =>
-      createClip({ assetId: this.assets[i].id, sourceIn: 0, sourceOut: s.end - s.start, timelineStart: s.start })
-    );
+    // Same "chosen up front" convention as `preset` — `animation` (also picked in the Captions dialog/
+    // section BEFORE the job even runs) lands on every clip this batch creates, one shared choice
+    // rather than a per-clip default that would then need applying to the whole batch afterward via
+    // the toolbar's own bulk Animation tool.
+    this.clips = segments.map((s, i) => ({
+      ...createClip({ assetId: this.assets[i].id, sourceIn: 0, sourceOut: s.end - s.start, timelineStart: s.start }),
+      ...(animation ? { textAnimation: animation } : null),
+    }));
+    this.clipIds = this.clips.map((c) => c.id);
   }
 
   apply(project: Project): Project {

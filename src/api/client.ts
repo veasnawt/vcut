@@ -1,4 +1,5 @@
 import { Capacitor } from "@capacitor/core";
+import { getAccessToken, getCachedAccessToken } from "@veasnawt/auth";
 import { deserializeProject } from "../project/serialize.ts";
 import type { Asset, CustomFontAsset, CustomSfxAsset, LutAsset, Project } from "../project/types.ts";
 import { nativeCancelExport, nativeExportAvailable, nativeStartExport, nativeWatchExport } from "./nativeExport.ts";
@@ -15,6 +16,44 @@ import { nativeDeleteMedia, nativeImportMedia, nativeLoadProject, nativeMediaUrl
 const BASE = "/api/vcut";
 const isNative = Capacitor.isNativePlatform();
 
+/** Set only in the hosted web build (Railway) — desktop's bundled build and local dev never set this,
+ *  so `apiFetch` below degrades to a plain `fetch` for them, unchanged from before this existed.
+ *  Exported so UI code (e.g. `useHostedCreditsGate.ts`) can tell whether credits/billing concepts
+ *  apply at all before calling anything credits-related — desktop/local dev have neither. */
+export const HOSTED = process.env.NEXT_PUBLIC_VCUT_HOSTED === "true";
+
+/** Drop-in replacement for the global `fetch` every function below already called directly — in the
+ *  hosted build, attaches the current Supabase session's access token as a bearer `Authorization`
+ *  header; everywhere else (desktop, local dev, and any moment nobody's signed in even in a hosted
+ *  build) it's exactly a plain `fetch` call, byte-for-byte the same request this file always sent.
+ *  Centralizing this here — one wrapper every call site routes through — is what let the hosted
+ *  server's routes gain real per-user auth (see `studios/vcut/app/api/vcut/_lib/localOnly.ts`'s
+ *  `VCUT_HOSTED` branch) without touching the ~25 individual call sites below beyond their own name. */
+export async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
+  if (!HOSTED) return fetch(input, init);
+  const token = await getAccessToken();
+  if (!token) return fetch(input, init);
+  const headers = new Headers(init?.headers);
+  headers.set("Authorization", `Bearer ${token}`);
+  return fetch(input, { ...init, headers });
+}
+
+/** Appends the current session token as a `?token=` query param, for the one class of caller that
+ *  can't use `apiFetch`'s `Authorization` header: `EventSource`, which — like a plain `<video src>`
+ *  (see `mediaUrl`'s own doc comment for the identical reasoning) — is a native browser API with no
+ *  way to attach a custom header. `_lib/auth.ts`'s `requireSessionUser` accepts this same fallback.
+ *  Confirmed as a real production gap, not theoretical: every export's progress connection failed
+ *  immediately with "Lost contact with the export" on the real vcut.io deploy before this existed —
+ *  `EventSource` got a bare 401, which browsers report as `readyState: CLOSED` (a permanent failure,
+ *  not the auto-retrying `CONNECTING` state a genuine network blip produces), so `watchExport`'s own
+ *  already-careful CLOSED-vs-CONNECTING handling correctly reported it as fatal — the connection
+ *  really had failed, just not for the reason that logic exists to filter out. */
+function sseUrl(path: string): string {
+  if (!HOSTED) return path;
+  const token = getCachedAccessToken();
+  return token ? `${path}&token=${encodeURIComponent(token)}` : path;
+}
+
 export class ApiRequestError extends Error {
   code?: string;
   status: number;
@@ -26,7 +65,7 @@ export class ApiRequestError extends Error {
   }
 }
 
-async function unwrap<T>(response: Response): Promise<T> {
+export async function unwrap<T>(response: Response): Promise<T> {
   if (response.ok) return (await response.json()) as T;
   // Routes report failures as JSON `{ error, code }`; anything else (a crash, a proxy error page)
   // still has to produce a usable message rather than "unexpected token < in JSON".
@@ -49,7 +88,7 @@ async function unwrap<T>(response: Response): Promise<T> {
 export async function loadProject(projectId: string, projectName?: string): Promise<Project> {
   if (isNative) return nativeLoadProject(projectId, projectName);
   const nameParam = projectName ? `&projectName=${encodeURIComponent(projectName)}` : "";
-  const response = await fetch(`${BASE}/project?projectId=${encodeURIComponent(projectId)}${nameParam}`, { cache: "no-store" });
+  const response = await apiFetch(`${BASE}/project?projectId=${encodeURIComponent(projectId)}${nameParam}`, { cache: "no-store" });
   const body = await unwrap<{ project: unknown }>(response);
   // Validated on the way in as well as on the way out of the server: a project that can't be read
   // correctly should fail loudly here rather than half-populate the editor.
@@ -58,7 +97,7 @@ export async function loadProject(projectId: string, projectName?: string): Prom
 
 export async function saveProject(projectId: string, project: Project): Promise<void> {
   if (isNative) return nativeSaveProject(projectId, project);
-  const response = await fetch(`${BASE}/project?projectId=${encodeURIComponent(projectId)}`, {
+  const response = await apiFetch(`${BASE}/project?projectId=${encodeURIComponent(projectId)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project }),
@@ -70,12 +109,34 @@ export async function importMedia(projectId: string, file: File): Promise<Asset>
   if (isNative) return nativeImportMedia(projectId, file);
   const form = new FormData();
   form.append("file", file);
-  const response = await fetch(`${BASE}/media?projectId=${encodeURIComponent(projectId)}`, {
+  const response = await apiFetch(`${BASE}/media?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     body: form,
   });
   const body = await unwrap<{ asset: Asset }>(response);
   return body.asset;
+}
+
+/** Asks the server to derive a genuinely independent audio-only asset from an already-imported file's
+ *  `relPath` — the async cosmetic upgrade `editorStore.ts`'s `extractAudioFromClip` fires off after
+ *  `ExtractAudioCommand` already ran (see that command's own doc comment for why the clip already
+ *  plays correctly without this, and this route's own doc comment for why a real, separate file is
+ *  needed at all rather than just relaxing a client-side kind check). Returns `null` on native (no
+ *  server to ask) or on any failure — this is a "nicer library entry" enhancement, never something a
+ *  caller should treat as required for the extraction to have worked. */
+export async function extractAudioAsset(projectId: string, relPath: string, name: string): Promise<Asset | null> {
+  if (isNative) return null;
+  try {
+    const response = await apiFetch(`${BASE}/media/extract-audio?projectId=${encodeURIComponent(projectId)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ relPath, name }),
+    });
+    const body = await unwrap<{ asset: Asset }>(response);
+    return body.asset;
+  } catch {
+    return null;
+  }
 }
 
 export async function deleteMedia(projectId: string, asset: Asset): Promise<void> {
@@ -87,15 +148,29 @@ export async function deleteMedia(projectId: string, asset: Asset): Promise<void
   const params = new URLSearchParams({ projectId, relPath: asset.relPath });
   if (asset.thumbnailRelPath) params.set("thumbnailRelPath", asset.thumbnailRelPath);
   if (asset.waveformRelPath) params.set("waveformRelPath", asset.waveformRelPath);
-  await unwrap<{ ok: boolean }>(await fetch(`${BASE}/media?${params}`, { method: "DELETE" }));
+  await unwrap<{ ok: boolean }>(await apiFetch(`${BASE}/media?${params}`, { method: "DELETE" }));
 }
 
 /** URL for the actual media bytes — what a `<video>`/`<audio>` element's `src` points at. The route
  *  behind it supports HTTP Range, which is what makes seeking possible (native uses
- *  `Capacitor.convertFileSrc`, whose local scheme handler supports Range natively too). */
+ *  `Capacitor.convertFileSrc`, whose local scheme handler supports Range natively too).
+ *
+ *  In the hosted build, this is genuinely per-user, ownership-checked content — unlike bundled fonts/
+ *  SFX (see `sfxAssetUrl` below), which needed the opposite fix (no auth at all) since those are
+ *  identical for every user. A plain `<video src>`/`<img src>` load can't attach an `Authorization`
+ *  header the way `apiFetch`'s JSON calls do, so the token rides along as a `?token=` query param
+ *  instead — `_lib/auth.ts`'s `requireSessionUser` accepts either. Uses `getCachedAccessToken`, the
+ *  synchronous accessor, since this function itself is called synchronously all over the render tree
+ *  (`<video src={mediaUrl(...)}>`) with nowhere to await a fresh token; whatever's cached from the
+ *  last `onAuthStateChange` event is at most a few seconds stale, never actually wrong. Confirmed as
+ *  a real production gap, not theoretical: every clip/thumbnail/waveform 401'd on the real vcut.io
+ *  deploy before this existed. */
 export function mediaUrl(projectId: string, relPath: string): string {
   if (isNative) return nativeMediaUrl(projectId, relPath);
-  return `${BASE}/media/raw?projectId=${encodeURIComponent(projectId)}&relPath=${encodeURIComponent(relPath)}`;
+  const base = `${BASE}/media/raw?projectId=${encodeURIComponent(projectId)}&relPath=${encodeURIComponent(relPath)}`;
+  if (!HOSTED) return base;
+  const token = getCachedAccessToken();
+  return token ? `${base}&token=${encodeURIComponent(token)}` : base;
 }
 
 export function thumbnailUrl(projectId: string, asset: Asset): string | null {
@@ -103,6 +178,15 @@ export function thumbnailUrl(projectId: string, asset: Asset): string | null {
   if (asset.kind === "image") return mediaUrl(projectId, asset.relPath);
   if (!asset.thumbnailRelPath) return null;
   return `${mediaUrl(projectId, asset.thumbnailRelPath)}&kind=thumbnail`;
+}
+
+/** URL for one of the two bundled outro images (`OUTRO_LOGO_FILE`/`OUTRO_BG_FILE` in
+ *  `export/outro.ts`), served by `outro-assets/[file]/route.ts`. Bundled app assets, not per-project
+ *  or per-user content — no `projectId`/auth token needed, same simplicity as the font files served
+ *  from `fonts/[file]`. `Preview.tsx`'s own `mediaUrlFor` is the one caller: it special-cases the two
+ *  fixed outro asset ids to resolve here instead of the normal per-project `mediaUrl` lookup. */
+export function outroAssetUrl(file: string): string {
+  return `${BASE}/outro-assets/${encodeURIComponent(file)}`;
 }
 
 /** The multi-frame sprite `TimelineClip` tiles for a filmstrip — `null` for anything that doesn't have
@@ -157,7 +241,7 @@ export async function importCustomSfx(projectId: string, file: File): Promise<Cu
   if (isNative) throw new ApiRequestError("Importing sound effects isn't available on this device yet.", 501, "sfx-unavailable");
   const form = new FormData();
   form.append("file", file);
-  const response = await fetch(`${BASE}/sfx?projectId=${encodeURIComponent(projectId)}`, {
+  const response = await apiFetch(`${BASE}/sfx?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     body: form,
   });
@@ -174,7 +258,7 @@ export async function deleteCustomSfx(projectId: string, sfx: CustomSfxAsset): P
   // "surface the real reason, don't pretend it worked" consistency `importLut`/`importCustomFont` give.
   if (isNative) throw new ApiRequestError("Removing sound effects isn't available on this device yet.", 501, "sfx-unavailable");
   const params = new URLSearchParams({ projectId, sfxId: sfx.id });
-  const body = await unwrap<{ project: Project }>(await fetch(`${BASE}/sfx?${params}`, { method: "DELETE" }));
+  const body = await unwrap<{ project: Project }>(await apiFetch(`${BASE}/sfx?${params}`, { method: "DELETE" }));
   return body.project;
 }
 
@@ -194,7 +278,7 @@ export async function importLut(projectId: string, file: File): Promise<LutAsset
   if (isNative) throw new ApiRequestError("Importing LUTs isn't available on this device yet.", 501, "lut-unavailable");
   const form = new FormData();
   form.append("file", file);
-  const response = await fetch(`${BASE}/lut?projectId=${encodeURIComponent(projectId)}`, {
+  const response = await apiFetch(`${BASE}/lut?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     body: form,
   });
@@ -208,7 +292,7 @@ export async function importLut(projectId: string, file: File): Promise<LutAsset
 export async function deleteLut(projectId: string, lutId: string): Promise<Project> {
   if (isNative) throw new ApiRequestError("Removing LUTs isn't available on this device yet.", 501, "lut-unavailable");
   const params = new URLSearchParams({ projectId, lutId });
-  const body = await unwrap<{ project: Project }>(await fetch(`${BASE}/lut?${params}`, { method: "DELETE" }));
+  const body = await unwrap<{ project: Project }>(await apiFetch(`${BASE}/lut?${params}`, { method: "DELETE" }));
   return body.project;
 }
 
@@ -226,7 +310,7 @@ export async function importCustomFont(projectId: string, file: File): Promise<C
   if (isNative) throw new ApiRequestError("Importing fonts isn't available on this device yet.", 501, "font-unavailable");
   const form = new FormData();
   form.append("file", file);
-  const response = await fetch(`${BASE}/fonts?projectId=${encodeURIComponent(projectId)}`, {
+  const response = await apiFetch(`${BASE}/fonts?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     body: form,
   });
@@ -242,7 +326,7 @@ export async function importCustomFont(projectId: string, file: File): Promise<C
 export async function deleteCustomFont(projectId: string, font: CustomFontAsset): Promise<Project> {
   if (isNative) throw new ApiRequestError("Removing fonts isn't available on this device yet.", 501, "font-unavailable");
   const params = new URLSearchParams({ projectId, fontId: font.id });
-  const body = await unwrap<{ project: Project }>(await fetch(`${BASE}/fonts?${params}`, { method: "DELETE" }));
+  const body = await unwrap<{ project: Project }>(await apiFetch(`${BASE}/fonts?${params}`, { method: "DELETE" }));
   return body.project;
 }
 
@@ -268,7 +352,7 @@ export interface ExportProgress {
 
 export async function startExport(projectId: string, project: Project, fileName?: string): Promise<ExportStarted> {
   if (isNative) return nativeStartExport(projectId, project, fileName);
-  const response = await fetch(`${BASE}/export?projectId=${encodeURIComponent(projectId)}`, {
+  const response = await apiFetch(`${BASE}/export?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ project, fileName }),
@@ -284,7 +368,7 @@ export async function startExport(projectId: string, project: Project, fileName?
  *  This is what lets the dialog recover from any of those — see its own call site. */
 export async function findRunningExport(projectId: string): Promise<string | null> {
   if (isNative) return null; // native export has no server-side job registry to look one up in
-  const response = await fetch(`${BASE}/export?projectId=${encodeURIComponent(projectId)}`);
+  const response = await apiFetch(`${BASE}/export?projectId=${encodeURIComponent(projectId)}`);
   const { jobId } = await unwrap<{ jobId: string | null }>(response);
   return jobId;
 }
@@ -292,7 +376,7 @@ export async function findRunningExport(projectId: string): Promise<string | nul
 export async function cancelExport(jobId: string): Promise<void> {
   if (isNative) return nativeCancelExport(jobId);
   // A cancel racing the job's own completion is normal, not an error worth surfacing.
-  await fetch(`${BASE}/export?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
+  await apiFetch(`${BASE}/export?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
 }
 
 /** Subscribes to an export's progress. Returns an unsubscribe function that also closes the stream.
@@ -305,7 +389,7 @@ export function watchExport(
   onError: (message: string) => void
 ): () => void {
   if (isNative) return nativeWatchExport(jobId, onUpdate, onError);
-  const source = new EventSource(`${BASE}/export?jobId=${encodeURIComponent(jobId)}`);
+  const source = new EventSource(sseUrl(`${BASE}/export?jobId=${encodeURIComponent(jobId)}`));
 
   source.onmessage = (event) => {
     try {
@@ -341,14 +425,24 @@ export function watchExport(
 }
 
 /** Whether export can actually work right now — on native, whether the `Ffmpeg` plugin registered
- *  (see `FfmpegPlugin.kt`); on the server, whether FFmpeg is present and runnable. */
-export async function exportAvailable(): Promise<boolean> {
-  if (isNative) return nativeExportAvailable();
+ *  (see `FfmpegPlugin.kt`); on the server, whether FFmpeg is present and runnable. `reason`, when
+ *  present, is the SERVER's own captured explanation (see `_lib/ffmpeg.ts`'s `ffmpegAvailable`) —
+ *  carried over the one channel a HEAD response can actually use for it (a custom header; HEAD
+ *  responses can't have a body at all). Without this, every possible cause collapsed into one
+ *  hardcoded generic string in the UI regardless of what actually went wrong — confirmed as a real
+ *  gap, not theoretical: it took SSH'ing into a live deployment to find an already-fixed bug that a
+ *  visible `reason` would have surfaced immediately from the error message alone. */
+export async function exportAvailable(): Promise<{ available: boolean; reason?: string }> {
+  if (isNative) return { available: await nativeExportAvailable() };
   try {
-    const response = await fetch(`${BASE}/export`, { method: "HEAD" });
-    return response.status === 204;
-  } catch {
-    return false;
+    const response = await apiFetch(`${BASE}/export`, { method: "HEAD" });
+    const rawReason = response.headers.get("X-Ffmpeg-Unavailable-Reason");
+    return {
+      available: response.status === 204,
+      ...(rawReason ? { reason: decodeURIComponent(rawReason) } : null),
+    };
+  } catch (err) {
+    return { available: false, reason: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -385,7 +479,7 @@ export async function startInpaint(
   backgroundPrompt?: string
 ): Promise<InpaintStarted> {
   if (isNative) throw new ApiRequestError("Remove Object isn't available on this device yet.", 501, "inpaint-unavailable");
-  const response = await fetch(`${BASE}/inpaint?projectId=${encodeURIComponent(projectId)}`, {
+  const response = await apiFetch(`${BASE}/inpaint?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ clipId, rect, ...(backgroundPrompt ? { backgroundPrompt } : null) }),
@@ -397,7 +491,7 @@ export async function cancelInpaint(jobId: string): Promise<void> {
   if (isNative) return;
   // A cancel racing the job's own completion is normal, not an error worth surfacing — same
   // reasoning as `cancelExport`.
-  await fetch(`${BASE}/inpaint?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
+  await apiFetch(`${BASE}/inpaint?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
 }
 
 /** Subscribes to a "Remove Object" job's progress. Identical shape to `watchExport` — see its own
@@ -411,7 +505,7 @@ export function watchInpaint(
     onError("Remove Object isn't available on this device yet.");
     return () => {};
   }
-  const source = new EventSource(`${BASE}/inpaint?jobId=${encodeURIComponent(jobId)}`);
+  const source = new EventSource(sseUrl(`${BASE}/inpaint?jobId=${encodeURIComponent(jobId)}`));
 
   source.onmessage = (event) => {
     try {
@@ -440,7 +534,7 @@ export function watchInpaint(
 export async function inpaintAvailable(): Promise<boolean> {
   if (isNative) return false;
   try {
-    const response = await fetch(`${BASE}/inpaint`, { method: "HEAD" });
+    const response = await apiFetch(`${BASE}/inpaint`, { method: "HEAD" });
     return response.status === 204;
   } catch {
     return false;
@@ -460,7 +554,7 @@ export interface InpaintKeyStatus {
 export async function getInpaintKeyStatus(): Promise<InpaintKeyStatus | null> {
   if (isNative) return null;
   try {
-    const response = await fetch(`${BASE}/inpaint/settings`);
+    const response = await apiFetch(`${BASE}/inpaint/settings`);
     return unwrap<InpaintKeyStatus>(response);
   } catch {
     return null;
@@ -471,7 +565,7 @@ export async function getInpaintKeyStatus(): Promise<InpaintKeyStatus | null> {
  *  both" behavior Rixie's own `setApiKey` uses. Never called with `"local"` — it has no key. */
 export async function setInpaintApiKey(provider: CloudInpaintProvider, apiKey: string): Promise<void> {
   if (isNative) throw new ApiRequestError("Not available on this device yet.", 501, "inpaint-unavailable");
-  const response = await fetch(`${BASE}/inpaint/settings`, {
+  const response = await apiFetch(`${BASE}/inpaint/settings`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ provider, apiKey }),
@@ -483,7 +577,7 @@ export async function setInpaintApiKey(provider: CloudInpaintProvider, apiKey: s
  *  one configured (or, for `"local"`, one that's already set up). */
 export async function setActiveInpaintProvider(provider: InpaintProvider): Promise<void> {
   if (isNative) throw new ApiRequestError("Not available on this device yet.", 501, "inpaint-unavailable");
-  const response = await fetch(`${BASE}/inpaint/settings`, {
+  const response = await apiFetch(`${BASE}/inpaint/settings`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ provider }),
@@ -503,7 +597,7 @@ export interface LocalSetupProgress {
 export async function getLocalSetupStatus(): Promise<{ ready: boolean } | null> {
   if (isNative) return null;
   try {
-    const response = await fetch(`${BASE}/inpaint/local-setup`);
+    const response = await apiFetch(`${BASE}/inpaint/local-setup`);
     return unwrap<{ ready: boolean }>(response);
   } catch {
     return null;
@@ -514,13 +608,13 @@ export async function getLocalSetupStatus(): Promise<{ ready: boolean } | null> 
  *  heavy), same fire-and-track-via-SSE shape as `startInpaint`/`watchInpaint`. */
 export async function startLocalSetup(): Promise<{ jobId: string }> {
   if (isNative) throw new ApiRequestError("Not available on this device yet.", 501, "inpaint-unavailable");
-  const response = await fetch(`${BASE}/inpaint/local-setup`, { method: "POST" });
+  const response = await apiFetch(`${BASE}/inpaint/local-setup`, { method: "POST" });
   return unwrap<{ jobId: string }>(response);
 }
 
 export async function cancelLocalSetup(jobId: string): Promise<void> {
   if (isNative) return;
-  await fetch(`${BASE}/inpaint/local-setup?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
+  await apiFetch(`${BASE}/inpaint/local-setup?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
 }
 
 /** Subscribes to a local-setup job's progress. Identical shape to `watchInpaint`. */
@@ -533,7 +627,7 @@ export function watchLocalSetup(
     onError("Not available on this device yet.");
     return () => {};
   }
-  const source = new EventSource(`${BASE}/inpaint/local-setup?jobId=${encodeURIComponent(jobId)}`);
+  const source = new EventSource(sseUrl(`${BASE}/inpaint/local-setup?jobId=${encodeURIComponent(jobId)}`));
 
   source.onmessage = (event) => {
     try {
@@ -559,10 +653,13 @@ export function watchLocalSetup(
 // ---------------------------------------------------------------------------
 // Auto Captions — same fire-and-track-via-SSE job shape as Remove Object
 // (startInpaint/watchInpaint/cancelInpaint/inpaintAvailable above), against
-// /api/vcut/captions instead. One provider (OpenAI Whisper), so the
-// key-status/save functions are simpler than Remove Object's own
-// multi-provider equivalents — no provider argument, no "active provider"
-// concept.
+// /api/vcut/captions instead. Runs on Replicate's `openai/whisper` model,
+// funded by the SAME saved Replicate token Remove Object uses — there is no
+// captions-specific key-status/save pair here at all; callers check/save
+// that credential via `getInpaintKeyStatus`/`setInpaintApiKey("replicate", …)`
+// above instead (see `_lib/inpaintEnvFile.ts`'s `getReplicateToken` for why
+// captions deliberately doesn't route through `getActiveInpaintToken`'s own
+// "whichever provider Remove Object currently has active" indirection).
 // ---------------------------------------------------------------------------
 
 export interface CaptionsStarted {
@@ -588,23 +685,69 @@ export interface CaptionsProgress {
   captions?: CaptionSegment[];
 }
 
-/** Starts an Auto Captions job. `clipId` present = transcribe just that clip's own on-screen time
- *  range; omitted = transcribe the whole sequence. Desktop/browser-server-backed only for v1, same as
- *  `startInpaint`. */
-export async function startCaptions(projectId: string, clipId?: string): Promise<CaptionsStarted> {
+/** Starts an Auto Captions job. `clipIds` present = transcribe just those clips' own on-screen time
+ *  ranges — one clip for a single-clip selection, several for a multi-clip one (their audio is
+ *  extracted and concatenated back-to-back server-side, skipping whatever gap sits between them on the
+ *  timeline, so a run of trimmed pieces reads as one continuous transcript instead of either stopping
+ *  at the first piece or picking up unrelated audio from the gaps — see `captions/route.ts`'s own
+ *  `runCaptionsJob` doc comment); omitted or empty = transcribe the whole sequence. `language` is a
+ *  Whisper language code (e.g. `"en"`, `"km"`) or `"auto"` (the default) to let the model detect it —
+ *  see `LANGUAGE_OPTIONS` below for the curated set both Auto Captions entry points offer; the server
+ *  accepts any of Whisper's own ~100 codes, this is just what the UI exposes. `wordHighlight` tightens
+ *  the server's own caption-chunk size limits (shorter chunks, capped by word count instead of
+ *  character count) so the Word Highlight animation's even-distribution-within-the-clip timing
+ *  approximation stays perceptible/accurate — pass it when that's the animation the caller is about to
+ *  apply. Desktop/browser-server-backed only for v1, same as `startInpaint`. */
+export async function startCaptions(
+  projectId: string,
+  clipIds?: string[],
+  language?: string,
+  wordHighlight?: boolean,
+): Promise<CaptionsStarted> {
   if (isNative) throw new ApiRequestError("Auto Captions isn't available on this device yet.", 501, "captions-unavailable");
-  const response = await fetch(`${BASE}/captions?projectId=${encodeURIComponent(projectId)}`, {
+  const response = await apiFetch(`${BASE}/captions?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(clipId ? { clipId } : {}),
+    body: JSON.stringify({
+      ...(clipIds && clipIds.length > 0 ? { clipIds } : null),
+      ...(language ? { language } : null),
+      ...(wordHighlight ? { wordHighlight: true } : null),
+    }),
   });
   return unwrap<CaptionsStarted>(response);
 }
 
+/** Curated subset of Whisper's own ~100 supported language codes — every entry here is a real, valid
+ *  code (confirmed against `openai/whisper`'s own `tokenizer.py` `LANGUAGES` dict), just not the full
+ *  list: both Auto Captions entry points (`AutoCaptionsDialog`, Inspector's `AutoCaptionsSection`) show
+ *  this as a dropdown rather than every language Whisper technically supports, weighted toward this
+ *  app's own userbase (Khmer alongside the handful of languages any transcription tool would offer).
+ *  `"auto"` (Whisper's own auto-detect) is first and is the default `startCaptions` falls back to. */
+export const CAPTION_LANGUAGE_OPTIONS: { code: string; label: string }[] = [
+  { code: "auto", label: "Auto-detect" },
+  { code: "en", label: "English" },
+  { code: "km", label: "Khmer" },
+  { code: "th", label: "Thai" },
+  { code: "vi", label: "Vietnamese" },
+  { code: "id", label: "Indonesian" },
+  { code: "ms", label: "Malay" },
+  { code: "zh", label: "Chinese" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "pt", label: "Portuguese" },
+  { code: "de", label: "German" },
+  { code: "it", label: "Italian" },
+  { code: "ru", label: "Russian" },
+  { code: "ar", label: "Arabic" },
+  { code: "hi", label: "Hindi" },
+];
+
 export async function cancelCaptions(jobId: string): Promise<void> {
   if (isNative) return;
   // A cancel racing the job's own completion is normal, not an error worth surfacing.
-  await fetch(`${BASE}/captions?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
+  await apiFetch(`${BASE}/captions?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
 }
 
 /** Subscribes to an Auto Captions job's progress. Identical shape to `watchInpaint`. */
@@ -613,7 +756,7 @@ export function watchCaptions(jobId: string, onUpdate: (progress: CaptionsProgre
     onError("Auto Captions isn't available on this device yet.");
     return () => {};
   }
-  const source = new EventSource(`${BASE}/captions?jobId=${encodeURIComponent(jobId)}`);
+  const source = new EventSource(sseUrl(`${BASE}/captions?jobId=${encodeURIComponent(jobId)}`));
 
   source.onmessage = (event) => {
     try {
@@ -635,37 +778,15 @@ export function watchCaptions(jobId: string, onUpdate: (progress: CaptionsProgre
   return () => source.close();
 }
 
-/** Whether Auto Captions is usable right now — FFmpeg present AND an OpenAI key saved. */
+/** Whether Auto Captions is usable right now — FFmpeg present AND a Replicate token saved (see
+ *  `getInpaintKeyStatus`'s own `configured.replicate`, which both entry points check for the actual
+ *  "configured or not" UI state; this only answers the FFmpeg half plus a coarse yes/no). */
 export async function captionsAvailable(): Promise<boolean> {
   if (isNative) return false;
   try {
-    const response = await fetch(`${BASE}/captions`, { method: "HEAD" });
+    const response = await apiFetch(`${BASE}/captions`, { method: "HEAD" });
     return response.status === 204;
   } catch {
     return false;
   }
-}
-
-export interface CaptionsKeyStatus {
-  configured: boolean;
-}
-
-export async function getCaptionsKeyStatus(): Promise<CaptionsKeyStatus | null> {
-  if (isNative) return null;
-  try {
-    const response = await fetch(`${BASE}/captions/settings`);
-    return unwrap<CaptionsKeyStatus>(response);
-  } catch {
-    return null;
-  }
-}
-
-export async function setCaptionsApiKey(apiKey: string): Promise<void> {
-  if (isNative) throw new ApiRequestError("Not available on this device yet.", 501, "captions-unavailable");
-  const response = await fetch(`${BASE}/captions/settings`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ apiKey }),
-  });
-  await unwrap<{ ok: true }>(response);
 }

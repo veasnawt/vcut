@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { clipDuration, findClip } from "../src/project/createProject.ts";
-import { DEFAULT_TEXT_STYLE, IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../src/project/types.ts";
+import { DEFAULT_TEXT_STYLE, IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM, TEXT_DEFAULT_DURATION } from "../src/project/types.ts";
 import {
   addClip,
   addTrack,
@@ -412,7 +412,7 @@ describe("track kind enforcement", () => {
     const project = addClip(base, textTrackId(base), "text1", 0);
     const [clip] = clipsOf(project, textTrackId(project));
 
-    assert.ok(closeTo(clipDuration(clip), 5));
+    assert.ok(closeTo(clipDuration(clip), TEXT_DEFAULT_DURATION));
   });
 
   it("refuses to add a text asset to a video track", () => {

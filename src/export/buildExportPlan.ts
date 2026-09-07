@@ -107,6 +107,20 @@ export interface ExportPlanOptions {
    *  one — the FFmpeg engine bundled for on-device mobile export doesn't include libx264 at all (a real
    *  gap discovered testing on a physical device, not a hypothetical). */
   videoEncoderArgs?: string[];
+  /** Overrides `computeSliceBoundaries`'s own default sampling interval/cap for a KEYFRAMED VIDEO/
+   *  image clip's transform+effects+colorGrading slicing (see that function's own doc comment) —
+   *  omitted keeps the exact same defaults every caller already got before this option existed.
+   *  Confirmed a real, live contributor to a hosted export crashing its own memory-limited container:
+   *  Railway's own metrics showed the peak drop measurably once an UNRELATED oversized-source-image
+   *  fix shipped, but a heavily transform-keyframed clip (independent of its image's resolution)
+   *  still pushed memory close to the ceiling on its own — every slice a keyframed clip's segment
+   *  expands into is its own real chunk of FFmpeg filter-graph state (`split`+`trim`+the full transform/
+   *  crop/effects chain, PER slice), so a coarser interval and/or a lower slice-count ceiling directly
+   *  bounds that regardless of what made the clip need many slices in the first place. A real,
+   *  visible tradeoff (slightly coarser motion for a densely-keyframed clip) — used HOSTED-only for
+   *  exactly that reason; desktop/local dev keep the original, finer defaults since there's no
+   *  memory ceiling there to protect. */
+  keyframeSliceTuning?: { baseIntervalSeconds: number; maxSlices: number };
   /** The three capabilities `wordHighlight` export needs — ALL THREE optional together, not
    *  independently: a `clip.textAnimation.type === "wordHighlight"` clip renders through FFmpeg's
    *  `subtitles=` (libass) filter instead of `drawtext`, since coloring individual WORDS within one
@@ -523,7 +537,18 @@ const MAX_KEYFRAME_SLICES_PER_CLIP = 240;
  *  Exported so `khmerTextRenderer.ts` can reuse the exact same "flipbook" slice boundaries for a
  *  Khmer bounce/pulse/typewriter text clip's own per-window image renders — same reasoning as
  *  `buildSegments`'s own export, reuse over reimplementation. */
-export function computeSliceBoundaries(keyframeTimes: number[], elapsedAtSegmentStart: number, sliceDuration: number, fps: number): number[] {
+export function computeSliceBoundaries(
+  keyframeTimes: number[],
+  elapsedAtSegmentStart: number,
+  sliceDuration: number,
+  fps: number,
+  // Both optional, defaulting to the exact constants this always used — existing callers (text
+  // keyframe slicing, khmerTextRenderer.ts) are completely unaffected. Threaded through so hosted
+  // mode can pass a coarser interval/lower cap for VIDEO transform keyframes specifically — see
+  // `ExportPlanOptions.keyframeSliceTuning`'s own doc comment for why.
+  baseIntervalSeconds: number = KEYFRAME_SLICE_SECONDS,
+  maxSlices: number = MAX_KEYFRAME_SLICES_PER_CLIP
+): number[] {
   const segmentEnd = elapsedAtSegmentStart + sliceDuration;
 
   function boundariesAt(interval: number): number[] {
@@ -541,9 +566,9 @@ export function computeSliceBoundaries(keyframeTimes: number[], elapsedAtSegment
     return withSubdivisions;
   }
 
-  let boundaries = boundariesAt(KEYFRAME_SLICE_SECONDS);
-  if (boundaries.length - 1 > MAX_KEYFRAME_SLICES_PER_CLIP) {
-    boundaries = boundariesAt(sliceDuration / MAX_KEYFRAME_SLICES_PER_CLIP);
+  let boundaries = boundariesAt(baseIntervalSeconds);
+  if (boundaries.length - 1 > maxSlices) {
+    boundaries = boundariesAt(sliceDuration / maxSlices);
   }
 
   const snapped = boundaries.map((time) => snapToFrame(time, fps));
@@ -556,7 +581,8 @@ function computeKeyframeSlices(
   clip: Clip,
   elapsedAtSegmentStart: number,
   sliceDuration: number,
-  fps: number
+  fps: number,
+  keyframeSliceTuning?: { baseIntervalSeconds: number; maxSlices: number }
 ): { offset: number; duration: number; transform: ClipTransform; effects: ClipEffects; colorGrading: ColorGrading }[] {
   // `colorGradingKeyframes` is included here even though its own resolver HOLDS (never lerps) between
   // keyframes — a HOLD boundary is exactly where the visible value jumps discontinuously, so it needs
@@ -566,7 +592,14 @@ function computeKeyframeSlices(
   const keyframeTimes = [...(clip.transformKeyframes ?? []), ...(clip.effectsKeyframes ?? []), ...(clip.colorGradingKeyframes ?? [])].map(
     (k) => k.time
   );
-  const snapped = computeSliceBoundaries(keyframeTimes, elapsedAtSegmentStart, sliceDuration, fps);
+  const snapped = computeSliceBoundaries(
+    keyframeTimes,
+    elapsedAtSegmentStart,
+    sliceDuration,
+    fps,
+    keyframeSliceTuning?.baseIntervalSeconds,
+    keyframeSliceTuning?.maxSlices
+  );
 
   const slices: { offset: number; duration: number; transform: ClipTransform; effects: ClipEffects; colorGrading: ColorGrading }[] = [];
   for (let i = 1; i < snapped.length; i++) {
@@ -1740,7 +1773,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     fadeOut?: number
   ): void {
     const label = fadeIn || fadeOut ? `${outputLabel}_prefade` : outputLabel;
-    const slices = computeKeyframeSlices(clip, elapsedAtSegmentStart, sliceDuration, fps);
+    const slices = computeKeyframeSlices(clip, elapsedAtSegmentStart, sliceDuration, fps, options.keyframeSliceTuning);
     const bgColor = transparent ? "black@0" : "black";
 
     // ONE source input for the whole segment — mirrors `pushClipVideoFilters`'s own convention exactly

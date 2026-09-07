@@ -7,7 +7,7 @@ import { resolveClipColorGrading, resolveClipEffects, resolveClipTransform, reso
 import { applyLut3D, parseCubeLut } from "../timeline/lut.ts";
 import type { Lut3D } from "../timeline/lut.ts";
 import { applyGlitch, applyWaterRipple } from "../timeline/pixelEffects.ts";
-import { audibleClips, clipAtTime } from "../timeline/queries.ts";
+import { audibleClips, clipAtTime, visibleVideoClips } from "../timeline/queries.ts";
 import { findTransitionOut, findTransitionPartner, resolveAudioTransitionGain } from "../timeline/transitions.ts";
 import { AudioMixEngine } from "./AudioMixEngine.ts";
 import { computeTransformedBox } from "./transformGeometry.ts";
@@ -465,6 +465,13 @@ type PoolElement = HTMLVideoElement | HTMLImageElement;
 interface PooledMedia {
   element: PoolElement;
   lastUsed: number;
+  /** Which asset THIS pooled element's own `src` was built from — not necessarily `clip.assetId`
+   *  anymore by the time `mediaFor` next looks at it, since a clip's `assetId` can change without its
+   *  `id` changing (`ReplaceClipAssetCommand`, used by Remove Object landing its finished render onto
+   *  the clip it processed). Confirmed a real, live bug: swapping `assetId` in the project left the
+   *  OLD asset's video element sitting in the pool under the unchanged `clip.id`, still showing the
+   *  original unprocessed footage until a full page reload rebuilt the pool from scratch. */
+  assetId: string;
 }
 
 /** Drives the preview: advances a master clock, keeps media elements slaved to it, and composites
@@ -620,7 +627,14 @@ export class PlaybackEngine {
    *  one element can't be in two places. */
   private mediaFor(clip: Clip, kind: "video" | "image"): PoolElement | null {
     const existing = this.pool.get(clip.id);
-    if (existing) {
+    // A pooled element built for this clip's PREVIOUS `assetId` is stale, not reusable — see
+    // `PooledMedia.assetId`'s own doc comment for the real bug this closes. Released the same way
+    // `evictStale`/`detach` already do (pause + drop `src` + `load()`) before falling through to
+    // build a fresh element below, exactly as if nothing had ever been pooled for this clip.
+    if (existing && existing.assetId !== clip.assetId) {
+      this.release(existing.element);
+      this.pool.delete(clip.id);
+    } else if (existing) {
       existing.lastUsed = performance.now();
       return existing.element;
     }
@@ -639,7 +653,7 @@ export class PlaybackEngine {
       element.muted = false;
     }
 
-    this.pool.set(clip.id, { element, lastUsed: performance.now() });
+    this.pool.set(clip.id, { element, lastUsed: performance.now(), assetId: clip.assetId });
     this.evictStale();
     return element;
   }
@@ -819,6 +833,23 @@ export class PlaybackEngine {
         if (clip.timelineStart < time || clip.timelineStart > time + AUDIO_PREFETCH_LOOKAHEAD_SECONDS) continue;
         const url = this.host.mediaUrlFor(clip.assetId);
         if (url) this.audioMixEngine.prefetchAsset(clip.assetId, url);
+      }
+
+      // Same reasoning, video-track clips — confirmed a real, reported gap: unlike audio,
+      // `mediaFor` only ever creates a clip's `<video>`/`<img>` element reactively, the instant
+      // `drawFrame` first asks for it once the clip is ALREADY active. A brand-new element starts
+      // its network fetch and decode from zero at that exact moment, and `drawFrame` only paints
+      // once `readyState >= 2` — so a cut to a clip whose element was never touched before shows as
+      // a real, visible freeze (the last drawn frame just sits there) for however long that first
+      // load takes, worse on a slow connection or a large source file. Pre-creating the element here
+      // gives it a head start buffering before playback actually reaches it, exactly mirroring the
+      // audio prefetch above. Color-matte clips have no real media (`colorCanvasFor` synthesizes a
+      // canvas instead — see `drawVideoClip`'s own branch) and are skipped; nothing to prefetch.
+      for (const { clip } of visibleVideoClips(project)) {
+        if (clip.timelineStart < time || clip.timelineStart > time + AUDIO_PREFETCH_LOOKAHEAD_SECONDS) continue;
+        const asset = project.assets.find((a) => a.id === clip.assetId);
+        if (!asset || asset.kind === "color") continue;
+        this.mediaFor(clip, asset.kind === "image" ? "image" : "video");
       }
     }
   }

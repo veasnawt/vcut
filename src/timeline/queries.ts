@@ -58,7 +58,11 @@ export function snapTime(time: number, points: number[], threshold: number): num
 
 /** Where a NEW clip of `duration` seconds should start on `track` so it doesn't destroy anything
  *  already there: `desiredStart` (typically the playhead) if that range is actually free, or right
- *  after the track's own last clip otherwise.
+ *  after whichever clip is actually IN THE WAY otherwise — nudged forward past one conflict at a time
+ *  (not straight to the track's own last clip, an earlier version of this that landed a new clip far
+ *  away from the playhead whenever anything ELSE happened to sit later on the same track, confirmed
+ *  directly as a real, reported "why did my text land way over there" surprise) until a genuinely free
+ *  span is found, so back-to-back existing clips are each skipped in turn rather than only the first.
  *
  *  `addClip`'s own placement (operations.ts) carves away — or fully deletes — whatever already
  *  occupies the range being placed into, which is correct for a deliberate manual placement (dragging
@@ -69,20 +73,26 @@ export function snapTime(time: number, points: number[], threshold: number): num
  *  "replaced", not "added", and leaves the first one's now-orphaned asset behind in the Media library
  *  with nothing on the timeline to show for it. */
 export function nonOverlappingStart(track: Track, desiredStart: number, duration: number): number {
-  const desiredEnd = desiredStart + duration;
-  const overlaps = track.clips.some((c) => c.timelineStart < desiredEnd && clipEnd(c) > desiredStart);
-  if (!overlaps) return desiredStart;
-  return track.clips.reduce((end, c) => Math.max(end, clipEnd(c)), 0);
+  let start = desiredStart;
+  for (;;) {
+    const end = start + duration;
+    const blocking = track.clips.find((c) => c.timelineStart < end && clipEnd(c) > start);
+    if (!blocking) return start;
+    start = clipEnd(blocking);
+  }
 }
 
 /** Same idea as `nonOverlappingStart`, for a clip whose final duration isn't known yet (a live
- *  recording, still growing) — so there's no meaningful duration to check overlap against. Falls
- *  back the same way (right after the track's own last clip) whenever `at` itself already falls
- *  inside an existing clip's span, rather than requiring an end time to compare against. */
+ *  recording, still growing) — so there's no meaningful duration to check overlap against. Falls back
+ *  the same way (right after whichever clip `at` actually falls inside, nudging past however many sit
+ *  back-to-back from there) whenever the raw point isn't already free. */
 export function nonOverlappingPointStart(track: Track, at: number): number {
-  const inside = track.clips.some((c) => c.timelineStart <= at && clipEnd(c) > at);
-  if (!inside) return at;
-  return track.clips.reduce((end, c) => Math.max(end, clipEnd(c)), 0);
+  let point = at;
+  for (;;) {
+    const blocking = track.clips.find((c) => c.timelineStart <= point && clipEnd(c) > point);
+    if (!blocking) return point;
+    point = clipEnd(blocking);
+  }
 }
 
 /** Whether anything is on the timeline at all — drives empty states and whether export is offered. */

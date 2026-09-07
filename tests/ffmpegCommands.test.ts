@@ -89,9 +89,10 @@ describe("buildExtractClipArgs", () => {
     assert.ok(!args.includes("copy"));
   });
 
-  it("drops audio", () => {
+  it("re-encodes audio to aac rather than dropping it", () => {
     const args = buildExtractClipArgs("/in.mp4", "/out.mp4", 0, 5);
-    assert.ok(args.includes("-an"));
+    assert.ok(!args.includes("-an"));
+    assert.equal(args[args.indexOf("-c:a") + 1], "aac");
   });
 
   it("clamps a negative start to 0 and never lets the end land before the (clamped) start", () => {

@@ -124,7 +124,19 @@ export function buildExtractClipArgs(input: string, output: string, startSeconds
     "-to", String(end),
     "-i", input,
     "-c:v", "libx264",
-    "-an",
+    // Re-encoded (not stream-copied) same as video, since the trim points aren't keyframe-aligned —
+    // was `-an` (audio dropped entirely) back when this only ever fed ProPainter, a video-only model
+    // with no audio concept at all; now that Remove Object also runs `bria/video-erase-object` (which
+    // has a real `preserve_audio` option), keeping the source clip's own audio here is what actually
+    // lets that option do anything.
+    "-c:a", "aac",
+    // Without this, ffmpeg's default mp4 muxer writes the `moov` atom (seek/duration metadata) at
+    // the END of the file — fine for a file read all at once locally, but confirmed LIVE to break a
+    // remote decoder reading this over plain HTTP: `bria/video-erase-object`'s own backend (ffmpeg's
+    // `libavformat` under the hood, per its `Lavf/...` User-Agent) fetched this exact file four times
+    // and reported "Failed to load video" every time. Moving `moov` to the front lets a decoder read
+    // metadata + data in one forward pass, no seeking (hence no HTTP Range support) required at all.
+    "-movflags", "+faststart",
     "-y", output,
   ];
 }
@@ -157,6 +169,9 @@ export function buildMaskVideoArgs(
     "-i", `color=c=black:s=${width}x${height}:r=${fps}:d=${safeDuration}`,
     "-vf", `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=white:t=fill`,
     "-c:v", "libx264", "-pix_fmt", "yuv420p",
+    // Same reasoning as `buildExtractClipArgs`'s identical flag — a remote decoder reading this mask
+    // over plain HTTP needs `moov` at the front to read it in one forward pass.
+    "-movflags", "+faststart",
     "-y", output,
   ];
 }

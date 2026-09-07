@@ -52,6 +52,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [available, setAvailable] = useState<boolean | null>(null);
+  const [unavailableReason, setUnavailableReason] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
   // Native only — an export left sitting only in the app's own private storage is easy to lose track
   // of, so a finished render is copied into the device's Gallery automatically (see
@@ -67,7 +68,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   // Checked up front rather than on click: if export can't work, the dialog says so plainly instead
   // of presenting a button that fails.
   useEffect(() => {
-    void exportAvailable().then(setAvailable);
+    void exportAvailable().then(({ available, reason }) => {
+      setAvailable(available);
+      setUnavailableReason(reason ?? null);
+    });
   }, []);
 
   useEffect(() => () => unwatchRef.current?.(), []);
@@ -126,8 +130,27 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         } else if (update.status === "cancelled") setPhase("cancelled");
       },
       (message) => {
+        // A dropped connection the server closed for good (as opposed to a blip the browser is
+        // already retrying — see `watchExport`'s own comment) is ambiguous from here: it could be a
+        // job that's still running behind a flaky connection, or a job the server has no record of
+        // any more because its process restarted mid-export (jobs live only in memory — see
+        // `export/route.ts`'s own `jobs` map — so a restart silently drops every job it was tracking).
+        // Checking which one actually happened turns a vague "may still be running" into an honest
+        // answer instead of leaving the user to guess why a render that looked fine just vanished.
         setPhase("failed");
-        setError(message);
+        if (!projectId) {
+          setError(message);
+          return;
+        }
+        void findRunningExport(projectId)
+          .then((runningJobId) => {
+            setError(
+              runningJobId
+                ? message
+                : t("The server restarted while exporting — please try again.")
+            );
+          })
+          .catch(() => setError(message));
       }
     );
   }
@@ -214,11 +237,22 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         <h2 className="text-sm font-semibold text-white">{t("Export")}</h2>
 
         {available === false ? (
-          <p className="mt-3 rounded-lg bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-200">
-            {t("FFmpeg isn't available on this machine, so VCut can't render a file. Reinstall dependencies")} (
-            <code className="font-mono">pnpm install</code>
-            {t(") to restore it.")}
-          </p>
+          <div className="mt-3 rounded-lg bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-200">
+            <p>
+              {t("FFmpeg isn't available on this machine, so VCut can't render a file. Reinstall dependencies")} (
+              <code className="font-mono">pnpm install</code>
+              {t(") to restore it.")}
+            </p>
+            {/* The server's own captured reason (see client.ts's exportAvailable doc comment) —
+                shown as-is, not translated: this is a raw error string/path for diagnosing a real
+                environment problem, not user-facing copy, and translating it would just as likely
+                mangle a filesystem path as clarify anything. */}
+            {unavailableReason && (
+              <p className="mt-2 break-all rounded bg-black/30 p-2 font-mono text-[10px] text-amber-300/80">
+                {unavailableReason}
+              </p>
+            )}
+          </div>
         ) : (
           <>
             {hasRange && (

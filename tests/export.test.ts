@@ -2245,11 +2245,11 @@ describe("buildExportPlan wordHighlight with ASS/libass capability", () => {
     const aLastEnd = aLines[aLines.length - 1].split(",")[2];
     const bFirstStart = bLines[0].split(",")[1];
 
-    // clipA is 5s (TEXT_DEFAULT_DURATION), so its own nominal end is 0:00:05.00 — the fade-out window
-    // must reach 0.5s PAST that, to 0:00:05.50, landing on the SAME instant clipB's own fade-in
-    // finishes (clipB starts at 0:00:05.00, ramps in for 0.5s).
-    assert.equal(aLastEnd, "0:00:05.50", "outgoing clip's last event extends fadeOut seconds past its own nominal end");
-    assert.equal(bFirstStart, "0:00:05.00", "incoming clip starts at its own normal timelineStart, unshifted");
+    // clipA is 3s (TEXT_DEFAULT_DURATION), so its own nominal end is 0:00:03.00 — the fade-out window
+    // must reach 0.5s PAST that, to 0:00:03.50, landing on the SAME instant clipB's own fade-in
+    // finishes (clipB starts at 0:00:03.00, ramps in for 0.5s).
+    assert.equal(aLastEnd, "0:00:03.50", "outgoing clip's last event extends fadeOut seconds past its own nominal end");
+    assert.equal(bFirstStart, "0:00:03.00", "incoming clip starts at its own normal timelineStart, unshifted");
     assert.match(aLines[aLines.length - 1], /,\{\\fad\(0,500\)\}/);
     assert.match(bLines[0], /,\{\\fad\(500,0\)\}/);
   });

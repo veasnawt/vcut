@@ -14,6 +14,7 @@
     "@capacitor/core": "^7.0.0",
     "@capacitor/filesystem": "^7.0.0",
     "@capacitor/share": "^7.0.0",
+    "@veasnawt/auth": "workspace:*",
     "@veasnawt/vicons": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

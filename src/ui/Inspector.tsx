@@ -1,17 +1,17 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { ChevronDown, Close, Delete, Upload } from "@veasnawt/vicons";
+import { ChevronDown, Delete, Upload } from "@veasnawt/vicons";
 import {
   cancelCaptions,
   cancelInpaint,
   cancelLocalSetup,
+  CAPTION_LANGUAGE_OPTIONS,
   captionsAvailable,
-  getCaptionsKeyStatus,
   getInpaintKeyStatus,
+  HOSTED,
   inpaintAvailable,
   setActiveInpaintProvider,
-  setCaptionsApiKey,
   setInpaintApiKey,
   startCaptions,
   startInpaint,
@@ -20,7 +20,8 @@ import {
   watchInpaint,
   watchLocalSetup,
 } from "../api/client.ts";
-import type { CaptionsKeyStatus, CaptionsProgress, InpaintKeyStatus, InpaintProgress, InpaintProvider, LocalSetupProgress } from "../api/client.ts";
+import type { CaptionsProgress, InpaintKeyStatus, InpaintProgress, InpaintProvider, LocalSetupProgress } from "../api/client.ts";
+import { startCheckout } from "../api/billing.ts";
 import {
   SetClipChromaKeyCommand,
   SetClipColorGradingCommand,
@@ -41,14 +42,15 @@ import {
   SetTextCommand,
 } from "../commands/index.ts";
 import { clipDuration, findAsset, findClip } from "../project/createProject.ts";
-import { FONT_REGISTRY, fontById, preloadFont, resolveFont } from "../project/fonts.ts";
-import type { ClipEffects, ClipTransform, ColorGrading, TextCrop, TextStyle } from "../project/types.ts";
+import { FONT_REGISTRY, preloadFont, resolveFont } from "../project/fonts.ts";
+import type { Clip, ClipEffects, ClipTransform, ColorGrading, TextCrop, TextStyle } from "../project/types.ts";
 import { DEFAULT_CHROMA_KEY, DEFAULT_TEXT_STYLE, IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../project/types.ts";
-import { applyTextStylePreset, TEXT_STYLE_PRESETS } from "../project/textStylePresets.ts";
+import { applyTextStylePreset } from "../project/textStylePresets.ts";
+import type { TextStylePreset } from "../project/textStylePresets.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { formatTimecode } from "../timeline/time.ts";
-import { DEFAULT_WORD_HIGHLIGHT_COLOR, TEXT_ANIMATION_TYPE_LABEL, TEXT_ANIMATION_TYPE_OPTIONS } from "../timeline/textAnimation.ts";
+import { DEFAULT_WORD_HIGHLIGHT_COLOR } from "../timeline/textAnimation.ts";
 import {
   hasColorGradingKeyframes,
   hasEffectsKeyframes,
@@ -72,7 +74,21 @@ import { CurveEditor } from "./CurveEditor.tsx";
 import { Dropdown, type DropdownOption } from "./Dropdown.tsx";
 import { KeyframeTrack } from "./KeyframeTrack.tsx";
 import { NumberField } from "./NumberField.tsx";
-import { TextAnimationPreviewTile } from "./TextAnimationPreviewTile.tsx";
+import { TextAnimationPickerGrid } from "./TextAnimationPickerGrid.tsx";
+import { TextStylePresetGrid } from "./TextStylePresetGrid.tsx";
+import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
+
+/** Fires a real Stripe Checkout session and navigates there directly — one click from an "out of
+ *  credits" message to actually paying, no detour through `/account` first. Shared by both
+ *  `AutoCaptionsSection` and `RemoveObjectSection`'s identical out-of-credits branches. Best-effort:
+ *  a failure just leaves the button clickable again (same "try again, no special error UI" reasoning
+ *  `account/page.tsx`'s own `upgrade()` uses) rather than needing its own busy/error state for what's
+ *  fundamentally a single fire-and-navigate action. */
+function handleUpgradeClick() {
+  void startCheckout()
+    .then((url) => (window.location.href = url))
+    .catch(() => {});
+}
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -96,12 +112,19 @@ function CollapsibleSection({
   accent = "bg-sky-400",
   open,
   onToggle,
+  pro,
   children,
 }: {
   title: string;
   accent?: string;
   open: boolean;
   onToggle: () => void;
+  /** Same hosted-only, credit-metered "PRO" badge as `VCutApp.tsx`'s own `ToolbarButton` — see that
+   *  component's identical prop for the full reasoning. A separate small inline copy here rather than
+   *  a shared component, since the toolbar's badge is an absolutely-positioned corner overlay on an
+   *  icon-only button and this one is just another flex item next to a text title — different enough
+   *  layouts that sharing one component would need more branching than duplicating three lines. */
+  pro?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -113,6 +136,7 @@ function CollapsibleSection({
       >
         <span aria-hidden className={`h-1.5 w-1.5 shrink-0 rounded-full ${accent}`} />
         <span className="flex-1">{title}</span>
+        {pro && <span className="rounded-sm bg-amber-400 px-1 text-[9px] font-bold leading-tight tracking-wide text-black">PRO</span>}
         <ChevronDown size={13} className={`shrink-0 text-white/30 transition-transform ${open ? "" : "-rotate-90"}`} />
       </button>
       {open && children}
@@ -183,10 +207,25 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
   const landCaptions = useEditorStore((s) => s.landCaptions);
 
   const [available, setAvailable] = useState<boolean | null>(null);
-  const [status, setStatus] = useState<CaptionsKeyStatus | null>(null);
+  // Shared with `RemoveObjectSection` below — Captions runs on the SAME saved Replicate token, not a
+  // captions-specific credential, so this checks `configured.replicate` rather than a separate status
+  // type. See `_lib/inpaintEnvFile.ts`'s `getReplicateToken` for why.
+  const [status, setStatus] = useState<InpaintKeyStatus | null>(null);
   const [keyInput, setKeyInput] = useState("");
   const [savingKey, setSavingKey] = useState(false);
+  // See `AutoCaptionsDialog.tsx`'s identical fields for the full reasoning — this section and that
+  // dialog are two triggers for the same server-side feature, gained hosted-mode credits the same way
+  // at the same time.
+  const { hosted, credits } = useHostedCreditsGate();
+  const outOfCredits = hosted && credits !== null && credits.creditsRemaining <= 0;
 
+  // Neither existed on THIS section before — only the toolbar's whole-sequence dialog let a look/
+  // animation be chosen up front, so a per-clip caption pass always landed with the bare default and
+  // needed restyling afterward via the toolbar's own bulk Styles/Animation tools. Same "chosen up
+  // front" convention as `AutoCaptionsDialog.tsx` now, for parity between the two entry points.
+  const [preset, setPreset] = useState<TextStylePreset | null>(null);
+  const [animation, setAnimation] = useState<Clip["textAnimation"] | null>(null);
+  const [language, setLanguage] = useState("auto");
   const [phase, setPhase] = useState<CaptionsPhase>("idle");
   const [stage, setStage] = useState<string>("");
   const [progress, setProgress] = useState(0);
@@ -196,7 +235,7 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
 
   useEffect(() => {
     void captionsAvailable().then(setAvailable);
-    void getCaptionsKeyStatus().then(setStatus);
+    void getInpaintKeyStatus().then(setStatus);
   }, []);
 
   useEffect(() => () => unwatchRef.current?.(), []);
@@ -205,9 +244,9 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
     if (!keyInput.trim()) return;
     setSavingKey(true);
     try {
-      await setCaptionsApiKey(keyInput);
+      await setInpaintApiKey("replicate", keyInput);
       setKeyInput("");
-      setStatus({ configured: true });
+      setStatus(await getInpaintKeyStatus());
       setAvailable(await captionsAvailable());
     } catch {
       setError(t("Couldn't save that API key"));
@@ -227,7 +266,7 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
     // otherwise be silently ignored.
     await save();
     try {
-      const started = await startCaptions(projectId, clipId);
+      const started = await startCaptions(projectId, [clipId], language, animation?.type === "wordHighlight");
       jobIdRef.current = started.jobId;
       unwatchRef.current = watchCaptions(
         started.jobId,
@@ -235,7 +274,7 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
           setStage(update.stage);
           setProgress(update.progress);
           if (update.status === "done") {
-            if (update.captions) landCaptions(update.captions);
+            if (update.captions) landCaptions(update.captions, preset ?? undefined, animation ?? undefined);
             setPhase("idle");
           } else {
             setPhase(update.status);
@@ -255,21 +294,28 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
     setPhase("cancelled");
   }
 
-  if (available === null || status === null) {
+  // See `AutoCaptionsDialog.tsx`'s identical check for why `hosted` has to enter this condition —
+  // `status` never resolves in hosted mode (its own settings route stays 403'd there on purpose).
+  if (available === null || (!hosted && status === null)) {
     return <p className="text-[12px] text-white/35">{t("Checking…")}</p>;
   }
 
-  const credentialsBlock = (
+  // `null` in hosted mode — nothing for a hosted user to configure (see `hosted`'s own comment above).
+  // No provider dropdown (unlike `RemoveObjectSection` below) — Captions only ever runs on Replicate.
+  // Saving here activates Replicate as Remove Object's own active provider too (same
+  // `setInpaintApiKey` call its own key-entry form uses), since it's the same one saved token either
+  // way — entering it from whichever feature you reach first is enough for both.
+  const credentialsBlock = !hosted && status && (
     <div className="mb-3 space-y-1.5">
       <p className="text-[11px] text-white/35">
-        {status.configured ? t("Using your saved OpenAI key.") : t("No OpenAI key saved yet.")}
+        {status.configured.replicate ? t("Using your saved Replicate key.") : t("No Replicate key saved yet.")}
       </p>
       <div className="flex gap-2">
         <input
           type="password"
           value={keyInput}
           onChange={(e) => setKeyInput(e.target.value)}
-          placeholder={status.configured ? t("Paste a new key to replace the saved one") : t("OpenAI API key")}
+          placeholder={status.configured.replicate ? t("Paste a new key to replace the saved one") : t("Replicate API key")}
           className="min-w-0 flex-1 rounded bg-white/5 px-2.5 py-1.5 text-[12px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60"
         />
         <button
@@ -277,17 +323,30 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
           disabled={savingKey || !keyInput.trim()}
           className="shrink-0 rounded bg-sky-500 px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400 disabled:opacity-50"
         >
-          {savingKey ? t("Saving…") : status.configured ? t("Replace") : t("Save")}
+          {savingKey ? t("Saving…") : status?.configured.replicate ? t("Replace") : t("Save")}
         </button>
       </div>
     </div>
   );
 
-  if (!status.configured) {
+  const languagePicker = (
+    <div className="mb-3 flex items-center justify-between gap-2">
+      <span className="text-[11px] text-white/35">{t("Spoken language")}</span>
+      <Dropdown
+        value={language}
+        options={CAPTION_LANGUAGE_OPTIONS.map((o) => ({ value: o.code, label: t(o.label) }))}
+        onChange={setLanguage}
+        ariaLabel={t("Spoken language")}
+        className="w-36 text-[11px]"
+      />
+    </div>
+  );
+
+  if (!hosted && !status?.configured.replicate) {
     return (
       <>
         <p className="mb-2 text-[12px] leading-relaxed text-white/50">
-          {t("Transcribes this clip's audio and adds the result as editable caption clips. Needs an OpenAI API key — the clip's audio is sent there for processing.")}
+          {t("Transcribes this clip's audio and adds the result as editable caption clips. Needs a Replicate account — the clip's audio is sent there for processing.")}
         </p>
         {credentialsBlock}
         {error && <p className="text-[12px] text-rose-300">{error}</p>}
@@ -300,6 +359,22 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
       <>
         {credentialsBlock}
         <p className="text-[12px] leading-relaxed text-rose-300">{t("FFmpeg isn't available — reinstall dependencies to use this.")}</p>
+      </>
+    );
+  }
+
+  if (outOfCredits) {
+    return (
+      <>
+        <p className="text-[12px] leading-relaxed text-amber-300">
+          {t("You're out of credits for this month — upgrade to Pro for more, or wait for your credits to refill.")}
+        </p>
+        <button
+          onClick={handleUpgradeClick}
+          className="mt-2 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400"
+        >
+          {t("Upgrade to Pro")}
+        </button>
       </>
     );
   }
@@ -322,13 +397,30 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
   return (
     <>
       {credentialsBlock}
+      {languagePicker}
       {error && <p className="mb-2 text-[12px] text-rose-300">{error}</p>}
       <p className="mb-2 text-[12px] leading-relaxed text-white/50">
         {t("Transcribes this clip's audio and adds the result as editable caption clips on a new track.")}
       </p>
+      {/* Chosen up front, same as `AutoCaptionsDialog.tsx`'s own Style/Animation pickers — the batch
+          this job produces lands already looking/animated the way you picked, instead of a fixed
+          default that then needs restyling clip by clip (or via the toolbar's own bulk Styles/
+          Animation tools) afterward. */}
+      <p className="mb-1.5 text-[11px] text-white/35">{t("Style")}</p>
+      <button
+        onClick={() => setPreset(null)}
+        className={`mb-1.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/70 transition hover:bg-white/10 hover:text-white ${
+          preset === null ? "ring-1 ring-sky-400/60" : ""
+        }`}
+      >
+        {t("Default")}
+      </button>
+      <TextStylePresetGrid selectedId={preset?.id} onPick={setPreset} />
+      <p className="mb-1.5 mt-3 text-[11px] text-white/35">{t("Animation")}</p>
+      <TextAnimationPickerGrid current={animation} onPick={setAnimation} />
       <button
         onClick={() => void begin()}
-        className="w-full rounded bg-sky-500 py-1.5 text-[12px] font-semibold text-white transition hover:bg-sky-400"
+        className="mt-3 w-full rounded bg-sky-500 py-1.5 text-[12px] font-semibold text-white transition hover:bg-sky-400"
       >
         {t("Generate Captions")}
       </button>
@@ -360,7 +452,17 @@ type LocalSetupPhase = "idle" | "running" | "done" | "failed" | "cancelled";
  *  same reasoning that keeps it out of the store there. `removeObjectRect`/`removeObjectArmedClipId`
  *  DO live in the store (see its own comment) since `RemoveObjectOverlay`, a completely different
  *  component mounted over the Preview canvas, needs to read/drive the same drawn rectangle. */
-function RemoveObjectSection({ clipId, assetName, projectId }: { clipId: string; assetName: string; projectId: string | null }) {
+function RemoveObjectSection({
+  clipId,
+  assetName,
+  projectId,
+  clipDurationSeconds,
+}: {
+  clipId: string;
+  assetName: string;
+  projectId: string | null;
+  clipDurationSeconds: number;
+}) {
   const t = useTranslation();
   const armRemoveObject = useEditorStore((s) => s.armRemoveObject);
   const clearRemoveObject = useEditorStore((s) => s.clearRemoveObject);
@@ -375,6 +477,10 @@ function RemoveObjectSection({ clipId, assetName, projectId }: { clipId: string;
   const [keyInput, setKeyInput] = useState("");
   const [savingKey, setSavingKey] = useState(false);
   const [backgroundPrompt, setBackgroundPrompt] = useState("");
+  // See `AutoCaptionsDialog.tsx`'s identical fields for the full reasoning — Remove Object gained
+  // hosted-mode credits the same way, at the same time, as Auto Captions.
+  const { hosted, credits } = useHostedCreditsGate();
+  const outOfCredits = hosted && credits !== null && credits.creditsRemaining <= 0;
 
   const [phase, setPhase] = useState<InpaintPhase>("idle");
   const [stage, setStage] = useState<string>("");
@@ -505,7 +611,7 @@ function RemoveObjectSection({ clipId, assetName, projectId }: { clipId: string;
           setStage(update.stage);
           setProgress(update.progress);
           setPhase(update.status);
-          if (update.status === "done" && update.asset) landInpaintedAsset(update.asset);
+          if (update.status === "done" && update.asset) landInpaintedAsset(clipId, update.asset);
           if (update.status === "failed" && update.error) setError(update.error);
         },
         (message) => setError(message)
@@ -527,23 +633,31 @@ function RemoveObjectSection({ clipId, assetName, projectId }: { clipId: string;
     clearRemoveObject();
   }
 
-  if (available === null || status === null) {
+  // See `AutoCaptionsDialog.tsx`'s identical check for why `hosted` has to enter this condition —
+  // `status` never resolves in hosted mode (its own settings route stays 403'd there on purpose).
+  if (available === null || (!hosted && status === null)) {
     return <p className="text-[12px] text-white/35">{t("Checking…")}</p>;
   }
 
-  const isActive = selectedProvider === status.activeProvider;
-  const isConfigured = status.configured[selectedProvider];
+  const isActive = status ? selectedProvider === status.activeProvider : false;
+  const isConfigured = status ? Boolean(status.configured[selectedProvider]) : false;
   // Whether the SELECTED provider (what the dropdown shows) is actually the one that will run —
   // both that it's ready AND that it's genuinely the active one server-side, not just
   // `status.configured[status.activeProvider]` (the real active provider's own readiness). Using
   // only the latter let a user select an unconfigured provider (e.g. Local before setup) while the
   // REAL backend provider silently stayed whatever it was before — the dropdown showed the new
   // selection, but "Remove Object" ran against the old, unswitched provider with no warning.
-  const ready = isActive && isConfigured;
-  const providerOptions: DropdownOption<InpaintProvider>[] = (Object.keys(INPAINT_PROVIDER_LABELS) as InpaintProvider[]).map((p) => ({
-    value: p,
-    label: `${p === "local" ? t("Local (CPU)") : INPAINT_PROVIDER_LABELS[p]}${status.configured[p] ? " ✓" : ""}`,
-  }));
+  //
+  // In hosted mode there's no provider CHOICE to be ready or not — it's fixed to Replicate server-side
+  // (see `_lib/inpaintEnvFile.ts`'s own `VCUT_HOSTED` branch) — `available` (checked separately below)
+  // is the real readiness gate there instead.
+  const ready = hosted || (isActive && isConfigured);
+  const providerOptions: DropdownOption<InpaintProvider>[] = status
+    ? (Object.keys(INPAINT_PROVIDER_LABELS) as InpaintProvider[]).map((p) => ({
+        value: p,
+        label: `${p === "local" ? t("Local (CPU)") : INPAINT_PROVIDER_LABELS[p]}${status.configured[p] ? " ✓" : ""}`,
+      }))
+    : [];
 
   // Provider switcher + key entry — always visible (not gated behind "unconfigured"), so a saved key
   // can be replaced later too, not just entered for the first time. Uses the app's own `Dropdown`
@@ -552,7 +666,11 @@ function RemoveObjectSection({ clipId, assetName, projectId }: { clipId: string;
   // exactly the bug a plain `<select>` here originally had. Mirrors `RixieApiKeySection`'s own
   // interaction (packages/universe/src/components/SettingsPanel.tsx): picking an already-configured
   // provider switches to it immediately; picking a fresh one just reveals its own empty key field.
-  const credentialsBlock = (
+  //
+  // `null` in hosted mode — there's no provider choice or per-user key to configure at all there (see
+  // `hosted`'s own comment above); `status` is also guaranteed non-null past this point when NOT
+  // hosted, since the Checking… guard above already accounted for it.
+  const credentialsBlock = !hosted && status && (
     <div className="mb-3 space-y-1.5">
       <div className="flex items-center justify-between gap-2">
         <span className="text-[10px] font-medium uppercase tracking-wide text-white/40">{t("Provider")}</span>
@@ -660,6 +778,22 @@ function RemoveObjectSection({ clipId, assetName, projectId }: { clipId: string;
     );
   }
 
+  if (outOfCredits) {
+    return (
+      <>
+        <p className="text-[12px] leading-relaxed text-amber-300">
+          {t("You're out of credits for this month — upgrade to Pro for more, or wait for your credits to refill.")}
+        </p>
+        <button
+          onClick={handleUpgradeClick}
+          className="mt-2 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400"
+        >
+          {t("Upgrade to Pro")}
+        </button>
+      </>
+    );
+  }
+
   if (phase === "running") {
     return (
       <>
@@ -679,7 +813,7 @@ function RemoveObjectSection({ clipId, assetName, projectId }: { clipId: string;
     return (
       <>
         {credentialsBlock}
-        <p className="text-[12px] text-emerald-300">{t("Added to the Media Library.")}</p>
+        <p className="text-[12px] text-emerald-300">{t("Clip replaced.")}</p>
         <button onClick={startOver} className="mt-2 rounded bg-white/5 px-2.5 py-1 text-[11px] text-white/60 transition hover:bg-white/10 hover:text-white">
           {t("Start over")}
         </button>
@@ -698,6 +832,17 @@ function RemoveObjectSection({ clipId, assetName, projectId }: { clipId: string;
               "Draw a box over the object or watermark on the preview. Works best for a mostly-static background — the same region is erased across the whole clip."
             )}
           </p>
+          {/* Hosted mode's cloud provider (`bria/video-erase-object`) processes in 5-second chunks —
+              a real cost and time difference on a long clip, not just a cosmetic note. Local/desktop's
+              own providers (local ProPainter, fal's VOID) have no such cap, so this would be
+              misleading advice there. */}
+          {hosted && clipDurationSeconds > 5 && (
+            <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300/80">
+              {t(
+                "This clip is over 5 seconds — it'll be processed in chunks, which costs more credits and takes longer. If you only need to fix a short section, trimming the clip first is faster and cheaper."
+              )}
+            </p>
+          )}
           <button
             onClick={() => armRemoveObject(clipId)}
             className={`mt-2 w-full rounded py-1.5 text-[12px] font-medium transition ${
@@ -712,9 +857,16 @@ function RemoveObjectSection({ clipId, assetName, projectId }: { clipId: string;
           <p className="text-[12px] text-white/50">
             {t("Region: {width}×{height} px", { width: Math.round(rect.width), height: Math.round(rect.height) })}
           </p>
-          <p className="mt-1 text-[11px] text-white/35">
-            {t('Result has no audio — "{name}"\'s own audio isn\'t affected either way.', { name: assetName })}
-          </p>
+          {/* Only genuinely true for the local ProPainter script — it decodes/writes frames only,
+              with no audio concept at all. The cloud path (`bria/video-erase-object`, hosted mode's
+              only option and also what "Replicate" now means locally too) keeps the source clip's
+              own audio via `preserve_audio` — see `buildExtractClipArgs`'s own comment for why
+              extraction stopped dropping it. */}
+          {selectedProvider === "local" && (
+            <p className="mt-1 text-[11px] text-white/35">
+              {t('Result has no audio — "{name}"\'s own audio isn\'t affected either way.', { name: assetName })}
+            </p>
+          )}
           {selectedProvider === "fal" && (
             <input
               type="text"
@@ -769,6 +921,23 @@ export function Inspector() {
   // for the edge case of a stale id.
   const selectedId = selectedClipIds.length === 1 ? selectedClipIds[0] : undefined;
   const found = project && selectedId ? findClip(project, selectedId) : undefined;
+  // Which of a genuine multi-selection are text clips — the subset the bulk Styles/Animation panel
+  // below (rendered only when this is non-empty) actually targets. Cheap to recompute on every render
+  // (selections are small); not worth a `useMemo` for that.
+  const selectedTextClipIds =
+    selectedClipIds.length > 1 && project
+      ? selectedClipIds.filter((id) => findAsset(project, findClip(project, id)?.clip.assetId ?? "")?.kind === "text")
+      : [];
+  // Representative style for the multi-select Font/Size/Align controls below — the FIRST qualifying
+  // clip's own current style. Clips in the selection may genuinely differ (that's the whole point of
+  // a bulk edit), so this is a display default, not a claim every clip already matches it: picking a
+  // font/size/align value still applies to every selected text clip, same as the Styles/Animation
+  // grids above it.
+  const firstSelectedTextStyle =
+    selectedTextClipIds.length > 0 && project ? findAsset(project, findClip(project, selectedTextClipIds[0])!.clip.assetId)?.textStyle : undefined;
+  const applyTextStylePresetToSelection = useEditorStore((s) => s.applyTextStylePresetToSelection);
+  const applyTextAnimationToSelection = useEditorStore((s) => s.applyTextAnimationToSelection);
+  const patchTextStyleForSelection = useEditorStore((s) => s.patchTextStyleForSelection);
   const fps = project?.sequence.fps ?? 30;
   // Needed for the keyframe-armed branch below (`patchTransform`/`patchEffects`/their `preview*`
   // siblings, and `KeyframeTrack`'s own live playhead tick) to know WHICH instant an edit targets.
@@ -776,13 +945,19 @@ export function Inspector() {
   // reason — there's no way to know "is the playhead currently over a keyframe" without it.
   const playhead = useEditorStore((s) => s.playhead);
 
-  /** Which sections are collapsed — shared across every clip selected in this session (collapse
-   *  "Details" once, it stays collapsed switching to the next clip too, which is what makes
-   *  collapsing worth doing at all rather than just a per-clip toggle that resets itself away the
-   *  moment you select something else). "Details" (Timeline/Source/Media — all read-only reference
-   *  values, never what someone opens this panel TO edit) starts collapsed; every actually-editable
-   *  section starts open, preserving today's "everything visible" behavior for the common case. */
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(["Details"]));
+  /** Which sections are collapsed — shared across every clip selected in this session (collapse one
+   *  once, it stays collapsed switching to the next clip too, which is what makes collapsing worth
+   *  doing at all rather than just a per-clip toggle that resets itself away the moment you select
+   *  something else). Only ONE section per tab starts open — the tab's own main content ("Text" for
+   *  the Text tab, "Transform" for Transform, "Transition In" for Transitions, "Audio" for Audio) —
+   *  everything else, including "Details" (Timeline/Source/Media, all read-only reference values),
+   *  starts collapsed. A tab switch never leaves a user staring at zero open sections: each tab's own
+   *  primary section is in this initial set precisely so switching tabs always shows something without
+   *  extra clicks, while every secondary section (Styles, Animation, Effects, Color Grading, LUT,
+   *  Chroma Key, Transition Out, Auto Captions, Remove Object) stays out of the way until asked for. */
+  const [collapsed, setCollapsed] = useState<Set<string>>(
+    () => new Set(["Details", "Styles", "Animation", "Remove Object", "Effects", "Color Grading", "LUT", "Chroma Key", "Transition Out", "Auto Captions"])
+  );
   function toggleSection(name: string) {
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -986,18 +1161,116 @@ export function Inspector() {
 
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-3.5">
         {!found ? (
-          <div className="flex h-full flex-col items-center justify-center gap-1.5 px-2 text-center">
-            {selectedClipIds.length > 1 ? (
-              <>
+          selectedClipIds.length > 1 && selectedTextClipIds.length > 0 ? (
+            <div className="space-y-5 p-1">
+              <div>
                 <p className="text-[13px] font-medium text-white/60">{t("{n} clips selected", { n: selectedClipIds.length })}</p>
-                <p className="max-w-[200px] text-[11px] leading-relaxed text-white/35">
-                  {t("Properties are shown one clip at a time — select just one to edit it.")}
-                </p>
-              </>
-            ) : (
-              <p className="text-[12px] leading-relaxed text-white/35">{t("Select a clip to see its properties")}</p>
-            )}
-          </div>
+                {selectedTextClipIds.length < selectedClipIds.length && (
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-white/35">
+                    {t("{n} other clips in this selection won't be affected", { n: selectedClipIds.length - selectedTextClipIds.length })}
+                  </p>
+                )}
+              </div>
+              <CollapsibleSection
+                title={t("Text")}
+                accent="bg-violet-400"
+                open={!collapsed.has("Text")}
+                onToggle={() => toggleSection("Text")}
+              >
+                {(() => {
+                  const style = firstSelectedTextStyle ?? DEFAULT_TEXT_STYLE;
+                  const font = resolveFont(style.fontFamily, project!.customFonts);
+                  return (
+                    <>
+                      <div className="flex items-center justify-between gap-2 py-1.5">
+                        <span className="text-[12px] text-white/50">{t("Font")}</span>
+                        <Dropdown
+                          value={style.fontFamily}
+                          onChange={(v) => {
+                            preloadFont(resolveFont(v, project!.customFonts));
+                            patchTextStyleForSelection({ fontFamily: v });
+                          }}
+                          ariaLabel={t("Font")}
+                          className="min-w-0 flex-1 text-[13px]"
+                          searchable
+                          searchPlaceholder={t("Search fonts…")}
+                          options={[
+                            ...project!.customFonts.map((f) => ({ value: f.id, label: f.name, style: { fontFamily: `"${f.cssFamily}"` } })),
+                            ...FONT_REGISTRY.map((f) => ({ value: f.id, label: f.label, style: { fontFamily: `"${f.cssFamily}"` } })),
+                          ]}
+                        />
+                      </div>
+                      <NumberField
+                        label={t("Size")}
+                        value={style.fontSize}
+                        suffix="px"
+                        step={2}
+                        onCommit={(v) => patchTextStyleForSelection({ fontSize: v })}
+                      />
+                      <div className="flex items-center gap-1 py-1.5">
+                        <button
+                          onClick={() => patchTextStyleForSelection({ bold: !style.bold })}
+                          aria-pressed={style.bold}
+                          title={font.files.bold ? undefined : t("{font} has no bold face — this won't change how it looks", { font: font.label })}
+                          className={`flex-1 rounded px-2 py-1.5 text-[12px] font-bold transition ${
+                            style.bold ? "bg-sky-500/30 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"
+                          } ${font.files.bold ? "" : "opacity-40"}`}
+                        >
+                          B
+                        </button>
+                        <button
+                          onClick={() => patchTextStyleForSelection({ italic: !style.italic })}
+                          aria-pressed={style.italic}
+                          title={font.files.italic ? undefined : t("{font} has no italic face — this won't change how it looks", { font: font.label })}
+                          className={`flex-1 rounded px-2 py-1.5 text-[12px] italic transition ${
+                            style.italic ? "bg-sky-500/30 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"
+                          } ${font.files.italic ? "" : "opacity-40"}`}
+                        >
+                          I
+                        </button>
+                      </div>
+                      <div className="flex items-center gap-1 py-1.5">
+                        {(["left", "center", "right"] as const).map((align) => (
+                          <AlignButton key={align} active={style.align === align} onClick={() => patchTextStyleForSelection({ align })}>
+                            {align === "left" ? t("Left") : align === "center" ? t("Center") : t("Right")}
+                          </AlignButton>
+                        ))}
+                      </div>
+                    </>
+                  );
+                })()}
+              </CollapsibleSection>
+              <CollapsibleSection
+                title={t("Styles")}
+                accent="bg-violet-400"
+                open={!collapsed.has("Styles")}
+                onToggle={() => toggleSection("Styles")}
+              >
+                <TextStylePresetGrid onPick={applyTextStylePresetToSelection} />
+              </CollapsibleSection>
+              <CollapsibleSection
+                title={t("Animation")}
+                accent="bg-violet-400"
+                open={!collapsed.has("Animation")}
+                onToggle={() => toggleSection("Animation")}
+              >
+                <TextAnimationPickerGrid current={undefined} onPick={applyTextAnimationToSelection} />
+              </CollapsibleSection>
+            </div>
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center gap-1.5 px-2 text-center">
+              {selectedClipIds.length > 1 ? (
+                <>
+                  <p className="text-[13px] font-medium text-white/60">{t("{n} clips selected", { n: selectedClipIds.length })}</p>
+                  <p className="max-w-[200px] text-[11px] leading-relaxed text-white/35">
+                    {t("Properties are shown one clip at a time — select just one to edit it.")}
+                  </p>
+                </>
+              ) : (
+                <p className="text-[12px] leading-relaxed text-white/35">{t("Select a clip to see its properties")}</p>
+              )}
+            </div>
+          )
         ) : (
           (() => {
             const { clip, track } = found;
@@ -1491,33 +1764,11 @@ export function Inspector() {
                       const style = asset.textStyle ?? DEFAULT_TEXT_STYLE;
                       const content = asset.textContent ?? "";
                       return (
-                        <div className="grid grid-cols-3 gap-1.5">
-                          {TEXT_STYLE_PRESETS.map((preset) => (
-                            <button
-                              key={preset.id}
-                              onClick={() => applyFullTextStyle(asset.id, content, applyTextStylePreset(style, preset))}
-                              onMouseEnter={() => previewFullTextStyle(clip.id, applyTextStylePreset(style, preset))}
-                              onMouseLeave={clearPreview}
-                              className="flex flex-col items-center gap-1 rounded p-1 transition hover:bg-white/10"
-                            >
-                              <span
-                                className="flex h-[42px] w-full items-center justify-center overflow-hidden rounded border border-white/10 bg-black/40 text-[15px]"
-                                style={{
-                                  color: preset.color,
-                                  fontWeight: preset.bold ? 700 : 400,
-                                  backgroundColor: preset.backgroundColor ?? undefined,
-                                  WebkitTextStroke: preset.strokeColor ? `1px ${preset.strokeColor}` : undefined,
-                                  textShadow: preset.shadowColor
-                                    ? `${preset.shadowOffsetX ?? 2}px ${preset.shadowOffsetY ?? 2}px 0 ${preset.shadowColor}`
-                                    : undefined,
-                                }}
-                              >
-                                Ag
-                              </span>
-                              <span className="truncate text-[10px] text-white/60">{t(preset.label)}</span>
-                            </button>
-                          ))}
-                        </div>
+                        <TextStylePresetGrid
+                          onPick={(preset) => applyFullTextStyle(asset.id, content, applyTextStylePreset(style, preset))}
+                          onPreview={(preset) => previewFullTextStyle(clip.id, applyTextStylePreset(style, preset))}
+                          onPreviewEnd={clearPreview}
+                        />
                       );
                     })()}
                   </CollapsibleSection>
@@ -1541,46 +1792,10 @@ export function Inspector() {
                     open={!collapsed.has("Animation")}
                     onToggle={() => toggleSection("Animation")}
                   >
-                    <div className="grid grid-cols-3 gap-1.5">
-                      <button
-                        onClick={() => run(new SetClipTextAnimationCommand(clip.id, null))}
-                        className={`flex flex-col items-center gap-1 rounded p-1 transition hover:bg-white/10 ${
-                          !clip.textAnimation ? "bg-sky-500/20" : ""
-                        }`}
-                      >
-                        <div
-                          className="flex items-center justify-center rounded border border-white/10 bg-black/40 text-white/30"
-                          style={{ width: 84, height: 48 }}
-                        >
-                          <Close size={14} />
-                        </div>
-                        <span className="text-[10px] text-white/70">{t("None")}</span>
-                      </button>
-                      {TEXT_ANIMATION_TYPE_OPTIONS.map((type) => (
-                        <button
-                          key={type}
-                          onClick={() =>
-                            // Switching TYPE keeps whatever `speed`/`highlightColor` was already set —
-                            // a user comparing Bounce vs Wiggle at 2x speed shouldn't have speed reset
-                            // to 1x on every click, and `highlightColor` re-applies instantly if they
-                            // switch back to Word Highlight later.
-                            run(
-                              new SetClipTextAnimationCommand(clip.id, {
-                                type,
-                                ...(clip.textAnimation?.highlightColor ? { highlightColor: clip.textAnimation.highlightColor } : null),
-                                ...(clip.textAnimation?.speed ? { speed: clip.textAnimation.speed } : null),
-                              })
-                            )
-                          }
-                          className={`flex flex-col items-center gap-1 rounded p-1 transition hover:bg-white/10 ${
-                            clip.textAnimation?.type === type ? "bg-sky-500/20" : ""
-                          }`}
-                        >
-                          <TextAnimationPreviewTile type={type} />
-                          <span className="text-[10px] text-white/70">{t(TEXT_ANIMATION_TYPE_LABEL[type])}</span>
-                        </button>
-                      ))}
-                    </div>
+                    <TextAnimationPickerGrid
+                      current={clip.textAnimation}
+                      onPick={(next) => run(new SetClipTextAnimationCommand(clip.id, next))}
+                    />
                     {clip.textAnimation && (
                       <>
                         <NumberField
@@ -1822,8 +2037,14 @@ export function Inspector() {
                     accent="bg-teal-400"
                     open={!collapsed.has("Remove Object")}
                     onToggle={() => toggleSection("Remove Object")}
+                    pro={HOSTED}
                   >
-                    <RemoveObjectSection clipId={clip.id} assetName={asset.name} projectId={projectId} />
+                    <RemoveObjectSection
+                      clipId={clip.id}
+                      assetName={asset.name}
+                      projectId={projectId}
+                      clipDurationSeconds={clip.sourceOut - clip.sourceIn}
+                    />
                   </CollapsibleSection>
                 )}
 
@@ -1836,6 +2057,7 @@ export function Inspector() {
                     accent="bg-emerald-400"
                     open={!collapsed.has("Auto Captions")}
                     onToggle={() => toggleSection("Auto Captions")}
+                    pro={HOSTED}
                   >
                     <AutoCaptionsSection clipId={clip.id} projectId={projectId} />
                   </CollapsibleSection>

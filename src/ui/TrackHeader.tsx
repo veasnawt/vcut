@@ -24,7 +24,7 @@ const KIND_ICON: Record<Track["kind"], { Icon: typeof Video; className: string }
  *  MediaLibrary.tsx since that file keeps one flat unsplit list; duplicated here rather than
  *  restructuring that file just for this. Text tracks get no import button at all — a text track's
  *  content is typed, not a file. */
-const ACCEPTED_EXTENSIONS_BY_KIND: Record<"video" | "audio", string> = {
+export const ACCEPTED_EXTENSIONS_BY_KIND: Record<"video" | "audio", string> = {
   video: ".mp4,.mov,.webm,.mkv,.avi,.m4v,.png,.jpg,.jpeg,.webp,.gif",
   audio: ".wav,.mp3,.aac,.flac,.m4a,.ogg",
 };
@@ -75,7 +75,6 @@ function FlagButton({
 export function TrackHeader({
   track,
   height,
-  compact,
   isMobile,
   dropIndicator,
   onDragOverRow,
@@ -83,13 +82,15 @@ export function TrackHeader({
   onDragEndRow,
 }: {
   track: Track;
+  /** Timeline.tsx's own `isTrackCompact` result, already resolved to a pixel height there — this
+   *  component doesn't need to know WHY a row is shorter, just how tall to draw it. The flag-button row
+   *  below (Lock/Hide/Mute/Solo) used to be gated on a separate `compact` boolean derived from that
+   *  exact same check, which — once text tracks started staying compact-height even once populated
+   *  (see `isTrackCompact`'s own doc comment) — meant a captions track could never show those controls
+   *  at all. Gating on `track.clips.length > 0` instead (see that row's own comment) decouples "how
+   *  tall is this row" from "does it have content worth locking/hiding," which is what actually fixed
+   *  it — this prop is now purely a height number, nothing else reads it. */
   height: number;
-  /** True for an empty track on mobile (see Timeline.tsx's own `isTrackCompact`) — drops the
-   *  lock/visibility/mute/solo row entirely rather than trying to squeeze it into a shorter row.
-   *  Those controls govern EXISTING content, which a compact row by definition doesn't have yet; they
-   *  reappear automatically the moment a clip lands (the row grows back to full height at the same
-   *  time, in Timeline.tsx). */
-  compact: boolean;
   /** Drives `iconOnly` below (mobile + not the active track) — same `lg` breakpoint every other
    *  mobile/desktop split in this app uses, passed down rather than each header running its own
    *  `matchMedia` listener (cheap, but no reason for N redundant listeners over one shared value). */
@@ -220,7 +221,17 @@ export function TrackHeader({
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${isActive ? "bg-sky-400" : "bg-transparent"}`} />
       <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white/80">{track.name}</span>
 
-      {!compact && (
+      {/* Gated on the track actually HAVING clips, not on `compact` — those are two different things
+          that used to be the same condition by coincidence. `compact` (a shorter ROW HEIGHT) is now
+          true for every text track regardless of content (see Timeline.tsx's own `isTrackCompact`:
+          captions/titles don't need the extra vertical room a populated video/audio track does), but a
+          populated text track very much still has something to Lock/Hide — a real, reported bug: an
+          Auto Captions track could never be hidden or locked on mobile at all, since it's ALWAYS
+          compact the moment it has clips, which is exactly when these controls are wanted. An
+          EMPTY track (any kind) still gets no flag row — nothing on it yet to act on — matching the
+          original reasoning `compact` was introduced for before text tracks stayed compact while full
+          too. */}
+      {track.clips.length > 0 && (
         <div className="flex shrink-0 items-center gap-0.5">
           <FlagButton
             active={track.locked}

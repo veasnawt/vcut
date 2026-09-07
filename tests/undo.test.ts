@@ -4,8 +4,12 @@ import {
   AddClipCommand,
   AddTrackCommand,
   BatchCommand,
+  buildTextAnimationCommand,
+  buildTextStylePatchCommand,
+  buildTextStylePresetCommand,
   DeleteClipsCommand,
   DuplicateClipsCommand,
+  ExtractAudioCommand,
   MoveClipCommand,
   PasteClipsCommand,
   RemoveTrackCommand,
@@ -26,14 +30,16 @@ import {
   SetTrackGainCommand,
   SetTrackPanCommand,
   SplitClipCommand,
+  SwapClipAssetCommand,
   TrimClipCommand,
 } from "../src/commands/index.ts";
 import type { ClipboardEntry, Command } from "../src/commands/index.ts";
+import { TEXT_STYLE_PRESETS } from "../src/project/textStylePresets.ts";
 import type { Project } from "../src/project/types.ts";
 import { DEFAULT_TEXT_STYLE, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../src/project/types.ts";
 import { addClip, addTrack } from "../src/timeline/operations.ts";
 import { UndoStack } from "../src/undo/UndoStack.ts";
-import { audioTrackId, clipsOf, comparable, emptyProject, textAsset, videoAsset, videoTrackId } from "./fixture.ts";
+import { audioAsset, audioTrackId, clipsOf, comparable, emptyProject, textAsset, videoAsset, videoTrackId } from "./fixture.ts";
 
 /** Asserts the central undo guarantee: applying a command and then reverting it returns the project
  *  to exactly the state it started in, and redoing gets back to the post-apply state. */
@@ -792,6 +798,75 @@ describe("DuplicateClipsCommand", () => {
   });
 });
 
+describe("ExtractAudioCommand", () => {
+  it("mutes the original clip and adds a new clip with the same trim onto a free audio track", () => {
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [original] = clipsOf(project, videoTrackId(project));
+    project = new TrimClipCommand(original.id, "out", 4).apply(project);
+
+    const command = new ExtractAudioCommand(original.id);
+    const applied = command.apply(project);
+
+    const stillOnVideoTrack = clipsOf(applied, videoTrackId(applied)).find((c) => c.id === original.id);
+    assert.equal(stillOnVideoTrack?.mutedAudio, true, "original clip should be muted after extraction");
+    assert.equal(stillOnVideoTrack?.timelineStart, 0, "original clip should not move");
+
+    const extracted = clipsOf(applied, audioTrackId(applied)).find((c) => c.id === command.newClipId);
+    assert.ok(extracted, "extracted clip should land on the existing audio track");
+    assert.equal(extracted?.assetId, original.assetId, "extracted clip reuses the same asset, no re-encode");
+    assert.equal(extracted?.timelineStart, 0, "extracted clip stays in sync at the same timelineStart");
+    assert.equal(extracted?.sourceIn, original.sourceIn);
+    assert.equal(extracted?.sourceOut, 4);
+    assert.notEqual(extracted?.mutedAudio, true, "the new clip should actually carry the sound");
+  });
+
+  it("creates a new audio track when every existing one already has something in that exact span", () => {
+    const base = emptyProject([videoAsset(), audioAsset()]);
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [videoClip] = clipsOf(project, videoTrackId(project));
+    project = new TrimClipCommand(videoClip.id, "out", 4).apply(project);
+    // Occupy the existing audio track's own [0, 4) span with something else first.
+    project = addClip(project, audioTrackId(project), "music", 0);
+
+    const applied = new ExtractAudioCommand(videoClip.id).apply(project);
+    const audioTracks = applied.sequence.tracks.filter((t) => t.kind === "audio");
+    assert.equal(audioTracks.length, 2, "should have minted a second audio track");
+  });
+
+  it("round-trips like every other command", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    assertRoundTrips(project, new ExtractAudioCommand(clip.id));
+  });
+});
+
+describe("SwapClipAssetCommand", () => {
+  it("swaps only the assetId, leaving sourceIn/sourceOut untouched", () => {
+    const base = emptyProject([videoAsset(), audioAsset()]);
+    let project = addClip(base, audioTrackId(base), "music", 0);
+    const [clip] = clipsOf(project, audioTrackId(project));
+    project = new TrimClipCommand(clip.id, "out", 6).apply(project);
+
+    const newAudio = audioAsset("music-real", 30);
+    const applied = new SwapClipAssetCommand(clip.id, newAudio).apply(project);
+    const swapped = clipsOf(applied, audioTrackId(applied)).find((c) => c.id === clip.id);
+
+    assert.equal(swapped?.assetId, "music-real");
+    assert.equal(swapped?.sourceIn, clip.sourceIn);
+    assert.equal(swapped?.sourceOut, 6, "trim should be untouched, unlike ReplaceClipAssetCommand");
+    assert.ok(applied.assets.some((a) => a.id === "music-real"));
+  });
+
+  it("round-trips like every other command", () => {
+    const base = emptyProject([videoAsset(), audioAsset()]);
+    const project = addClip(base, audioTrackId(base), "music", 0);
+    const [clip] = clipsOf(project, audioTrackId(project));
+    assertRoundTrips(project, new SwapClipAssetCommand(clip.id, audioAsset("music-real", 30)));
+  });
+});
+
 describe("PasteClipsCommand", () => {
   it("places the group at the given anchor, preserving relative offset between the copied clips", () => {
     const base = emptyProject();
@@ -864,5 +939,113 @@ describe("PasteClipsCommand", () => {
     const [clip] = clipsOf(project, videoTrackId(project));
     const entries: ClipboardEntry[] = [{ clip, trackId: videoTrackId(project), textSnapshot: null }];
     assertRoundTrips(project, new PasteClipsCommand(entries, 6));
+  });
+});
+
+describe("buildTextStylePresetCommand / buildTextAnimationCommand", () => {
+  function projectWithTwoTextClipsAndOneVideoClip(): { project: Project; textIds: [string, string]; videoId: string } {
+    const base = emptyProject([videoAsset(), textAsset("text1", "First"), textAsset("text2", "Second")]);
+    let project = addTrack(base, "text", "text-track");
+    project = addClip(project, videoTrackId(project), "asset1", 0);
+    project = addClip(project, "text-track", "text1", 0);
+    project = addClip(project, "text-track", "text2", 3);
+    const [videoId] = clipsOf(project, videoTrackId(project)).map((c) => c.id);
+    const textIds = clipsOf(project, "text-track").map((c) => c.id) as [string, string];
+    return { project, textIds, videoId };
+  }
+
+  it("applies a style preset to every text clip in the selection as one BatchCommand, leaving the video clip untouched", () => {
+    const { project, textIds, videoId } = projectWithTwoTextClipsAndOneVideoClip();
+    const preset = TEXT_STYLE_PRESETS.find((p) => p.id === "bold-caption")!;
+
+    const command = buildTextStylePresetCommand(project, [...textIds, videoId], preset);
+    assert.ok(command instanceof BatchCommand, "more than one qualifying clip should batch into one undo step");
+
+    const applied = command!.apply(project);
+    for (const clipId of textIds) {
+      const clip = clipsOf(applied, "text-track").find((c) => c.id === clipId)!;
+      const asset = applied.assets.find((a) => a.id === clip.assetId)!;
+      assert.equal(asset.textStyle?.color, preset.color);
+      assert.equal(asset.textStyle?.strokeColor, preset.strokeColor);
+    }
+    const videoClip = clipsOf(applied, videoTrackId(applied)).find((c) => c.id === videoId)!;
+    assert.equal(videoClip.assetId, "asset1", "the non-text clip in the selection must be unaffected");
+  });
+
+  it("returns a single (non-batch) command when only one clip in the selection qualifies", () => {
+    const { project, textIds, videoId } = projectWithTwoTextClipsAndOneVideoClip();
+    const preset = TEXT_STYLE_PRESETS[0];
+    const command = buildTextStylePresetCommand(project, [textIds[0], videoId], preset);
+    assert.ok(command && !(command instanceof BatchCommand));
+    assert.ok(command instanceof SetTextCommand);
+  });
+
+  it("returns null when nothing in the selection is a text clip", () => {
+    const { project, videoId } = projectWithTwoTextClipsAndOneVideoClip();
+    assert.equal(buildTextStylePresetCommand(project, [videoId], TEXT_STYLE_PRESETS[0]), null);
+  });
+
+  it("round-trips a multi-clip style batch like every other command", () => {
+    const { project, textIds } = projectWithTwoTextClipsAndOneVideoClip();
+    const command = buildTextStylePresetCommand(project, [...textIds], TEXT_STYLE_PRESETS[0])!;
+    assertRoundTrips(project, command);
+  });
+
+  it("applies a text animation to every text clip in the selection as one BatchCommand", () => {
+    const { project, textIds, videoId } = projectWithTwoTextClipsAndOneVideoClip();
+    const command = buildTextAnimationCommand(project, [...textIds, videoId], { type: "bounce" });
+    assert.ok(command instanceof BatchCommand);
+
+    const applied = command!.apply(project);
+    for (const clipId of textIds) {
+      const clip = clipsOf(applied, "text-track").find((c) => c.id === clipId)!;
+      assert.equal(clip.textAnimation?.type, "bounce");
+    }
+  });
+
+  it("returns null for an animation build when nothing in the selection is a text clip", () => {
+    const { project, videoId } = projectWithTwoTextClipsAndOneVideoClip();
+    assert.equal(buildTextAnimationCommand(project, [videoId], { type: "pulse" }), null);
+  });
+
+  it("round-trips a multi-clip animation batch like every other command", () => {
+    const { project, textIds } = projectWithTwoTextClipsAndOneVideoClip();
+    const command = buildTextAnimationCommand(project, [...textIds], { type: "wiggle" })!;
+    assertRoundTrips(project, command);
+  });
+
+  it("patches font/size/align onto every text clip in the selection, each keeping its own other style fields", () => {
+    const { project: base, textIds, videoId } = projectWithTwoTextClipsAndOneVideoClip();
+    // Give clip 1 a distinct color first — the patch below must NOT clobber it, since a patch (unlike
+    // a preset) merges onto each clip's own current style rather than replacing it wholesale.
+    const withColor = new SetTextCommand(
+      base.assets.find((a) => a.id === "text1")!.id,
+      "First",
+      { ...DEFAULT_TEXT_STYLE, color: "#ff0000" }
+    ).apply(base);
+
+    const command = buildTextStylePatchCommand(withColor, [...textIds, videoId], { fontSize: 96, align: "right" });
+    assert.ok(command instanceof BatchCommand);
+    const applied = command!.apply(withColor);
+
+    for (const clipId of textIds) {
+      const clip = clipsOf(applied, "text-track").find((c) => c.id === clipId)!;
+      const asset = applied.assets.find((a) => a.id === clip.assetId)!;
+      assert.equal(asset.textStyle?.fontSize, 96);
+      assert.equal(asset.textStyle?.align, "right");
+    }
+    const patchedAsset1 = applied.assets.find((a) => a.id === "text1")!;
+    assert.equal(patchedAsset1.textStyle?.color, "#ff0000", "the patch must not clobber a field it didn't mention");
+  });
+
+  it("returns null for a style patch when nothing in the selection is a text clip", () => {
+    const { project, videoId } = projectWithTwoTextClipsAndOneVideoClip();
+    assert.equal(buildTextStylePatchCommand(project, [videoId], { fontSize: 30 }), null);
+  });
+
+  it("round-trips a multi-clip style patch batch like every other command", () => {
+    const { project, textIds } = projectWithTwoTextClipsAndOneVideoClip();
+    const command = buildTextStylePatchCommand(project, [...textIds], { align: "left" })!;
+    assertRoundTrips(project, command);
   });
 });

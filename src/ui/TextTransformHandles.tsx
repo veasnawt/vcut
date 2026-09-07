@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import { Check, Edit } from "@veasnawt/vicons";
 import type { Command } from "../commands/index.ts";
 import { BatchCommand, SetClipTransformCommand, SetClipTextStyleKeyframesCommand, SetTextCommand } from "../commands/index.ts";
 import { findAsset, findClip } from "../project/createProject.ts";
@@ -39,6 +40,10 @@ const DRAG_THRESHOLD = 3;
 const HANDLE_SIZE = 24;
 const HANDLE_DOT_SIZE = 10;
 const ROTATE_HANDLE_OFFSET = 28;
+/** How far the Edit button sits outside the box's bottom-right corner, diagonally — enough clearance
+ *  from that corner's own resize handle (`HANDLE_SIZE` is 24px, so anything past half that plus a
+ *  little breathing room avoids the two hit areas overlapping) not to fight it for clicks/taps. */
+const EDIT_BUTTON_OFFSET = 24;
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 600;
 // Must match the edit textarea's own `border-2 px-2 py-1` classes below. Those are fixed CSS pixels
@@ -62,6 +67,81 @@ const CORNERS: { x: number; y: number; cursor: string; label: string }[] = [
   { x: 1, y: 1, cursor: "cursor-nwse-resize", label: "bottom-right" },
 ];
 
+/** Mobile's real editing surface while a text clip is being edited (see `TextTransformHandles`'s own
+ *  on-canvas textarea comment for why that box is read-only on mobile instead) — a plain input pinned
+ *  just above wherever the on-screen keyboard currently is, tracked live via the `visualViewport` API
+ *  rather than a plain `position: fixed; bottom: 0`: the layout viewport doesn't shrink when a mobile
+ *  keyboard opens (only the VISUAL viewport does), so a naive fixed-to-bottom element ends up
+ *  UNDERNEATH the keyboard, not above it — confirmed the actual failure mode a first attempt at this
+ *  hit, not a defensive guess. `resize`+`scroll` both matter: `resize` fires when the keyboard opens/
+ *  closes or changes height (autocomplete bar, etc.), `scroll` fires when the OS nudges the visible
+ *  page up to keep the focused input in view (`visualViewport.offsetTop` changes without a resize). */
+function MobileTextEditBar({
+  value,
+  placeholder,
+  onChange,
+  onConfirm,
+}: {
+  value: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+  onConfirm: () => void;
+}) {
+  const t = useTranslation();
+  const [bottomInset, setBottomInset] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    const vv = window.visualViewport;
+    if (!vv) return;
+    function update() {
+      setBottomInset(Math.max(0, window.innerHeight - vv!.height - vv!.offsetTop));
+    }
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+    };
+  }, []);
+
+  return (
+    <div
+      style={{ position: "fixed", left: 0, right: 0, bottom: bottomInset, zIndex: 50 }}
+      className="flex items-center gap-2 border-t border-white/10 bg-[#14161c] p-2 shadow-2xl"
+    >
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          // A mobile keyboard's own "Go"/"Done" action key dispatches a plain Enter keydown — same
+          // "commit, don't insert a newline" convention the desktop textarea's identical check uses.
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onConfirm();
+          }
+        }}
+        className="min-w-0 flex-1 rounded-md border border-white/15 bg-white/5 px-3 py-2 text-[16px] text-white placeholder:text-white/35 focus:outline-none focus:ring-1 focus:ring-sky-400/60"
+      />
+      {/* 16px floor on the input's own font-size above is the same iOS-Safari-auto-zoom-on-focus
+          guard every other text input in this app already applies — not a copy-paste leftover. */}
+      <button
+        onClick={onConfirm}
+        aria-label={t("Confirm text")}
+        title={t("Confirm text")}
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-500 text-white transition hover:bg-sky-400"
+      >
+        <Check size={18} />
+      </button>
+    </div>
+  );
+}
+
 /** Draggable Position/Size/Rotation handles overlaid on the Preview canvas for the selected TEXT clip
  *  — the on-canvas counterpart to the Inspector's numeric Position/Size/Rotation fields, exactly the
  *  relationship `TransformHandles` already has with video/image clips' own numeric fields. Shown only
@@ -81,6 +161,18 @@ export function TextTransformHandles({
   const playhead = useEditorStore((s) => s.playhead);
   const run = useEditorStore((s) => s.run);
   const t = useTranslation();
+
+  // Same `lg` breakpoint every other mobile/desktop layout branch in this app uses (e.g. Timeline.tsx's
+  // own identical check) — reactive, not a one-time read, for the same "resizing/rotating mid-session"
+  // reasoning that file's own comment gives.
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1024px)");
+    setIsMobile(!mql.matches);
+    const onChange = () => setIsMobile(!mql.matches);
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
 
   const [preview, setPreview] = useState<TextStyle | null>(null);
   const previewRef = useRef<TextStyle | null>(null);
@@ -395,11 +487,11 @@ export function TextTransformHandles({
   }
 
   function commitEdit() {
+    setEditingAssetId(null);
     if (skipCommitRef.current) {
       skipCommitRef.current = false;
       return;
     }
-    setEditingAssetId(null);
     if (editText !== resolved!.content) run(new SetTextCommand(resolved!.assetId, editText, resolved!.savedStyle));
   }
 
@@ -424,6 +516,15 @@ export function TextTransformHandles({
   const rotateTruePoint = rotatedPoint(centerScreenX, centerScreenY, rotateNaturalX - pivotCssX, rotateNaturalY - pivotCssY, style.rotationDeg);
   const rotatePoint = clampPointToRect(rotateTruePoint, stageRect, HANDLE_SIZE / 2);
   const rotateHandleClamped = rotatePoint.x !== rotateTruePoint.x || rotatePoint.y !== rotateTruePoint.y;
+  // A visible, always-tappable alternative to the double-click/double-tap edit gesture above — that
+  // gesture works but isn't discoverable (nothing on screen hints at it), and a double-TAP specifically
+  // is unreliable on mobile (easy to land as two separate single taps, or to trigger the browser's own
+  // double-tap-to-zoom instead). Positioned diagonally outside the box's bottom-right corner, same
+  // "natural point, then rotate, then clamp" pipeline as the corner/rotate handles above.
+  const editButtonNaturalX = boxCssLeft + cssWidth + EDIT_BUTTON_OFFSET;
+  const editButtonNaturalY = boxCssTop + cssHeight + EDIT_BUTTON_OFFSET;
+  const editButtonTruePoint = rotatedPoint(centerScreenX, centerScreenY, editButtonNaturalX - pivotCssX, editButtonNaturalY - pivotCssY, style.rotationDeg);
+  const editButtonPoint = clampPointToRect(editButtonTruePoint, stageRect, HANDLE_SIZE / 2);
 
   return (
     <>
@@ -453,13 +554,30 @@ export function TextTransformHandles({
             white-ish edit box) depending on the style being edited, and this is a transient editing
             affordance, not part of the rendered output, so it doesn't need to be. Font size (not a
             fixed Tailwind class) is `editFontPx`, computed above alongside the box's own enlargement —
-            see that comment for why the two have to move together. */}
+            see that comment for why the two have to move together.
+            On mobile, this becomes a READ-ONLY live preview instead of the actual input — the real
+            typing happens in `MobileTextEditBar` below, in a fixed bar above the keyboard. Reported
+            directly as hard to use otherwise: this box sits wherever the text itself sits on the
+            canvas, which on a small phone screen is very often exactly where the keyboard is about to
+            cover it, on a box that's ALSO been scaled up (`editScale`) in a way that doesn't leave much
+            room to see what's being typed. `tabIndex={-1}` keeps it out of the tab order to match —
+            nothing here is actually focusable on mobile. */}
         <textarea
-          ref={(el) => el?.focus()}
+          ref={(el) => {
+            if (!isMobile) el?.focus();
+          }}
           value={editText}
-          onChange={(e) => setEditText(e.target.value)}
-          onBlur={commitEdit}
+          readOnly={isMobile}
+          tabIndex={isMobile ? -1 : 0}
+          placeholder={t("Enter text")}
+          onChange={(e) => {
+            if (!isMobile) setEditText(e.target.value);
+          }}
+          onBlur={() => {
+            if (!isMobile) commitEdit();
+          }}
           onKeyDown={(e) => {
+            if (isMobile) return;
             if (e.key === "Escape") {
               skipCommitRef.current = true;
               setEditingAssetId(null);
@@ -541,6 +659,10 @@ export function TextTransformHandles({
         </div>
       )}
 
+      {isMobile && isEditing && (
+        <MobileTextEditBar value={editText} placeholder={t("Enter text")} onChange={setEditText} onConfirm={commitEdit} />
+      )}
+
       {/* Resize/rotate hidden for a multi-selection (same reasoning as `TransformHandles`' identical
           gate) and while editing (the textarea above owns interaction then). Rendered as independent
           `position: fixed` siblings — not CSS-percentage children of the rotated box — so each one's
@@ -556,8 +678,20 @@ export function TextTransformHandles({
               aria-label={t("Resize text ({corner})", { corner: t(label) })}
               onMouseDown={(e) => beginDrag(e, "resize")}
               onTouchStart={(e) => beginDrag(e, "resize")}
-              style={{ position: "fixed", left: point.x, top: point.y, width: HANDLE_SIZE, height: HANDLE_SIZE, zIndex: 40 }}
-              className={`pointer-events-auto -translate-x-1/2 -translate-y-1/2 flex touch-none items-center justify-center ${cursor}`}
+              // Explicit numeric offset, not `left: point.x` + a `-translate-x-1/2`/`-translate-y-1/2`
+              // transform — see `TransformHandles.tsx`'s identical fix for the full reasoning (a
+              // percentage transform resolves against this element's own box independently of how the
+              // selection border rounds ITS fractional pixels, which can drift the two apart by a
+              // sub-pixel amount; rounding once here keeps them on the same integer grid).
+              style={{
+                position: "fixed",
+                left: Math.round(point.x) - HANDLE_SIZE / 2,
+                top: Math.round(point.y) - HANDLE_SIZE / 2,
+                width: HANDLE_SIZE,
+                height: HANDLE_SIZE,
+                zIndex: 40,
+              }}
+              className={`pointer-events-auto flex touch-none items-center justify-center ${cursor}`}
             >
               <div style={{ width: HANDLE_DOT_SIZE, height: HANDLE_DOT_SIZE }} className="rounded-full border border-white bg-sky-400 shadow" />
             </div>
@@ -568,11 +702,43 @@ export function TextTransformHandles({
             aria-label={t("Rotate text")}
             onMouseDown={(e) => beginDrag(e, "rotate")}
             onTouchStart={(e) => beginDrag(e, "rotate")}
-            style={{ position: "fixed", left: rotatePoint.x, top: rotatePoint.y, width: HANDLE_SIZE, height: HANDLE_SIZE, zIndex: 40 }}
-            className="pointer-events-auto -translate-x-1/2 -translate-y-1/2 flex touch-none cursor-grab items-center justify-center"
+            style={{
+              position: "fixed",
+              left: Math.round(rotatePoint.x) - HANDLE_SIZE / 2,
+              top: Math.round(rotatePoint.y) - HANDLE_SIZE / 2,
+              width: HANDLE_SIZE,
+              height: HANDLE_SIZE,
+              zIndex: 40,
+            }}
+            className="pointer-events-auto flex touch-none cursor-grab items-center justify-center"
           >
             <div style={{ width: HANDLE_DOT_SIZE, height: HANDLE_DOT_SIZE }} className="rounded-full border border-white bg-emerald-400 shadow" />
           </div>
+          <button
+            aria-label={t("Edit text")}
+            title={t("Edit text")}
+            onClick={() => {
+              setEditText(resolved!.content);
+              setEditingAssetId(resolved!.assetId);
+            }}
+            // `onMouseDown`/`onTouchStart` here (not just `onClick`) would start a drag via the box's
+            // own move-handle underneath if this button didn't stop that propagation — it doesn't need
+            // to, since this button isn't nested INSIDE the move-handle's own element (it's an
+            // independent fixed-position sibling, same as the resize/rotate handles above).
+            style={{
+              position: "fixed",
+              left: Math.round(editButtonPoint.x) - HANDLE_SIZE / 2,
+              top: Math.round(editButtonPoint.y) - HANDLE_SIZE / 2,
+              width: HANDLE_SIZE,
+              height: HANDLE_SIZE,
+              zIndex: 40,
+            }}
+            className="pointer-events-auto flex touch-none cursor-pointer items-center justify-center"
+          >
+            <span className="flex h-[18px] w-[18px] items-center justify-center rounded-full border border-white bg-sky-500 text-white shadow">
+              <Edit size={11} />
+            </span>
+          </button>
         </>
       )}
     </>

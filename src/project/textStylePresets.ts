@@ -4,8 +4,8 @@ import type { TextStyle } from "./types.ts";
  *  deliberately NOT touching `fontFamily`/`fontSize`/`align`/position: those are independent choices
  *  (which font, how big, where) a preset shouldn't silently override just because the user liked its
  *  color scheme. `bold` IS included — it reads as part of a look ("Bold Caption" vs "Clean White") the
- *  same way CapCut/TikTok-style caption presets treat it, not a separate structural choice the way font
- *  itself is. */
+ *  same way short-form-video-style caption presets treat it, not a separate structural choice the way
+ *  font itself is. */
 export interface TextStylePreset {
   id: string;
   label: string;

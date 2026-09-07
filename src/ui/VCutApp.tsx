@@ -2,26 +2,37 @@
 
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Capacitor } from "@capacitor/core";
+import { getSupabaseBrowserClient, useSupabaseSession } from "@veasnawt/auth";
 import {
   Ai,
   ArrowLeft,
   Art,
+  Backspace,
+  ChevronLeft,
   ClosedCaption,
   Copy,
   Delete,
   Document,
   Filter,
   Gauge,
+  Grid,
   Headphone,
+  Microphone,
+  Music,
+  Profile,
   Save,
   Settings,
   Split,
+  Star,
   Text,
   Transition,
   Video,
   Volume,
 } from "@veasnawt/vicons";
+import { HOSTED } from "../api/client.ts";
 import { reportError } from "../api/crashLog.ts";
+import { isDesktopSignInAvailable, openDesktopSignIn, subscribeToDesktopAuthCallback } from "../api/desktopAuth.ts";
 import { DeleteClipsCommand, SetClipTransitionCommand, SetClipTransitionOutCommand, SplitClipCommand } from "../commands/index.ts";
 import { translateText } from "../i18n/translations.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -30,7 +41,9 @@ import { preloadAllFonts } from "../project/fonts.ts";
 import { flushPendingSave, useEditorStore } from "../store/editorStore.ts";
 import { clipAtTime } from "../timeline/queries.ts";
 import { DEFAULT_TRANSITION } from "../timeline/transitions.ts";
+import { AnimationPickerMenu } from "./AnimationPickerMenu.tsx";
 import { AutoCaptionsDialog } from "./AutoCaptionsDialog.tsx";
+import { ClipContextMenu, type ClipContextMenuAction } from "./ClipContextMenu.tsx";
 import { ColorPickerMenu } from "./ColorPickerMenu.tsx";
 import { EffectsPickerMenu } from "./EffectsPickerMenu.tsx";
 import { ErrorBoundary } from "./ErrorBoundary.tsx";
@@ -40,14 +53,20 @@ import { Inspector } from "./Inspector.tsx";
 import { MediaLibrary } from "./MediaLibrary.tsx";
 import { FloatablePanel, type FloatRect } from "./FloatablePanel.tsx";
 import { MixerPanel } from "./MixerPanel.tsx";
+import { MobileSignInDialog } from "./MobileSignInDialog.tsx";
+import { NewTextComposer } from "./NewTextComposer.tsx";
 import { PixelEffectPickerMenu } from "./PixelEffectPickerMenu.tsx";
+import { StylePickerMenu } from "./StylePickerMenu.tsx";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { Preview } from "./Preview.tsx";
 import { ScopesPanel } from "./ScopesPanel.tsx";
 import { SfxPanel } from "./SfxPanel.tsx";
 import { Timeline } from "./Timeline.tsx";
+import { TextStylePickerMenu } from "./TextStylePickerMenu.tsx";
 import { TransitionPickerMenu } from "./TransitionPickerMenu.tsx";
-import { VoiceoverRecorder } from "./VoiceoverRecorder.tsx";
+import { UserMenu } from "./UserMenu.tsx";
+import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
+import { VoiceRecordModal } from "./VoiceRecordModal.tsx";
 
 /** Bounds for the draggable Preview/Timeline divider — see `beginTimelineResize`. A fixed pixel
  *  floor for Timeline (below this a track row plus its ruler stops being useful) and a
@@ -136,40 +155,54 @@ function splitAtPlayhead() {
   state.run(new SplitClipCommand(target.id, state.playhead));
 }
 
-/** One toolbar icon, disabled state, an optional highlighted "active" state (used by toggles like
- *  Transition, where the button itself IS the on/off indicator), and a `title` that doubles as the
- *  tooltip AND the keyboard-shortcut hint the old plain-text status bar used to show permanently.
- *  `label` is a SHORT caption rendered under the icon (not a substitute for `title` — the shortcut
- *  hint only shows up on hover/long-press, the label is what makes each icon identifiable without
- *  either) — a phone user can't hover to discover what an icon-only button does the way a mouse user
- *  can, and even for a mouse this row's icons (Split/Delete/Save/Text/Transition/Media/Properties)
- *  aren't universally self-explanatory the way Play/Pause are. */
+/** One toolbar icon, an optional highlighted "active" state (used by toggles like Transition, where
+ *  the button itself IS the on/off indicator), and a `title` that doubles as the tooltip AND the
+ *  keyboard-shortcut hint the old plain-text status bar used to show permanently. `label` is a SHORT
+ *  caption rendered under the icon (not a substitute for `title` — the shortcut hint only shows up on
+ *  hover/long-press, the label is what makes each icon identifiable without either) — a phone user
+ *  can't hover to discover what an icon-only button does the way a mouse user can, and even for a
+ *  mouse this row's icons (Split/Delete/Save/Text/Transition/Media/Properties) aren't universally
+ *  self-explanatory the way Play/Pause are.
+ *
+ *  No `disabled` prop — every tool this toolbar renders that can't act on the current selection is
+ *  wrapped in a conditional and simply not rendered at all, rather than shown greyed out. That's a
+ *  deliberate, explicitly requested UX call (a tool a viewer can't currently use isn't worth a
+ *  permanent slot in an already-tight row), not an oversight; see each such tool's own call site for
+ *  its specific hide condition. */
 const ToolbarButton = React.forwardRef<
   HTMLButtonElement,
   {
     onClick: () => void;
-    disabled?: boolean;
     active?: boolean;
     title: string;
     label: string;
     className?: string;
+    /** Marks a hosted-web-only, credit-metered feature (Auto Captions, Remove Object) with a small
+     *  "PRO" badge — free accounts still get a few credits/month (see `_lib/credits.ts`'s own
+     *  allotments), so this isn't a hard lock, just the same "premium capability" signal most
+     *  freemium apps put on a limited-free-trial feature. Never shown outside hosted mode
+     *  (`VCutApp.tsx`'s own callers gate this on `HOSTED`) — desktop/local has no plans/credits
+     *  concept at all, so the badge would be actively misleading there. */
+    pro?: boolean;
     children: React.ReactNode;
   }
->(function ToolbarButton({ onClick, disabled, active, title, label, className = "", children }, ref) {
+>(function ToolbarButton({ onClick, active, title, label, className = "", pro, children }, ref) {
   return (
     <button
       ref={ref}
       onClick={onClick}
-      disabled={disabled}
-      title={title}
-      aria-label={title}
+      title={pro ? `${title} (Pro)` : title}
+      aria-label={pro ? `${title} (Pro)` : title}
       aria-pressed={active}
-      className={`flex h-10 min-w-11 shrink-0 flex-col items-center justify-center gap-0.5 rounded px-1 leading-none transition disabled:cursor-default disabled:opacity-30 disabled:hover:bg-transparent ${
-        active
-          ? "bg-sky-500/30 text-white hover:bg-sky-500/40"
-          : "text-white/70 hover:bg-white/10 hover:text-white disabled:hover:text-white/70"
+      className={`relative flex h-10 min-w-11 shrink-0 flex-col items-center justify-center gap-0.5 rounded px-1 leading-none transition ${
+        active ? "bg-sky-500/30 text-white hover:bg-sky-500/40" : "text-white/70 hover:bg-white/10 hover:text-white"
       } ${className}`}
     >
+      {pro && (
+        <span className="absolute right-0 top-0 rounded-sm bg-amber-400 px-[3px] text-[6px] font-bold leading-tight tracking-wide text-black">
+          PRO
+        </span>
+      )}
       {children}
       <span className="max-w-full truncate text-[9px] font-medium">{label}</span>
     </button>
@@ -196,30 +229,68 @@ function StatusBar({
 }) {
   const setStatus = useEditorStore((s) => s.setStatus);
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds);
+  const select = useEditorStore((s) => s.select);
   const run = useEditorStore((s) => s.run);
   const save = useEditorStore((s) => s.save);
-  const addTextAtPlayhead = useEditorStore((s) => s.addTextAtPlayhead);
+  // Mobile-only toolbar equivalents of Timeline.tsx's own "Set In"/"Set Out"/"× Range" header
+  // controls — that whole header row is hidden below `lg` now (see Timeline.tsx's own comment), so
+  // these need a reachable home somewhere else on a phone; the bottom toolbar, already where every
+  // other mobile-only control (Media/Properties) lives, is that home. Desktop keeps using the header
+  // row's own buttons unchanged (these stay `lg:hidden`) rather than showing the same action twice.
+  const exportRangeStart = useEditorStore((s) => s.exportRangeStart);
+  const exportRangeEnd = useEditorStore((s) => s.exportRangeEnd);
+  const setExportRangeStart = useEditorStore((s) => s.setExportRangeStart);
+  const setExportRangeEnd = useEditorStore((s) => s.setExportRangeEnd);
+  const clearExportRange = useEditorStore((s) => s.clearExportRange);
+  const hasExportRange = exportRangeStart !== null || exportRangeEnd !== null;
+  const setComposeText = useEditorStore((s) => s.setComposeText);
   const addColorAtPlayhead = useEditorStore((s) => s.addColorAtPlayhead);
   const duplicateSelectedClips = useEditorStore((s) => s.duplicateSelectedClips);
+  const extractAudioFromClip = useEditorStore((s) => s.extractAudioFromClip);
+  const applyTextAnimationToSelection = useEditorStore((s) => s.applyTextAnimationToSelection);
+  const applyTextStylePresetToSelection = useEditorStore((s) => s.applyTextStylePresetToSelection);
+  const armRemoveObject = useEditorStore((s) => s.armRemoveObject);
+  const previewMuted = useEditorStore((s) => s.previewMuted);
+  const togglePreviewMuted = useEditorStore((s) => s.togglePreviewMuted);
   const project = useEditorStore((s) => s.project);
   const projectId = useEditorStore((s) => s.projectId);
   const t = useTranslation();
-  const [showCaptions, setShowCaptions] = useState(false);
+  // `null` = closed; `{}` = open, whole-sequence; `{ clipIds }` = open, scoped to the selected clip(s)
+  // (the toolbar's Captions button reaching a qualifying selection — see that button's own comment).
+  const [captionsDialog, setCaptionsDialog] = useState<{ clipIds?: string[] } | null>(null);
   const [showTextImport, setShowTextImport] = useState(false);
   const [showTransitionMenu, setShowTransitionMenu] = useState(false);
   const [showColorMenu, setShowColorMenu] = useState(false);
   const [showEffectsMenu, setShowEffectsMenu] = useState(false);
   const [showPixelEffectMenu, setShowPixelEffectMenu] = useState(false);
   const [showSfx, setShowSfx] = useState(false);
+  const [showVoiceRecord, setShowVoiceRecord] = useState(false);
+  const [showTextStyleMenu, setShowTextStyleMenu] = useState(false);
+  const [showAnimationMenu, setShowAnimationMenu] = useState(false);
+  const [showStyleMenu, setShowStyleMenu] = useState(false);
   const transitionButtonRef = useRef<HTMLButtonElement>(null);
   const colorButtonRef = useRef<HTMLButtonElement>(null);
   const effectsButtonRef = useRef<HTMLButtonElement>(null);
   const pixelEffectButtonRef = useRef<HTMLButtonElement>(null);
+  const textButtonRef = useRef<HTMLButtonElement>(null);
+  const animationButtonRef = useRef<HTMLButtonElement>(null);
+  const styleButtonRef = useRef<HTMLButtonElement>(null);
   // Whether the scrollable tool row (below) is scrolled away from its own left edge — drives the
   // Media/Properties cluster's auto-hide (see its own comment for why). `> 4`, not `> 0`: a bounce/
   // rubber-band scroll on iOS Safari can report a few stray sub-pixel values at rest, which would
   // otherwise flicker the collapse in and out right at the resting position.
   const [toolsScrolled, setToolsScrolled] = useState(false);
+  // Debounces the write above (see the row's own `onScroll` handler) — confirmed a real, reproducible
+  // bug, not hypothetical: applying it on every raw scroll tick let the collapse's own width/opacity
+  // transition start firing WHILE a touch-drag was still in progress, and shrinking the cluster to its
+  // LEFT mid-gesture shifts the row itself sideways underneath the finger that's dragging it, which is
+  // enough to make the browser abandon the rest of that scroll gesture entirely (reproduced directly:
+  // an edge-to-edge drag immediately after selecting a clip only ever covered the first ~20px before
+  // stopping dead, well short of the row's own actual scrollable distance). Waiting for scroll events to
+  // go quiet for a beat before ever touching this state means the collapse's layout shift only ever
+  // lands once a gesture has already ended (a lift, or a fling settling after the finger is already up),
+  // never mid-drag.
+  const toolsScrollSettleRef = useRef<number | null>(null);
 
   // Drives the Transition button's active/disabled look, and what `TransitionPickerMenu` (opened by
   // that button) applies to and highlights as currently selected. Enabled for ANY video/text clip now,
@@ -239,6 +310,166 @@ function StatusBar({
   const effectsActive = Boolean(foundForVideoEffects?.clip.effects);
   const pixelEffectActive = Boolean(foundForVideoEffects?.clip.pixelEffect);
   const assetForVideoEffects = project && foundForVideoEffects ? findAsset(project, foundForVideoEffects.clip.assetId) : undefined;
+
+  // Remove Object — same selection as Effects/Pixel FX, but narrower: `RemoveObjectSection`
+  // (Inspector.tsx) only ever renders for an actual video ASSET, not every video-track clip (an
+  // image or color-matte on a video track has no frames to inpaint), so this button must match that
+  // gating rather than reusing `effectsDisabled` as-is.
+  const removeObjectDisabled = !foundForVideoEffects || assetForVideoEffects?.kind !== "video";
+
+  // Extract Audio — same video-track gate as Effects/Pixel FX, narrowed further to a clip whose asset
+  // actually HAS audio (`ExtractAudioCommand`'s own doc comment) — a silent video clip has nothing to
+  // detach, same "hide, don't grey out, a tool with nothing to act on" convention every other
+  // clip-kind-gated tool in this row already follows.
+  const extractAudioDisabled = !foundForVideoEffects || !assetForVideoEffects?.hasAudio;
+
+  // Auto Captions — same underlying gate Inspector's OWN `AutoCaptionsSection` uses for a single clip
+  // (`asset?.hasAudio`, not track kind, so a video clip's own dialogue qualifies too, not just a
+  // dedicated audio-track clip), generalized across the WHOLE selection: reachable the moment AT LEAST
+  // ONE selected clip has audio — matching `DuplicateClipsCommand`'s own "not every clip in the
+  // selection has to qualify" precedent, since a non-audio clip mixed into an otherwise-audio selection
+  // is just skipped server-side (see `captions/route.ts`'s own `runCaptionsJob`), not a reason to hide
+  // the tool entirely. Also gates the Mixer button just below (unchanged reasoning: still the most
+  // likely reason to reach for it right after selecting audio-bearing clips).
+  const captionsForClipDisabled =
+    selectedClipIds.length === 0 ||
+    !project ||
+    !selectedClipIds.some((id) => {
+      const found = findClip(project, id);
+      return found ? findAsset(project, found.clip.assetId)?.hasAudio : false;
+    });
+
+  // Animation tool — enabled the moment ANY selected clip is on a text track, one or many (unlike
+  // Transition/Effects/Pixel FX above, which only ever act on `selectedClipIds[0]`); this is the
+  // actual point of promoting animation out of Inspector, where a genuine multi-select could only ever
+  // show a placeholder. `animationCurrent` only has an answer worth highlighting when exactly one text
+  // clip is selected — for a real multi-select, which tile (if any) should read "active" is ambiguous
+  // whenever the selected clips don't all already share one animation, so nothing highlights instead
+  // of guessing.
+  const selectedTextClips = project ? selectedClipIds.map((id) => findClip(project, id)).filter((f) => f?.track.kind === "text") : [];
+  const animationDisabled = selectedTextClips.length === 0;
+  const animationCurrent = selectedTextClips.length === 1 ? selectedTextClips[0]!.clip.textAnimation : undefined;
+  // Styles tool — same gating and same bulk/quick-apply role as Animation just above, for
+  // `TextStylePreset` instead of `Clip.textAnimation`: promoted here so a look can be applied without
+  // opening Inspector at all, backed by the exact same `applyTextStylePresetToSelection` Inspector's
+  // own Styles section already uses. No "current" highlight (unlike Animation's `animationCurrent`):
+  // a preset only ever SETS fields, it never reads back as "this clip currently matches preset X".
+  const stylesDisabled = animationDisabled;
+
+  // Right-click context menu (desktop only — `TimelineClip`'s own `onContextMenu` never fires from
+  // touch) — see `ClipContextMenu.tsx`'s own doc comment for why it's a plain, ungated action list
+  // fed by exactly the same disabled flags computed above for the toolbar, rather than a second copy
+  // of "what can act on this selection" logic.
+  const contextMenu = useEditorStore((s) => s.contextMenu);
+  const setContextMenu = useEditorStore((s) => s.setContextMenu);
+  // A single invisible, zero-size anchor point every picker below can target when opened FROM the
+  // context menu, instead of the real toolbar button it normally anchors to — repositioned to the
+  // menu's own click point on open. `pickerAnchorSource` is what tells each picker's own `anchorRef`
+  // prop which of the two anchors currently applies; only one picker is ever open at a time in
+  // practice, so one shared flag (not one per picker) is enough.
+  const contextMenuAnchorRef = useRef<HTMLDivElement>(null);
+  const [pickerAnchorSource, setPickerAnchorSource] = useState<"button" | "contextMenu">("button");
+
+  const contextMenuActions: ClipContextMenuAction[] = contextMenu
+    ? [
+        { key: "duplicate", label: t("Duplicate"), icon: <Copy size={15} />, onClick: duplicateSelectedClips },
+        { key: "split", label: t("Split at playhead"), icon: <Split size={15} />, onClick: splitAtPlayhead },
+        ...(!stylesDisabled
+          ? [
+              {
+                key: "styles",
+                label: t("Styles"),
+                icon: <Grid size={15} />,
+                onClick: () => {
+                  setPickerAnchorSource("contextMenu");
+                  setShowStyleMenu(true);
+                },
+              },
+            ]
+          : []),
+        ...(!animationDisabled
+          ? [
+              {
+                key: "animation",
+                label: t("Animation"),
+                icon: <Star size={15} />,
+                onClick: () => {
+                  setPickerAnchorSource("contextMenu");
+                  setShowAnimationMenu(true);
+                },
+              },
+            ]
+          : []),
+        ...(!transitionDisabled
+          ? [
+              {
+                key: "transition",
+                label: t("Transition"),
+                icon: <Transition size={15} />,
+                onClick: () => {
+                  setPickerAnchorSource("contextMenu");
+                  setShowTransitionMenu(true);
+                },
+              },
+            ]
+          : []),
+        ...(!effectsDisabled
+          ? [
+              {
+                key: "effects",
+                label: t("Effects"),
+                icon: <Filter size={15} />,
+                onClick: () => {
+                  setPickerAnchorSource("contextMenu");
+                  setShowEffectsMenu(true);
+                },
+              },
+              {
+                key: "pixelEffect",
+                label: t("Pixel Effects"),
+                icon: <Ai size={15} />,
+                onClick: () => {
+                  setPickerAnchorSource("contextMenu");
+                  setShowPixelEffectMenu(true);
+                },
+              },
+            ]
+          : []),
+        ...(!removeObjectDisabled
+          ? [
+              {
+                key: "removeObject",
+                label: t("Remove Object"),
+                icon: <Backspace size={15} />,
+                // No `setMobileSheet` here — this action only ever reaches a user through the
+                // right-click context menu, which is desktop-only by construction (a touch long-press
+                // opens a DIFFERENT menu entirely — see TimelineClip.tsx). Desktop already shows
+                // Properties in its own permanent column; setting `mobileSheet` here was the same
+                // confirmed bug the toolbar button's own version of this action just got fixed for —
+                // silently swapping the desktop Timeline row out for a second, redundant Inspector.
+                onClick: () => {
+                  if (!foundForVideoEffects) return;
+                  armRemoveObject(foundForVideoEffects.clip.id);
+                },
+              },
+            ]
+          : []),
+        ...(!extractAudioDisabled
+          ? [
+              {
+                key: "extractAudio",
+                label: t("Extract Audio"),
+                icon: <Music size={15} />,
+                onClick: () => {
+                  if (!foundForVideoEffects) return;
+                  extractAudioFromClip(foundForVideoEffects.clip.id);
+                },
+              },
+            ]
+          : []),
+        { key: "delete", label: t("Delete"), icon: <Delete size={15} />, onClick: () => run(new DeleteClipsCommand(selectedClipIds)), danger: true },
+      ]
+    : [];
 
   return (
     <footer className="flex shrink-0 items-center gap-1 border-t border-white/10 bg-[#0d0f14] px-2 py-1.5 text-[11px]">
@@ -262,10 +493,29 @@ function StatusBar({
           same cramped width without being reachable mid-scroll anyway. Desktop keeps its permanent side
           columns (see VCutApp's grid) and never sets `mobileSheet`, so this stays irrelevant there
           regardless of `lg:hidden`. Toggling: tapping the already-open one returns to Timeline, matching
-          `active`'s highlighted state always reflecting what's actually showing below. */}
+          `active`'s highlighted state always reflecting what's actually showing below.
+          `mobileSheet !== null` skips the auto-collapse entirely while either panel is actually open —
+          whichever one you're in stays reachable to tap closed again (or switch to the other) no
+          matter how far the tool row is scrolled, rather than needing to scroll it back to the start
+          first just to get back to Timeline.
+          Also skipped (stays permanently open, never unmounted) while a clip is selected — Properties
+          is the ONLY way below `lg` to see/edit that clip's own settings, so hiding this cluster on
+          selection (an earlier version of this fix did exactly that, to solve the bug described next)
+          was a real, reported regression: it made Properties completely unreachable at the one moment
+          it's most wanted. The bug that first motivated touching this at all was real too, just needed
+          a narrower fix: with a clip selected, scrolling the (much narrower) tool row all the way to its
+          own end used to cross the `toolsScrolled` threshold and collapse this cluster mid-gesture,
+          which WIDENED the row out from under the same scroll — the browser responds by clamping
+          `scrollLeft` back down to the new, smaller max, snapping the row visibly backward right after
+          the swipe finishes (reads exactly like "the toolbar can't be scrolled"). Keeping the cluster
+          permanently open during a selection (rather than unmounting it) fixes that the same way: there's
+          simply nothing left for `toolsScrolled` to collapse into while a clip is selected, so the
+          mid-gesture width shift can't happen either way — without also taking Properties away. */}
       <div
         className={`flex shrink-0 items-center gap-0.5 overflow-hidden border-r border-white/10 pr-1 transition-all duration-200 ease-out lg:hidden ${
-          toolsScrolled ? "max-w-0 border-r-0 pr-0 opacity-0" : "max-w-[120px] opacity-100"
+          toolsScrolled && mobileSheet === null && selectedClipIds.length === 0
+            ? "max-w-0 border-r-0 pr-0 opacity-0"
+            : "max-w-[120px] opacity-100"
         }`}
       >
         <ToolbarButton
@@ -286,189 +536,491 @@ function StatusBar({
         </ToolbarButton>
       </div>
 
+      {/* Deselecting is what actually narrows the row back down (see the `selectedClipIds.length ===
+          0` gates throughout the scrollable row below) — this button is just the explicit, discoverable
+          way to trigger that instead of needing to know a tap on empty canvas/timeline space does the
+          same thing. Lives OUTSIDE the scrollable row (like Media/Properties above), not as its own
+          first scrollable item — the whole point of "easy to get back" is defeated if reaching it first
+          requires scrolling the row back to its own start. Both mobile and desktop: unlike Media/
+          Properties, there's no `lg:hidden` here — a selection narrowing the row down is not a
+          mobile-only space concern. */}
+      {selectedClipIds.length > 0 && (
+        <button
+          onClick={() => select([])}
+          title={t("Back to all tools")}
+          aria-label={t("Back to all tools")}
+          // Filled rounded-square, no label, deliberately more prominent than a plain icon+label
+          // `ToolbarButton` — the one control that gets you OUT of this narrowed view needs to read as
+          // its own distinct kind of button at a glance, not just one more tool in the row.
+          className="flex h-10 w-11 shrink-0 items-center justify-center rounded-lg bg-white/10 text-white transition hover:bg-white/20"
+        >
+          <span className="flex items-center">
+            <ChevronLeft size={16} className="-mr-2.5" />
+            <ChevronLeft size={16} />
+          </span>
+        </button>
+      )}
+
       <div
         className="scrollbar-none flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
-        onScroll={(e) => setToolsScrolled(e.currentTarget.scrollLeft > 4)}
+        onScroll={(e) => {
+          // See `toolsScrollSettleRef`'s own comment: deliberately NOT `setToolsScrolled` directly here.
+          const left = e.currentTarget.scrollLeft;
+          if (toolsScrollSettleRef.current !== null) window.clearTimeout(toolsScrollSettleRef.current);
+          toolsScrollSettleRef.current = window.setTimeout(() => setToolsScrolled(left > 4), 150);
+        }}
       >
-        {/* Workflow order, left to right: ADD content first (what you reach for to put something new
-            on the timeline), then STRUCTURAL edits (reshaping what's already there), then
+        {/* Workflow order, left to right: TEXT tools first (everything about creating/styling text —
+            what you reach for to build a titled/captioned sequence), then MEDIA (everything else you
+            add to the timeline), then STRUCTURAL edits (reshaping what's already there), then
             destructive/save actions last (Delete right before Save specifically — "remove, then commit
             the result" is the natural order those two get used in together, and it keeps the one
             irreversible-feeling action away from the row's own leading edge, where a stray tap/click
             during a fast workflow is most likely to land). */}
 
-        {/* Text and voiceover recording: moved here from the Media panel so both land straight on the
-            timeline (and so in the preview) the instant they're created, rather than sitting as a
-            library-only asset waiting for a separate double-click/drag to place. */}
-        <ToolbarButton title={t("Add text")} label={t("Text")} onClick={addTextAtPlayhead}>
-          <Text size={18} />
-        </ToolbarButton>
-        <VoiceoverRecorder />
-        <ToolbarButton title={t("Import Text as Clips")} label={t("Script")} onClick={() => setShowTextImport(true)}>
-          <Document size={18} />
-        </ToolbarButton>
-        <ToolbarButton title={t("Auto Captions")} label={t("Captions")} onClick={() => setShowCaptions(true)}>
-          <ClosedCaption size={18} />
-        </ToolbarButton>
-        <ToolbarButton title={t("Sound Effects")} label={t("SFX")} onClick={() => setShowSfx(true)}>
-          <Headphone size={18} />
-        </ToolbarButton>
-        <ToolbarButton
-          ref={colorButtonRef}
-          title={t("Add a color background")}
-          label={t("Color")}
-          active={showColorMenu}
-          onClick={() => setShowColorMenu((v) => !v)}
-        >
-          <Art size={18} />
-        </ToolbarButton>
-        {showColorMenu && (
-          <ColorPickerMenu
-            anchorRef={colorButtonRef}
-            onPick={(color) => addColorAtPlayhead(color)}
-            onClose={() => setShowColorMenu(false)}
-          />
+        {/* Text/Script/Captions/SFX/Color/Mixer/Scopes below — everything about adding NEW content or
+            opening a whole-project panel, none of it about the currently selected clip — hide instead
+            of merely leaving disabled the moment a clip IS selected: a real, explicit request (matching
+            this toolbar's existing "hide, don't grey out" convention for a tool a selection can't use)
+            to cut the row down to just what's usable RIGHT NOW once you're mid-edit on a specific clip,
+            with the back button below as the one, explicit way out of that narrowed view rather than
+            needing to deselect via the canvas/timeline first. Split/Duplicate/Transition/Effects/Pixel
+            FX/Remove Object/Delete/Save (further down) stay exactly as they already were — each already
+            gates on the SELECTION itself, which is precisely what should still show here. */}
+        {selectedClipIds.length === 0 && (
+          <>
+            {/* Text: a style-picker popover rather than an instant create — lets a look be chosen up
+                front (same presets Script/Captions/Inspector's own Styles section offer) instead of
+                always landing `DEFAULT_TEXT_STYLE` and restyling afterward. Moved here (from the Media
+                panel) long before this grouping existed, so both land straight on the timeline (and so
+                in the preview) the instant they're created, rather than sitting as a library-only asset
+                waiting for a separate double-click/drag to place — still true of Script/Captions below
+                it. */}
+            <ToolbarButton
+              ref={textButtonRef}
+              title={t("Add text")}
+              label={t("Text")}
+              active={showTextStyleMenu}
+              onClick={() => setShowTextStyleMenu((v) => !v)}
+            >
+              {/* The label reads "Text" on its own — this is what signals "adds a new one" instead, a
+                  small "+" badge on the glyph itself rather than spelling it out in the label text
+                  (which would read oddly once selected/active, unlike a plain "Text" label). */}
+              <span className="relative inline-flex">
+                <Text size={18} />
+                <span
+                  aria-hidden
+                  className="absolute -bottom-0.5 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-sky-500 text-[8px] font-bold leading-none text-white"
+                >
+                  +
+                </span>
+              </span>
+            </ToolbarButton>
+            {showTextStyleMenu && (
+              <TextStylePickerMenu
+                anchorRef={textButtonRef}
+                onPick={(style) => setComposeText({ style })}
+                onClose={() => setShowTextStyleMenu(false)}
+              />
+            )}
+            <ToolbarButton title={t("Import Text as Clips")} label={t("Script")} onClick={() => setShowTextImport(true)}>
+              <Document size={18} />
+            </ToolbarButton>
+          </>
         )}
-        <ToolbarButton
-          title={t("Audio Mixer")}
-          label={t("Mixer")}
-          active={bottomPanel === "mixer" || floatingPanel === "mixer"}
-          onClick={() => {
-            if (floatingPanel === "mixer") {
-              onDockFloating();
-              setBottomPanel("mixer");
-            } else {
-              setBottomPanel(bottomPanel === "mixer" ? "timeline" : "mixer");
+        {/* Auto Captions — the ONE "add content" tool from the block above that stays reachable once a
+            selection exists too, as long as at least one selected clip has audio: this is the
+            whole-sequence entry point with nothing selected, the SAME button/position/icon opening the
+            SAME dialog scoped to the selected clip(s) (`startCaptions`'s own `clipIds` param — one clip
+            runs the same job Inspector's inline `AutoCaptionsSection` does, several run ONE combined,
+            gap-skipping pass, see that function's own doc comment) the instant a qualifying selection
+            exists — a modal, not Inspector, so this stays a single, direct click on both mobile and
+            desktop rather than landing on a permanent column already showing (desktop) or a sheet that
+            then needs finding the right tab in (mobile). */}
+        {(selectedClipIds.length === 0 || !captionsForClipDisabled) && (
+          <ToolbarButton
+            title={
+              selectedClipIds.length === 0
+                ? t("Auto Captions")
+                : selectedClipIds.length === 1
+                  ? t("Auto Captions for this clip")
+                  : t("Auto Captions for the selected clips")
             }
-          }}
-        >
-          <Volume size={18} />
-        </ToolbarButton>
-        <ToolbarButton
-          title={t("Scopes")}
-          label={t("Scopes")}
-          active={bottomPanel === "scopes" || floatingPanel === "scopes"}
-          onClick={() => {
-            if (floatingPanel === "scopes") {
-              onDockFloating();
-              setBottomPanel("scopes");
-            } else {
-              setBottomPanel(bottomPanel === "scopes" ? "timeline" : "scopes");
-            }
-          }}
-        >
-          <Gauge size={18} />
-        </ToolbarButton>
+            label={t("Captions")}
+            pro={HOSTED}
+            onClick={() => setCaptionsDialog(selectedClipIds.length === 0 ? {} : { clipIds: selectedClipIds })}
+          >
+            <ClosedCaption size={18} />
+          </ToolbarButton>
+        )}
+        {/* Mixer — same reasoning and same gate as Auto Captions just above (stays reachable once a
+            single clip with audio is selected, not just with nothing selected), though unlike
+            Captions this ISN'T clip-scoped: it always opens the whole project's own per-track fader
+            panel, since there's no per-clip mixer to show instead. Still the most likely reason to
+            reach for it right after selecting an audio clip (adjusting THAT clip's own track gain/
+            pan), so it earns the same reachability even without a scoped view to back it. */}
+        {(selectedClipIds.length === 0 || !captionsForClipDisabled) && (
+          <ToolbarButton
+            title={t("Audio Mixer")}
+            label={t("Mixer")}
+            active={bottomPanel === "mixer" || floatingPanel === "mixer"}
+            onClick={() => {
+              if (floatingPanel === "mixer") {
+                onDockFloating();
+                setBottomPanel("mixer");
+              } else {
+                setBottomPanel(bottomPanel === "mixer" ? "timeline" : "mixer");
+              }
+            }}
+          >
+            <Volume size={18} />
+          </ToolbarButton>
+        )}
+        {/* The bulk/quick-apply path for `Clip.textAnimation` — works on however many text clips are
+            currently selected (see `animationCurrent`/`selectedTextClips` above), one shared undo step
+            either way. Inspector's own Animation section is still where speed/highlight-color get
+            fine-tuned afterward, one clip at a time. Hidden rather than merely disabled when no text
+            clip is selected — see the group of toolbar tools below this file's own "hide, don't just
+            grey out" comment for the full reasoning shared by all of them. */}
+        {!stylesDisabled && (
+          <>
+            <ToolbarButton
+              ref={styleButtonRef}
+              title={t("Styles")}
+              label={t("Styles")}
+              active={showStyleMenu}
+              onClick={() => {
+                setPickerAnchorSource("button");
+                setShowStyleMenu((v) => !v);
+              }}
+            >
+              <Grid size={18} />
+            </ToolbarButton>
+            {showStyleMenu && (
+              <StylePickerMenu
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : styleButtonRef}
+                onPick={applyTextStylePresetToSelection}
+                onClose={() => setShowStyleMenu(false)}
+              />
+            )}
+          </>
+        )}
+        {!animationDisabled && (
+          <>
+            <ToolbarButton
+              ref={animationButtonRef}
+              title={t("Animation")}
+              label={t("Animation")}
+              active={showAnimationMenu || Boolean(animationCurrent)}
+              onClick={() => {
+                setPickerAnchorSource("button");
+                setShowAnimationMenu((v) => !v);
+              }}
+            >
+              <Star size={18} />
+            </ToolbarButton>
+            {showAnimationMenu && (
+              <AnimationPickerMenu
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : animationButtonRef}
+                current={animationCurrent}
+                onPick={applyTextAnimationToSelection}
+                onClose={() => setShowAnimationMenu(false)}
+              />
+            )}
+          </>
+        )}
 
-        <span className="mx-1 h-5 w-px shrink-0 bg-white/10" />
+        {selectedClipIds.length === 0 && (
+          <>
+            <span className="mx-1 h-5 w-px shrink-0 bg-white/10" />
+
+            {/* Opens the Voice Record modal instead of recording immediately on click (that used to be
+                this button's own behavior, via the now-removed `VoiceoverRecorder` component) —
+                confirmed a real, explicit request for a deliberate record surface (tap-to-countdown or
+                press-and-hold-to-record, an optional Teleprompter, and post-processing choices) rather
+                than an instant always-armed toggle. */}
+            <ToolbarButton title={t("Record a voiceover from your microphone")} label={t("Voice")} onClick={() => setShowVoiceRecord(true)}>
+              <Microphone size={18} />
+            </ToolbarButton>
+            {/* Silences the whole live-preview mix (see `previewMuted`'s own doc comment) — sits right
+                next to Voice since the one real reason to reach for it is recording a voiceover while
+                the sequence keeps playing for reference, without its existing audio bleeding back into
+                the mic through the speakers. Never touches the actual project (no persisted mute, no
+                effect on export), so it's safe to leave on/off across sessions without a "did I
+                accidentally mute my export" worry. */}
+            <ToolbarButton
+              title={previewMuted ? t("Unmute sequence preview") : t("Mute sequence preview")}
+              label={previewMuted ? t("Muted") : t("Mute")}
+              active={previewMuted}
+              onClick={togglePreviewMuted}
+            >
+              <span className="relative inline-flex">
+                <Volume size={18} />
+                {previewMuted && (
+                  <span
+                    aria-hidden
+                    className="absolute left-1/2 top-1/2 h-[2px] w-[22px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-rose-400"
+                  />
+                )}
+              </span>
+            </ToolbarButton>
+            <ToolbarButton title={t("Sound Effects")} label={t("SFX")} onClick={() => setShowSfx(true)}>
+              <Headphone size={18} />
+            </ToolbarButton>
+            <ToolbarButton
+              ref={colorButtonRef}
+              title={t("Add a color background")}
+              label={t("Color")}
+              active={showColorMenu}
+              onClick={() => setShowColorMenu((v) => !v)}
+            >
+              <Art size={18} />
+            </ToolbarButton>
+            {showColorMenu && (
+              <ColorPickerMenu
+                anchorRef={colorButtonRef}
+                onPick={(color) => addColorAtPlayhead(color)}
+                onClose={() => setShowColorMenu(false)}
+              />
+            )}
+            <ToolbarButton
+              title={t("Scopes")}
+              label={t("Scopes")}
+              active={bottomPanel === "scopes" || floatingPanel === "scopes"}
+              onClick={() => {
+                if (floatingPanel === "scopes") {
+                  onDockFloating();
+                  setBottomPanel("scopes");
+                } else {
+                  setBottomPanel(bottomPanel === "scopes" ? "timeline" : "scopes");
+                }
+              }}
+            >
+              <Gauge size={18} />
+            </ToolbarButton>
+          </>
+        )}
+
+        {/* Both this divider and the one right after the In/Out/Range group below are gated the SAME
+            way as everything between them — with nothing visible on either side of the gap, an
+            unconditional divider here would just show up as a stray, orphaned line the moment a clip
+            IS selected (confirmed a real, reported visual bug, not hypothetical). */}
+        {selectedClipIds.length === 0 && <span className="mx-1 h-5 w-px shrink-0 bg-white/10" />}
+
+        {/* Mobile-only stand-ins for Timeline.tsx's own "Set In"/"Set Out"/"× Range" header buttons —
+            see the hooks above for why. Same amber accent as those, so the two read as the same
+            feature regardless of which one happens to be visible. Hidden (not just Set In/Out — the
+            whole group, same as the "add content" tools above) the moment a clip IS selected — same
+            "this narrowed view is for what the SELECTION can do" reasoning that section's own comment
+            gives, extended here since marking a range isn't something the current selection can act
+            on either despite not being clip-kind-gated the way Transition/Effects are. */}
+        {selectedClipIds.length === 0 && (
+          <>
+            <ToolbarButton
+              title={t("Set export range start at playhead (I)")}
+              label={t("Set In")}
+              onClick={() => setExportRangeStart(useEditorStore.getState().playhead)}
+              className="lg:hidden"
+            >
+              <span className="text-[16px] font-bold leading-none text-amber-300">[</span>
+            </ToolbarButton>
+            <ToolbarButton
+              title={t("Set export range end at playhead (O)")}
+              label={t("Set Out")}
+              onClick={() => setExportRangeEnd(useEditorStore.getState().playhead)}
+              className="lg:hidden"
+            >
+              <span className="text-[16px] font-bold leading-none text-amber-300">]</span>
+            </ToolbarButton>
+            {hasExportRange && (
+              <ToolbarButton
+                title={t("Clear export in/out range (Shift+X)")}
+                label={t("× Range")}
+                onClick={() => clearExportRange()}
+                className="lg:hidden"
+              >
+                <span className="text-[16px] font-bold leading-none text-amber-300">×</span>
+              </ToolbarButton>
+            )}
+          </>
+        )}
+
+        {selectedClipIds.length === 0 && <span className="mx-1 h-5 w-px shrink-0 bg-white/10 lg:hidden" />}
 
         <ToolbarButton title={t("Split at playhead (S)")} label={t("Split")} onClick={splitAtPlayhead}>
           <Split size={18} />
         </ToolbarButton>
-        <ToolbarButton
-          title={t("Duplicate selected (Ctrl+D)")}
-          label={t("Duplicate")}
-          disabled={selectedClipIds.length === 0}
-          onClick={duplicateSelectedClips}
-        >
-          <Copy size={18} />
-        </ToolbarButton>
+        {/* Hidden (not just greyed out) whenever it has nothing to act on — same "a tool that can't do
+            anything right now isn't worth a permanent slot in the row" call every clip-kind-gated tool
+            in this toolbar now makes, extended here to "no selection at all" rather than "wrong kind of
+            clip selected": Duplicate/Delete work identically regardless of kind, so the only thing that
+            ever disables them is an empty selection. Confirmed as the intended UX, not merely tolerated:
+            a real, explicit request to stop showing tools a viewer can't currently use rather than
+            showing them greyed out. */}
+        {selectedClipIds.length > 0 && (
+          <ToolbarButton title={t("Duplicate selected (Ctrl+D)")} label={t("Duplicate")} onClick={duplicateSelectedClips}>
+            <Copy size={18} />
+          </ToolbarButton>
+        )}
 
         {/* Opens a grid of every transition style, each tile a live animated preview
             (`TransitionPickerMenu`), with an In/Out tab switch covering both `transitionIn` and
             `transitionOut` — the Inspector's own "Transition In"/"Transition Out" sections (the same
             underlying `SetClipTransitionCommand`/`SetClipTransitionOutCommand`) are still where each
-            direction's duration gets fine-tuned afterward. */}
-        <ToolbarButton
-          ref={transitionButtonRef}
-          title={transitionActive ? t("Change or remove transition") : t("Choose a transition")}
-          label={t("Transition")}
-          disabled={transitionDisabled}
-          active={transitionActive}
-          onClick={() => setShowTransitionMenu((v) => !v)}
-        >
-          <Transition size={18} />
-        </ToolbarButton>
-        {showTransitionMenu && foundForTransition && (
-          <TransitionPickerMenu
-            anchorRef={transitionButtonRef}
-            isAudioTrack={foundForTransition.track.kind === "audio"}
-            isTextTrack={foundForTransition.track.kind === "text"}
-            activeIn={foundForTransition.clip.transitionIn?.type ?? null}
-            activeOut={foundForTransition.clip.transitionOut?.type ?? null}
-            onChangeIn={(type) => {
-              if (!type) {
-                run(new SetClipTransitionCommand(foundForTransition.clip.id, null));
-                return;
-              }
-              const duration = foundForTransition.clip.transitionIn?.duration ?? DEFAULT_TRANSITION.duration;
-              run(new SetClipTransitionCommand(foundForTransition.clip.id, { duration, type }));
-            }}
-            onChangeOut={(type) => {
-              if (!type) {
-                run(new SetClipTransitionOutCommand(foundForTransition.clip.id, null));
-                return;
-              }
-              const duration = foundForTransition.clip.transitionOut?.duration ?? DEFAULT_TRANSITION.duration;
-              run(new SetClipTransitionOutCommand(foundForTransition.clip.id, { duration, type }));
-            }}
-            onClose={() => setShowTransitionMenu(false)}
-          />
+            direction's duration gets fine-tuned afterward. Hidden, not disabled, for a selection this
+            can't act on (see `transitionDisabled`'s own doc comment for exactly which) — same
+            "a tool with nothing to do doesn't get a permanent slot in the row" call this toolbar makes
+            throughout, in place of what used to be a greyed-out button a viewer had to notice was
+            inert rather than just not seeing it at all. */}
+        {!transitionDisabled && (
+          <>
+            <ToolbarButton
+              ref={transitionButtonRef}
+              title={transitionActive ? t("Change or remove transition") : t("Choose a transition")}
+              label={t("Transition")}
+              active={transitionActive}
+              onClick={() => {
+                setPickerAnchorSource("button");
+                setShowTransitionMenu((v) => !v);
+              }}
+            >
+              <Transition size={18} />
+            </ToolbarButton>
+            {showTransitionMenu && foundForTransition && (
+              <TransitionPickerMenu
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : transitionButtonRef}
+                isAudioTrack={foundForTransition.track.kind === "audio"}
+                isTextTrack={foundForTransition.track.kind === "text"}
+                activeIn={foundForTransition.clip.transitionIn?.type ?? null}
+                activeOut={foundForTransition.clip.transitionOut?.type ?? null}
+                onChangeIn={(type) => {
+                  if (!type) {
+                    run(new SetClipTransitionCommand(foundForTransition.clip.id, null));
+                    return;
+                  }
+                  const duration = foundForTransition.clip.transitionIn?.duration ?? DEFAULT_TRANSITION.duration;
+                  run(new SetClipTransitionCommand(foundForTransition.clip.id, { duration, type }));
+                }}
+                onChangeOut={(type) => {
+                  if (!type) {
+                    run(new SetClipTransitionOutCommand(foundForTransition.clip.id, null));
+                    return;
+                  }
+                  const duration = foundForTransition.clip.transitionOut?.duration ?? DEFAULT_TRANSITION.duration;
+                  run(new SetClipTransitionOutCommand(foundForTransition.clip.id, { duration, type }));
+                }}
+                onClose={() => setShowTransitionMenu(false)}
+              />
+            )}
+          </>
         )}
 
         {/* Quick-pick popovers over the selected clip's own Effects/Pixel Effects — the Inspector's
             Effects section still has the full brightness/contrast/saturation/blur/opacity sliders for
             fine-tuning afterward; these are the fast, preset-driven path, same split
-            `EffectsPickerMenu`/`PixelEffectPickerMenu`'s own doc comments describe. */}
-        <ToolbarButton
-          ref={effectsButtonRef}
-          title={t("Effects")}
-          label={t("Effects")}
-          disabled={effectsDisabled}
-          active={effectsActive}
-          onClick={() => setShowEffectsMenu((v) => !v)}
-        >
-          <Filter size={18} />
-        </ToolbarButton>
-        {showEffectsMenu && foundForVideoEffects && (
-          <EffectsPickerMenu
-            anchorRef={effectsButtonRef}
-            clip={foundForVideoEffects.clip}
-            asset={assetForVideoEffects}
-            projectId={projectId}
-            onClose={() => setShowEffectsMenu(false)}
-          />
+            `EffectsPickerMenu`/`PixelEffectPickerMenu`'s own doc comments describe. Hidden, not
+            disabled, whenever the selection is a text/audio clip (or nothing) neither can act on —
+            same reasoning as Transition above. */}
+        {!effectsDisabled && (
+          <>
+            <ToolbarButton
+              ref={effectsButtonRef}
+              title={t("Effects")}
+              label={t("Effects")}
+              active={effectsActive}
+              onClick={() => {
+                setPickerAnchorSource("button");
+                setShowEffectsMenu((v) => !v);
+              }}
+            >
+              <Filter size={18} />
+            </ToolbarButton>
+            {showEffectsMenu && foundForVideoEffects && (
+              <EffectsPickerMenu
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : effectsButtonRef}
+                clip={foundForVideoEffects.clip}
+                asset={assetForVideoEffects}
+                projectId={projectId}
+                onClose={() => setShowEffectsMenu(false)}
+              />
+            )}
+            <ToolbarButton
+              ref={pixelEffectButtonRef}
+              title={t("Pixel Effects")}
+              label={t("Pixel FX")}
+              active={pixelEffectActive}
+              onClick={() => {
+                setPickerAnchorSource("button");
+                setShowPixelEffectMenu((v) => !v);
+              }}
+            >
+              <Ai size={18} />
+            </ToolbarButton>
+            {showPixelEffectMenu && foundForVideoEffects && (
+              <PixelEffectPickerMenu
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : pixelEffectButtonRef}
+                clip={foundForVideoEffects.clip}
+                asset={assetForVideoEffects}
+                projectId={projectId}
+                onClose={() => setShowPixelEffectMenu(false)}
+              />
+            )}
+          </>
         )}
-        <ToolbarButton
-          ref={pixelEffectButtonRef}
-          title={t("Pixel Effects")}
-          label={t("Pixel FX")}
-          disabled={effectsDisabled}
-          active={pixelEffectActive}
-          onClick={() => setShowPixelEffectMenu((v) => !v)}
-        >
-          <Ai size={18} />
-        </ToolbarButton>
-        {showPixelEffectMenu && foundForVideoEffects && (
-          <PixelEffectPickerMenu
-            anchorRef={pixelEffectButtonRef}
-            clip={foundForVideoEffects.clip}
-            asset={assetForVideoEffects}
-            projectId={projectId}
-            onClose={() => setShowPixelEffectMenu(false)}
-          />
+
+        {/* Arms the same draw-a-rectangle flow the Inspector's `RemoveObjectSection` exposes
+            (`removeObjectArmedClipId` drives `RemoveObjectOverlay`, mounted over the Preview canvas) —
+            unlike Effects/Pixel FX above, there's no popover menu here; the prompt field and
+            run/progress UI only exist in that Inspector section, so tapping this also opens the
+            Inspector sheet on mobile. NOT unconditional, despite desktop having its own permanent
+            Properties column that never needs `mobileSheet` set — confirmed a real, reported bug:
+            `mobileSheet` doubles as "which panel replaces the TIMELINE row on a narrow screen" (see
+            that row's own comment further down), and setting it on DESKTOP too was silently swapping
+            the desktop Timeline itself out for a second, redundant Inspector instead of doing nothing
+            the way the permanent column already made correct. `lg` (1024px) is this app's own
+            breakpoint for "has that permanent column" everywhere else here, so it's what gates this
+            too. Hidden, not disabled, for anything that isn't an actual video asset — same reasoning
+            as Transition/Effects above. */}
+        {!removeObjectDisabled && (
+          <ToolbarButton
+            title={t("Remove Object")}
+            label={t("Remove")}
+            pro={HOSTED}
+            onClick={() => {
+              if (!foundForVideoEffects) return;
+              armRemoveObject(foundForVideoEffects.clip.id);
+              if (!window.matchMedia("(min-width: 1024px)").matches) setMobileSheet("inspector");
+            }}
+          >
+            <Backspace size={18} />
+          </ToolbarButton>
+        )}
+
+        {/* Detaches this clip's own embedded audio onto a new clip on an audio track (see
+            `ExtractAudioCommand`'s own doc comment) — hidden, not disabled, for anything that isn't a
+            video-track clip with real audio to detach, same convention every other clip-kind-gated
+            tool in this row already follows. */}
+        {!extractAudioDisabled && (
+          <ToolbarButton
+            title={t("Extract Audio")}
+            label={t("Extract Audio")}
+            onClick={() => {
+              if (!foundForVideoEffects) return;
+              extractAudioFromClip(foundForVideoEffects.clip.id);
+            }}
+          >
+            <Music size={18} />
+          </ToolbarButton>
         )}
 
         <span className="mx-1 h-5 w-px shrink-0 bg-white/10" />
 
-        <ToolbarButton
-          title={t("Delete selected (Del)")}
-          label={t("Delete")}
-          disabled={selectedClipIds.length === 0}
-          onClick={() => run(new DeleteClipsCommand(selectedClipIds))}
-        >
-          <Delete size={18} />
-        </ToolbarButton>
+        {/* Hidden, not disabled, with an empty selection — same reasoning as Duplicate above. */}
+        {selectedClipIds.length > 0 && (
+          <ToolbarButton title={t("Delete selected (Del)")} label={t("Delete")} onClick={() => run(new DeleteClipsCommand(selectedClipIds))}>
+            <Delete size={18} />
+          </ToolbarButton>
+        )}
         <ToolbarButton
           title={t("Save (Ctrl+S)")}
           label={t("Save")}
@@ -480,9 +1032,18 @@ function StatusBar({
           <Save size={18} />
         </ToolbarButton>
       </div>
-      {showCaptions && <AutoCaptionsDialog onClose={() => setShowCaptions(false)} />}
+      {captionsDialog && <AutoCaptionsDialog clipIds={captionsDialog.clipIds} onClose={() => setCaptionsDialog(null)} />}
+      {showVoiceRecord && <VoiceRecordModal onClose={() => setShowVoiceRecord(false)} />}
       {showTextImport && <TextToClipsDialog onClose={() => setShowTextImport(false)} />}
       {showSfx && <SfxPanel onClose={() => setShowSfx(false)} />}
+      <NewTextComposer />
+      {/* Zero-size, invisible — exists only so the picker menus above have a real DOM element to
+          anchor to (`getBoundingClientRect()`) when opened FROM the context menu instead of their own
+          toolbar button. Repositioning it via plain inline style (not React state driving layout) is
+          fine here: it has no visible box for a layout shift to matter, so it can move outside React's
+          normal render cycle without any visual cost. */}
+      <div ref={contextMenuAnchorRef} style={{ position: "fixed", left: contextMenu?.x ?? 0, top: contextMenu?.y ?? 0 }} />
+      {contextMenu && <ClipContextMenu x={contextMenu.x} y={contextMenu.y} actions={contextMenuActions} onClose={() => setContextMenu(null)} />}
     </footer>
   );
 }
@@ -496,8 +1057,22 @@ function SaveStatus() {
   const saving = useEditorStore((s) => s.saving);
   const lastSavedAt = useEditorStore((s) => s.lastSavedAt);
   const t = useTranslation();
+  const [showSaved, setShowSaved] = useState(false);
 
-  const text = saving ? t("Saving…") : dirty ? t("Unsaved changes") : lastSavedAt ? t("All changes saved") : "";
+  // "All changes saved" is a confirmation, not an ongoing state the way "Saving…"/"Unsaved changes"
+  // are — worth a moment's glance, not worth permanently occupying header space forever after. Same
+  // "success message auto-clears, error doesn't linger forever either" spirit as `StatusToast`'s own
+  // timer, just without needing a manual-dismiss escape hatch (this one's text is short and never an
+  // error). Re-fires on every new `lastSavedAt`: a later save while an earlier one's timer is still
+  // counting down restarts the full 3s rather than letting the message flicker off between them.
+  useEffect(() => {
+    if (!lastSavedAt || dirty || saving) return;
+    setShowSaved(true);
+    const timer = setTimeout(() => setShowSaved(false), 3000);
+    return () => clearTimeout(timer);
+  }, [lastSavedAt, dirty, saving]);
+
+  const text = saving ? t("Saving…") : dirty ? t("Unsaved changes") : showSaved ? t("All changes saved") : "";
   if (!text) return null;
 
   return <span className="shrink-0 truncate text-[11px] text-white/40">{text}</span>;
@@ -642,11 +1217,35 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   const load = useEditorStore((s) => s.load);
   const loading = useEditorStore((s) => s.loading);
   const loadError = useEditorStore((s) => s.loadError);
+  const loadErrorStatus = useEditorStore((s) => s.loadErrorStatus);
   const project = useEditorStore((s) => s.project);
   const language = useEditorStore((s) => s.language);
   const setLanguage = useEditorStore((s) => s.setLanguage);
   const t = useTranslation();
   const [exportOpen, setExportOpen] = useState(false);
+  // Non-null once signed in, on any platform configured with real Supabase credentials — web (as
+  // before), desktop via the `vcut://` callback below, or native mobile via `MobileSignInDialog`.
+  // Plain local dev (no Supabase env vars set at all) still renders nothing extra here, unchanged.
+  const { user, signOut } = useSupabaseSession();
+  const isNative = Capacitor.isNativePlatform();
+  // `credits` stays `null` (nothing rendered below) until the check resolves, and permanently on
+  // desktop/local dev (`hosted` false there — see the hook's own comment) — credits are a hosted-only
+  // concept, same gate every other credits-aware UI (Captions/Remove Object) already uses.
+  const { hosted, credits } = useHostedCreditsGate();
+  const [showMobileSignIn, setShowMobileSignIn] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const userMenuButtonRef = useRef<HTMLButtonElement>(null);
+
+  // The desktop half of sign-in: `main.ts` extracts `access_token`/`refresh_token` from the
+  // `vcut://auth-callback` redirect and forwards them here — `setSession` is what actually turns them
+  // into the same kind of session `useSupabaseSession` above already knows how to react to (its own
+  // `onAuthStateChange` subscription fires from this exactly as it would from a same-window redirect).
+  // A no-op subscription (and never-called unsubscribe) on every platform without `window.veasnaAuth`.
+  useEffect(() => {
+    return subscribeToDesktopAuthCallback(({ accessToken, refreshToken }) => {
+      void getSupabaseBrowserClient()?.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+    });
+  }, []);
 
   // Warms every registered font's real `@font-face` fetch up front — see `preloadAllFonts`'s own
   // doc comment for why this is necessary at all (Canvas-only text rendering doesn't reliably trigger
@@ -899,7 +1498,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         return;
       }
       if (modifier && event.key.toLowerCase() === "d") {
-        // Standard NLE shortcut (Premiere, Final Cut, CapCut all use Ctrl/⌘+D for this).
+        // Standard NLE shortcut — most editors, desktop and mobile-first alike, use Ctrl/⌘+D for this.
         event.preventDefault();
         state.duplicateSelectedClips();
         return;
@@ -1001,16 +1600,41 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   }
 
   if (loadError || !project) {
+    // A 401 here means the session itself is gone (the access token's own lifetime elapsed while the
+    // tab/PWA sat idle — hours overnight is enough) — confirmed a real, reported dead end: "Try again"
+    // alone just repeats the identical failure forever, and this early-return replaces the WHOLE app
+    // (including the header's own sign-in entry points below), so there was previously no way back in
+    // at all short of navigating away from the project entirely. Offering the same per-platform
+    // sign-in action the header normally would is what actually fixes it; `MobileSignInDialog` is
+    // re-rendered here too (its usual spot, further down, is inside the main return this bypasses).
+    const needsSignIn = loadErrorStatus === 401;
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-[#0a0c10] p-6 text-center">
         <p className="text-sm font-medium text-rose-300">{t("VCut couldn't open this project")}</p>
-        <p className="max-w-md text-xs leading-relaxed text-white/50">{loadError}</p>
-        <button
-          onClick={() => void load(projectId)}
-          className="rounded-md bg-white/10 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-white/20"
-        >
-          {t("Try again")}
-        </button>
+        <p className="max-w-md text-xs leading-relaxed text-white/50">
+          {needsSignIn ? t("Your session has expired — sign in again to continue.") : loadError}
+        </p>
+        <div className="flex items-center gap-2">
+          {needsSignIn && (
+            <button
+              onClick={() => {
+                if (isNative) setShowMobileSignIn(true);
+                else if (isDesktopSignInAvailable()) openDesktopSignIn();
+                else window.location.href = "/login";
+              }}
+              className="rounded-md bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-sky-400"
+            >
+              {t("Sign in")}
+            </button>
+          )}
+          <button
+            onClick={() => void load(projectId)}
+            className="rounded-md bg-white/10 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-white/20"
+          >
+            {t("Try again")}
+          </button>
+        </div>
+        {showMobileSignIn && <MobileSignInDialog onClose={() => setShowMobileSignIn(false)} />}
       </div>
     );
   }
@@ -1042,20 +1666,113 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         )}
         <EditableProjectTitle />
         <SaveStatus />
-        <button
-          onClick={() => setLanguage(language === "en" ? "km" : "en")}
-          title={t("Switch language")}
-          aria-label={t("Switch language")}
-          className="ml-auto shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/60 transition hover:bg-white/10 hover:text-white"
-        >
-          {language === "en" ? "ខ្មែរ" : "EN"}
-        </button>
-        <button
-          onClick={() => setExportOpen(true)}
-          className="shrink-0 rounded-md bg-sky-500 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-sky-400"
-        >
-          {t("Export")}
-        </button>
+        {/* One `ml-auto` on the whole trailing cluster, not on each button individually — two
+            adjacent auto margins would each try to absorb a share of the free space, opening an
+            unwanted gap BETWEEN sign-out and the language toggle instead of pushing the whole group
+            together against the right edge, which is what every one of these already relied on
+            `ml-auto` (previously just on the language button, the first/only item in this cluster
+            before Sign out existed) to do. */}
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {/* Plain `window.location` (not Next's `useRouter`) since this component is shared with the
+              native mobile shell too, which has no Next.js router to call into at all — a full
+              navigation to `/login` works identically on web and desktop (both serve a real `/login`
+              page). Native mobile has no such page to navigate to at all (a static Vite build, no
+              server-rendered routes) — signing out there just clears the session and stays on the
+              current screen, same as `MobileSignInDialog` signing IN never navigates either. */}
+          {/* One combined trigger, not two separate always-visible buttons — confirmed a real UX
+              complaint: plain "Account"/"Sign out" text buttons sat directly against the save-status
+              text with no visual separation, reading as clutter rather than a legible header (see
+              `UserMenu.tsx`'s own doc comment). Web/desktop only: `/account` (plan/credits/Upgrade to
+              Pro) has no server-rendered route on native mobile's own static Vite build, so that menu
+              item would have nowhere to navigate to there — native mobile keeps the simple, direct
+              Sign out button below instead, unchanged from before this menu existed. */}
+          {/* An icon, not the truncated email text this originally showed — confirmed a real
+              "looks cluttered/overflowing" complaint, not hypothetical: a `max-w-[8rem]` truncated
+              email sitting in an already-tight trailing cluster read as busier than a single glyph
+              needs to. The email itself still shows, in full, right at the top of the menu this
+              opens (`UserMenu.tsx`'s own header row) — nothing is actually lost, just moved one
+              click deeper where there's real room to show it without truncation.
+              Pro accounts get an amber ring + a tiny badge dot on this exact icon — replaces an earlier
+              plain credits-count readout that sat separately in the header (confirmed a real request:
+              the count itself wasn't the useful part, a Pro/free distinction at a glance is). Hosted
+              only (`hosted` false on desktop/local dev, where there's no plan concept to distinguish at
+              all) and only once the plan has actually loaded (`credits !== null`) — defaulting to the
+              free look before that resolves would flash a Pro account as free for a moment, the more
+              visible direction to get wrong. */}
+          {user && !isNative && (
+            <button
+              ref={userMenuButtonRef}
+              onClick={() => setShowUserMenu((v) => !v)}
+              title={hosted && credits?.plan === "pro" ? `${user.email ?? t("Account")} (${t("Pro")})` : (user.email ?? t("Account"))}
+              aria-label={t("Account")}
+              className={`relative flex shrink-0 items-center justify-center rounded-md p-1.5 transition hover:bg-white/10 ${
+                hosted && credits?.plan === "pro" ? "text-amber-300 ring-1 ring-amber-400/60 hover:text-amber-200" : "text-white/40 hover:text-white"
+              }`}
+            >
+              <Profile size={16} />
+              {hosted && credits?.plan === "pro" && (
+                <span aria-hidden className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border border-[#0a0c10] bg-amber-400" />
+              )}
+            </button>
+          )}
+          {showUserMenu && (
+            <UserMenu
+              anchorRef={userMenuButtonRef}
+              email={user?.email ?? null}
+              onOpenAccount={() => (window.location.href = "/account")}
+              onSignOut={() => void signOut().then(() => (window.location.href = "/login"))}
+              onClose={() => setShowUserMenu(false)}
+            />
+          )}
+          {user && isNative && (
+            <button
+              onClick={() => void signOut()}
+              title={user.email ?? t("Sign out")}
+              className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/40 transition hover:bg-white/10 hover:text-white"
+            >
+              {t("Sign out")}
+            </button>
+          )}
+          {/* Desktop's own sign-in entry point — opens the system browser rather than navigating this
+              window; see `desktopAuth.ts`'s own doc comment for why a magic-link/OAuth flow can't run
+              directly against this window's locally-bundled server (its port changes every launch,
+              which neither an emailed magic link nor a registered OAuth redirect URI can tolerate).
+              Never shown on web (the existing `/login` page IS the sign-in flow there) or on native
+              mobile (the next button below, opening `MobileSignInDialog` in-app instead). */}
+          {!user && isDesktopSignInAvailable() && (
+            <button
+              onClick={openDesktopSignIn}
+              className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/40 transition hover:bg-white/10 hover:text-white"
+            >
+              {t("Sign in")}
+            </button>
+          )}
+          {/* Native mobile's own sign-in entry point — opens `MobileSignInDialog` in-app rather than
+              the desktop button's system-browser hop, since Capacitor's WebView can run Supabase's JS
+              client directly (see that dialog's own doc comment for the full reasoning). */}
+          {!user && isNative && (
+            <button
+              onClick={() => setShowMobileSignIn(true)}
+              className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/40 transition hover:bg-white/10 hover:text-white"
+            >
+              {t("Sign in")}
+            </button>
+          )}
+          <button
+            onClick={() => setLanguage(language === "en" ? "km" : "en")}
+            title={t("Switch language")}
+            aria-label={t("Switch language")}
+            className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/60 transition hover:bg-white/10 hover:text-white"
+          >
+            {language === "en" ? "ខ្មែរ" : "EN"}
+          </button>
+          <button
+            onClick={() => setExportOpen(true)}
+            className="shrink-0 rounded-md bg-sky-500 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-sky-400"
+          >
+            {t("Export")}
+          </button>
+        </div>
       </header>
 
       {/* Three panes at `lg`+ (1024px): media on the left, preview + inspector in the middle,
@@ -1185,6 +1902,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
       />
       <StatusToast />
       {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
+      {showMobileSignIn && <MobileSignInDialog onClose={() => setShowMobileSignIn(false)} />}
       {floatState && (
         <FloatablePanel
           title={floatState.panel === "mixer" ? t("Audio Mixer") : t("Scopes")}

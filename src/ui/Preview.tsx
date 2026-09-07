@@ -2,12 +2,17 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Maximize, Pause, Play, Redo, SkipBack, SkipForward, StepBack, StepForward, Undo } from "@veasnawt/vicons";
-import { mediaUrl } from "../api/client.ts";
+import { mediaUrl, outroAssetUrl } from "../api/client.ts";
 import { sequenceDuration } from "../project/createProject.ts";
+import { buildComposePreviewProject } from "../playback/composePreview.ts";
+import { OUTRO_BG_ASSET_ID, OUTRO_BG_FILE, OUTRO_DURATION_SECONDS, OUTRO_LOGO_ASSET_ID, OUTRO_LOGO_FILE } from "../export/outro.ts";
+import { buildOutroPreviewProject } from "../playback/outroPreview.ts";
 import { PlaybackEngine } from "../playback/PlaybackEngine.ts";
 import { computeVisibleClipBoxes, hitTestClip } from "../playback/visibleClips.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
+import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
+import { useIsMobile } from "./useIsMobile.ts";
 import { TransformHandles } from "./TransformHandles.tsx";
 import { TextTransformHandles } from "./TextTransformHandles.tsx";
 import { RemoveObjectOverlay } from "./RemoveObjectOverlay.tsx";
@@ -73,8 +78,25 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
     document.addEventListener("fullscreenchange", onChange);
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
+  // The CSS-only stand-in for platforms with no real Fullscreen API at all (iPhone Safari — see
+  // `fullscreenSupported`'s own comment): `panelRef` gets pinned `fixed inset-0` instead of actually
+  // requesting fullscreen, covering the screen the same way visually without touching any browser API
+  // that doesn't exist there. There's no native `fullscreenchange` event for this fake mode, so
+  // there's also no native Esc-to-exit — the keydown listener below is what that becomes here.
+  const [cssFullscreen, setCssFullscreen] = useState(false);
+  useEffect(() => {
+    if (!cssFullscreen) return;
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setCssFullscreen(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [cssFullscreen]);
   function toggleFullscreen() {
-    if (!fullscreenSupported) return;
+    if (!fullscreenSupported) {
+      setCssFullscreen((v) => !v);
+      return;
+    }
     if (document.fullscreenElement) void document.exitFullscreen();
     else void panelRef.current?.requestFullscreen();
   }
@@ -99,6 +121,20 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
   // below as `stageEl`.
   const [previewZoom, setPreviewZoom] = useState(1);
   const t = useTranslation();
+  const setStatus = useEditorStore((s) => s.setStatus);
+
+  // Same condition Timeline.tsx's own end-of-timeline outro marker uses — see that file's identical
+  // comment for the full reasoning (hosted mode, not on the Pro plan). Mirrored into a ref (not read
+  // straight from this render) because `getProject`/`handleCanvasClick` below are either captured
+  // once inside a `useEffect` with an empty dependency array (recreating the whole engine on every
+  // credits fetch would be real, pointless churn) or need the CURRENT value at click time without
+  // re-subscribing — a plain synchronous assignment during render is the standard way to keep a ref
+  // "live" for exactly that kind of read without either problem.
+  const { hosted, credits } = useHostedCreditsGate();
+  const showOutroMarker = hosted && credits !== null && credits.plan !== "pro";
+  const showOutroMarkerRef = useRef(showOutroMarker);
+  showOutroMarkerRef.current = showOutroMarker;
+  const isMobile = useIsMobile();
 
   const project = useEditorStore((s) => s.project);
   const playing = useEditorStore((s) => s.playing);
@@ -122,16 +158,30 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
   // pool — losing all buffering and making playback stutter after each keystroke.
   useEffect(() => {
     const engine = new PlaybackEngine({
-      getProject: () => useEditorStore.getState().project,
+      getProject: () => {
+        const state = useEditorStore.getState();
+        const composed = buildComposePreviewProject(state.project, state.composeText, state.playhead);
+        return buildOutroPreviewProject(composed, showOutroMarkerRef.current);
+      },
       getPlayhead: () => useEditorStore.getState().playhead,
       isPlaying: () => useEditorStore.getState().playing,
       getLiveOverrides: () => useEditorStore.getState().livePreviewOverrides,
       getLiveTrackGainPreview: () => useEditorStore.getState().livePreviewTrackGain,
       getLiveTrackPanPreview: () => useEditorStore.getState().livePreviewTrackPan,
-      getLiveMasterGainPreview: () => useEditorStore.getState().livePreviewMasterGain,
+      // `previewMuted` wins outright over whatever the Mixer's own master-fader drag preview says —
+      // there's no real scenario where a user is dragging that fader while sequence-mute is also on,
+      // and even if both were somehow live at once, "silent" is the least surprising outcome to land on.
+      getLiveMasterGainPreview: () => (useEditorStore.getState().previewMuted ? 0 : useEditorStore.getState().livePreviewMasterGain),
       onTimeUpdate: (seconds) => useEditorStore.getState().setPlayhead(seconds),
       onEnded: () => useEditorStore.getState().setPlaying(false),
       mediaUrlFor: (assetId) => {
+        // Same two fixed ids `export/route.ts`'s own `inputPathFor` special-cases server-side —
+        // these synthetic assets (`buildOutroPreviewProject`) have no real project `relPath` to look
+        // up, so they need to be caught here BEFORE falling through to the normal per-project lookup
+        // below, which would otherwise fail to find them in `state.project.assets` at all (they only
+        // ever exist in the CLONED project `getProject` above hands the engine, never the real one).
+        if (assetId === OUTRO_LOGO_ASSET_ID) return outroAssetUrl(OUTRO_LOGO_FILE);
+        if (assetId === OUTRO_BG_ASSET_ID) return outroAssetUrl(OUTRO_BG_FILE);
         const state = useEditorStore.getState();
         const asset = state.project?.assets.find((a) => a.id === assetId);
         if (!asset || !state.projectId) return null;
@@ -214,6 +264,24 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
   // canvas: empty frame area, or a clip with no handle currently drawn over that exact point.
   function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
     if (!project || !canvas) return;
+    // The outro end card renders here (see `getProject`'s own `buildOutroPreviewProject` call above)
+    // whenever the playhead is scrubbed into its own [total, total+OUTRO_DURATION_SECONDS) window, but
+    // it isn't a real clip in `project` — `computeVisibleClipBoxes`/`hitTestClip` below would find
+    // nothing there and just deselect, silently doing nothing for a click that clearly landed ON
+    // visible content. Checked by TIME, not by hit-testing the logo's own drawn box: the background
+    // fills the entire frame for the whole window, so any click anywhere on the canvas during it is
+    // "interacting with the outro" regardless of exactly where the logo itself is centered.
+    if (showOutroMarkerRef.current) {
+      const playhead = useEditorStore.getState().playhead;
+      const outroStart = sequenceDuration(project);
+      if (playhead >= outroStart && playhead < outroStart + OUTRO_DURATION_SECONDS) {
+        // Shorter on mobile — the status toast has real width pressure there a desktop's own doesn't
+        // (confirmed a real, reported "too long" complaint), same reasoning `Timeline.tsx`'s identical
+        // marker click handler follows.
+        setStatus(isMobile ? t("Upgrade to Pro to remove the outro") : t("Subscribe to VCut Pro to remove this outro from your exports."));
+        return;
+      }
+    }
     const context = canvas.getContext("2d");
     if (!context) return;
     const rect = canvas.getBoundingClientRect();
@@ -239,14 +307,26 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
   }
 
   return (
-    <section ref={panelRef} className="flex h-full min-h-0 flex-col bg-[#0a0c10]">
+    <section
+      ref={panelRef}
+      className={`flex h-full min-h-0 flex-col bg-[#0a0c10] ${cssFullscreen ? "fixed inset-0 z-50" : ""}`}
+    >
       <div
         onClick={(e) => {
-          // The thin outer margin (this div's own `p-4`) outside `previewBoxRef` — same direct-click-
-          // only guard, same reasoning, just one layer further out; see that div's own onClick comment.
+          // The thin outer margin (this div's own `px-4 py-2`) outside `previewBoxRef` — same
+          // direct-click-only guard, same reasoning, just one layer further out; see that div's own
+          // onClick comment.
           if (e.target === e.currentTarget && !(e.ctrlKey || e.metaKey)) select([]);
         }}
-        className="flex min-h-0 flex-1 items-center justify-center overflow-hidden p-4"
+        // `items-end`, not `items-center` — a portrait sequence in a wider-than-tall Preview panel (or
+        // any panel taller than the video's own fitted height) had real leftover vertical space to
+        // divide, and centering meant HALF of it always showed up as a gap directly above the resize
+        // handle/timeline right below this panel, reported directly as "too much space here." Bottom-
+        // aligning collects that same leftover space at the TOP instead, next to the header — still
+        // asymmetric, but adjacent to the row it reads most naturally next to, and it closes the gap
+        // that was actually being complained about (between the video and the controls under it) to
+        // zero rather than merely shrinking it.
+        className="flex min-h-0 flex-1 items-end justify-center overflow-hidden px-4 py-2"
       >
         <div
           ref={previewBoxRef}
@@ -424,14 +504,12 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
           )}
           {/* `Maximize` stands in for BOTH directions (no dedicated "exit fullscreen"/compress icon
               exists yet — see MISSING_ICONS.md) — the tooltip/aria-label is what actually communicates
-              which action a click performs. Hidden entirely (not just disabled) when unsupported —
-              iPhone Safari has no Fullscreen API for arbitrary elements at all, so a dead button here
-              would be actively misleading rather than just inert. */}
-          {fullscreenSupported && (
-            <ControlButton onClick={toggleFullscreen} label={isFullscreen ? t("Exit fullscreen") : t("Fullscreen")}>
-              <Maximize size={16} />
-            </ControlButton>
-          )}
+              which action a click performs. Always shown now, even where the real Fullscreen API
+              doesn't exist (iPhone Safari) — `toggleFullscreen` falls back to `cssFullscreen` there
+              (see its own comment), so there's always something for this button to actually do. */}
+          <ControlButton onClick={toggleFullscreen} label={isFullscreen || cssFullscreen ? t("Exit fullscreen") : t("Fullscreen")}>
+            <Maximize size={16} />
+          </ControlButton>
         </div>
       </div>
     </section>

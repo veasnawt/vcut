@@ -1,15 +1,21 @@
 "use client";
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Add } from "@veasnawt/vicons";
 import { AddTrackCommand, ReorderTrackCommand } from "../commands/index.ts";
+import { OUTRO_DURATION_SECONDS } from "../export/outro.ts";
 import { sequenceDuration } from "../project/createProject.ts";
-import type { Track } from "../project/types.ts";
+import { DEFAULT_TEXT_STYLE, type Track, type TrackKind } from "../project/types.ts";
+import { trackKindForAsset } from "../timeline/operations.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { formatTimecode } from "../timeline/time.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { TimelineClip } from "./TimelineClip.tsx";
-import { TrackHeader } from "./TrackHeader.tsx";
+import { ACCEPTED_EXTENSIONS_BY_KIND, TrackHeader } from "./TrackHeader.tsx";
+import { TrackKindPickerMenu } from "./TrackKindPickerMenu.tsx";
+import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
+import { useIsMobile } from "./useIsMobile.ts";
 
 const TRACK_HEIGHT = 44;
 /** Mobile-only row height for a track with nothing on it — a full-height empty row (same height as
@@ -21,6 +27,10 @@ const TRACK_HEIGHT = 44;
 const EMPTY_TRACK_HEIGHT = 32;
 const HEADER_WIDTH = 156;
 const RULER_HEIGHT = 26;
+/** Height of the "add a track" row below the last real one — deliberately shorter than either track
+ *  height above: it's a single affordance, not a row of content, and shouldn't compete visually with
+ *  actual tracks for space. */
+const NEW_TRACK_ROW_HEIGHT = 30;
 /** Empty space kept past the end of the edit, so there's always somewhere to drop a clip and extend
  *  the timeline rather than being fenced in at exactly the last frame. */
 const TRAILING_SECONDS = 10;
@@ -36,6 +46,62 @@ function tickInterval(pixelsPerSecond: number): number {
   const targetSeconds = 80 / pixelsPerSecond;
   const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
   return steps.find((step) => step >= targetSeconds) ?? 900;
+}
+
+/** Same kind→accent-color convention `TrackHeader.tsx`'s own `KIND_ICON` uses, so a track's row and
+ *  its "add something" affordance read as the same track at a glance. */
+const ADD_BUTTON_CLASS: Record<Track["kind"], string> = {
+  video: "bg-sky-500/10 text-sky-300 hover:bg-sky-500/20",
+  audio: "bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20",
+  text: "bg-amber-500/10 text-amber-300 hover:bg-amber-500/20",
+};
+
+/** The prominent "this track is empty, tap to fill it" affordance — rendered directly in a track's own
+ *  (otherwise blank) clip lane rather than left to the small, hover-only import "+" already tucked
+ *  into `TrackHeader.tsx`'s own row (that one stays, for a track that already HAS clips — this one
+ *  only ever appears for an empty one, where a blank strip of nothing was the entire previous state). */
+function AddClipButton({ kind, label, onClick }: { kind: Track["kind"]; label: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`absolute left-2 top-1/2 flex min-h-[26px] -translate-y-1/2 items-center gap-1 rounded-md px-2 text-[11px] font-medium transition ${ADD_BUTTON_CLASS[kind]}`}
+    >
+      <Add size={13} />
+      {label}
+    </button>
+  );
+}
+
+/** The "+" affordance itself — one flexible button replacing the old always-visible "+ Video"/
+ *  "+ Audio"/"+ Text" toolbar buttons, with the kind chosen at the point of use: tapping opens
+ *  `TrackKindPickerMenu`, or it's inferred implicitly by dragging media onto the matching drop-zone
+ *  row rendered alongside it in the lanes (`isOverNewTrackRow`/`resolveTimelineDropTarget` in
+ *  `Timeline` decide the kind from the dropped asset in that case — this button never sees that path).
+ *  Deliberately just the button+popover, no surrounding row markup: the desktop header column and
+ *  the mobile inline gutter each wrap it in their own container, matching how `TrackHeader` itself
+ *  is reused unchanged across both layouts. */
+function AddTrackButton({ compact, onPick }: { compact?: boolean; onPick: (kind: TrackKind) => void }) {
+  const t = useTranslation();
+  const [open, setOpen] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        onClick={() => setOpen(true)}
+        aria-label={t("Add track")}
+        title={t("Add track")}
+        className={`flex items-center gap-1 rounded text-white/45 transition hover:bg-white/10 hover:text-white ${
+          compact ? "min-h-[26px] min-w-[26px] justify-center px-1" : "px-1.5 py-1 text-[11px]"
+        }`}
+      >
+        <Add size={12} />
+        {!compact && t("Add track")}
+      </button>
+      {open && <TrackKindPickerMenu anchorRef={buttonRef} onPick={onPick} onClose={() => setOpen(false)} />}
+    </>
+  );
 }
 
 /** Isolated so ONLY this readout re-renders as the playhead advances during playback — not the whole
@@ -59,6 +125,7 @@ export function Timeline() {
   const pixelsPerSecond = useEditorStore((s) => s.pixelsPerSecond);
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds);
   const setPlayhead = useEditorStore((s) => s.setPlayhead);
+  const setStatus = useEditorStore((s) => s.setStatus);
   // Raw (possibly-null, possibly-unsorted) values — selected directly rather than via the store's own
   // `exportRange()` getter, which returns a freshly-allocated object every call and would defeat
   // Zustand's reference-equality re-render check. Sorted/clamped locally instead, right below.
@@ -67,6 +134,15 @@ export function Timeline() {
   const setExportRangeStart = useEditorStore((s) => s.setExportRangeStart);
   const setExportRangeEnd = useEditorStore((s) => s.setExportRangeEnd);
   const clearExportRange = useEditorStore((s) => s.clearExportRange);
+  // Whether this project's export will actually get the outro end card appended — same condition
+  // `export/route.ts`'s own server-side `shouldIncludeOutro` checks (hosted mode, not on the Pro
+  // plan), duplicated here only because there's no single shared place both a Next.js API route and
+  // this client bundle can import server-only session/profile logic from; `credits` already carries
+  // `plan` for the OTHER hosted-only UI (Captions/Remove Object) that needed it first. `null` while
+  // still loading reads as "don't show yet" below, rather than flashing on then off once the real
+  // plan resolves — a marker for something that turns out not to apply is worse than a brief absence.
+  const { hosted, credits } = useHostedCreditsGate();
+  const showOutroMarker = hosted && credits !== null && credits.plan !== "pro";
   const select = useEditorStore((s) => s.select);
   const zoomBy = useEditorStore((s) => s.zoomBy);
   const resetZoom = useEditorStore((s) => s.resetZoom);
@@ -74,12 +150,26 @@ export function Timeline() {
   const assetDrag = useEditorStore((s) => s.assetDrag);
   const setResolveTimelineDropTarget = useEditorStore((s) => s.setResolveTimelineDropTarget);
   const recording = useEditorStore((s) => s.recording);
+  const importFiles = useEditorStore((s) => s.importFiles);
+  const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
+  const setComposeText = useEditorStore((s) => s.setComposeText);
+  /** Which empty track a click on its own `AddClipButton` (below) is importing a file onto — a file
+   *  picker has no notion of "which track," so this is set right before `emptyTrackImportInputRef` is
+   *  clicked and read back in that input's own `onChange`. One shared hidden `<input>` for every empty
+   *  track rather than one per row: only ever one file dialog open at a time, so there's nothing a
+   *  per-row instance would buy over reusing a single one with its `accept` attribute swapped per click. */
+  const [emptyTrackImportTarget, setEmptyTrackImportTarget] = useState<Track | null>(null);
+  const emptyTrackImportInputRef = useRef<HTMLInputElement>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
   const markerRef = useRef<HTMLDivElement>(null);
   const headerListRef = useRef<HTMLDivElement>(null);
+  /** The lanes-side "add track" drop-zone row (see `AddTrackRow`) — hit-tested by its own bounding
+   *  rect rather than by summing track heights like `resolveTrackAt` does, since it's laid out right
+   *  after the real tracks in normal flow and already sits at the correct Y with zero extra bookkeeping. */
+  const newTrackRowRef = useRef<HTMLDivElement>(null);
   /** True while the user has the ruler pressed and is actively dragging it — see the playhead-follow
    *  effect's own comment on why auto-follow is suppressed during this. */
   const isScrubbingRef = useRef(false);
@@ -135,14 +225,7 @@ export function Timeline() {
   // rotating a tablet or resizing a desktop window across it mid-session needs to actually flip
   // between "fixed-center playhead, scroll scrubs" (mobile) and "moving playhead, independent scroll"
   // (desktop) behavior live, not just at first mount.
-  const [isMobile, setIsMobile] = useState(false);
-  useEffect(() => {
-    const mql = window.matchMedia("(min-width: 1024px)");
-    setIsMobile(!mql.matches);
-    const onChange = () => setIsMobile(!mql.matches);
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
+  const isMobile = useIsMobile();
   /** True for one frame after THIS component writes `scrollLeft` itself (mobile centering below) —
    *  lets the scroll handler tell "the user actually scrolled" apart from "scrollLeft changed because
    *  WE just centered it on a playhead update", so the two mobile-only sync directions (scroll→playhead,
@@ -296,6 +379,29 @@ export function Timeline() {
     // handler above already uses, so it composes naturally with `zoomBy`'s own multiplicative update
     // and the store's existing [4, 400] clamp rather than needing its own absolute-scale bookkeeping.
     let lastDistance = 0;
+    // A touchscreen can report `touchmove` far faster than the display actually repaints (confirmed a
+    // real, reported "pinch feels janky, not smooth" complaint, not a theoretical concern) — calling
+    // `zoomAround` (a synchronous store write that re-renders every clip on the timeline, since all of
+    // them position themselves off `pixelsPerSecond`) once per RAW event means several full re-layouts
+    // can be queued for a single frame the browser only ever gets to paint once anyway, wasted work
+    // that competes with the frame the user's fingers are actually waiting to see. Coalescing to one
+    // `zoomAround` call per animation frame — multiplying every event's own ratio together since the
+    // last flush, so combining N events into one call still produces the exact same total zoom change
+    // N individual calls would have — decouples the update rate from the input rate without changing
+    // the gesture's own math at all.
+    let pendingFactor = 1;
+    let pendingMidX = 0;
+    let hasPending = false;
+    let rafId: number | null = null;
+
+    function flush() {
+      rafId = null;
+      if (!hasPending) return;
+      hasPending = false;
+      const factor = pendingFactor;
+      pendingFactor = 1;
+      zoomAround(factor, pendingMidX);
+    }
 
     function distanceAndMidpoint(touches: TouchList): { distance: number; midX: number } {
       const [a, b] = [touches[0], touches[1]];
@@ -305,16 +411,41 @@ export function Timeline() {
     function onTouchStart(e: TouchEvent) {
       if (e.touches.length !== 2) return;
       lastDistance = distanceAndMidpoint(e.touches).distance;
+      // `pan-x pan-y` (this container's own JSX-set default — see its own comment) is what makes
+      // ordinary single-finger scrolling native and smooth, but confirmed LIVE to also be permissive
+      // enough that a real two-finger touch on it still sometimes gets claimed by the browser's own
+      // native scroll handling instead of ever reaching `onTouchMove` below as a preventable event —
+      // `pinch-zoom` being absent from the allowed list stops the browser's dedicated PINCH gesture,
+      // but doesn't stop it from treating two simultaneous contacts as "two independent pans" under
+      // `pan-x`/`pan-y` themselves on at least some WebKit versions. Switching to `none` the INSTANT a
+      // second finger is confirmed down (before any movement has happened — this has to land before
+      // the browser commits to handling the gesture, which on iOS means at `touchstart`, not
+      // `touchmove`) hands the whole gesture to JS for as long as two fingers stay down, restored the
+      // moment they don't (see `onTouchEnd`) so ordinary one-finger scrolling is completely unaffected
+      // outside an actual pinch. A direct DOM mutation, not a React state change driving the JSX
+      // `style` prop — same imperative-style-write precedent `headerListRef`'s own scroll-sync
+      // transform already uses elsewhere in this file, for the same reason: this needs to happen
+      // synchronously inside the touch handler itself, not wait on a render.
+      // Non-null assertion, not a real possible-null case: `container` is `const` (never reassigned)
+      // and already guarded non-null at the top of this effect — TypeScript just doesn't carry that
+      // narrowing into a sibling function DECLARATION's own body the way it would for a plain read.
+      container!.style.touchAction = "none";
     }
     function onTouchMove(e: TouchEvent) {
       if (e.touches.length !== 2 || lastDistance === 0) return;
       e.preventDefault();
       const { distance, midX } = distanceAndMidpoint(e.touches);
-      zoomAround(distance / lastDistance, midX);
+      pendingFactor *= distance / lastDistance;
+      pendingMidX = midX;
+      hasPending = true;
       lastDistance = distance;
+      if (rafId === null) rafId = requestAnimationFrame(flush);
     }
     function onTouchEnd(e: TouchEvent) {
-      if (e.touches.length < 2) lastDistance = 0;
+      if (e.touches.length < 2) {
+        lastDistance = 0;
+        container!.style.touchAction = "pan-x pan-y";
+      }
     }
 
     container.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -326,6 +457,7 @@ export function Timeline() {
       container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("touchend", onTouchEnd);
       container.removeEventListener("touchcancel", onTouchEnd);
+      if (rafId !== null) cancelAnimationFrame(rafId);
     };
   }, [zoomAround]);
 
@@ -343,12 +475,20 @@ export function Timeline() {
     return () => window.removeEventListener("vcut:zoom", onZoomEvent);
   }, [zoomAround, resetZoom]);
 
-  /** Whether `track` should render at `EMPTY_TRACK_HEIGHT` instead of `TRACK_HEIGHT` — mobile only,
-   *  and only truly empty: a track with an in-progress voiceover recording has no COMMITTED clip yet
-   *  (`clips.length === 0`) but very much has something visible that needs the full row to show,
-   *  so that specific case is excluded here rather than shrinking the row out from under it mid-take. */
+  /** Whether `track` should render at `EMPTY_TRACK_HEIGHT` instead of `TRACK_HEIGHT` — mobile only.
+   *  Two independent reasons a track qualifies: it's truly empty (a track with an in-progress
+   *  voiceover recording has no COMMITTED clip yet — `clips.length === 0` — but very much has
+   *  something visible that needs the full row to show, so that specific case is excluded here rather
+   *  than shrinking the row out from under it mid-take), or it's a TEXT track — captions/titles are
+   *  typically numerous and, unlike a video/audio clip, `TimelineClip`'s own text-clip rendering has
+   *  nothing that needs real vertical room to stay usable (no waveform, no thumbnail strip), so a text
+   *  track stays compact regardless of how many clips are on it, freeing real editing space for the
+   *  video/audio tracks actually being worked against. Confirmed a deliberate, requested trade — not
+   *  extended to audio tracks (which keep their normal height once populated), since those often carry
+   *  controls/information worth the extra room. */
   const isTrackCompact = useCallback(
-    (track: Track): boolean => isMobile && track.clips.length === 0 && !(recording && recording.trackId === track.id),
+    (track: Track): boolean =>
+      isMobile && !(recording && recording.trackId === track.id) && (track.clips.length === 0 || track.kind === "text"),
     [isMobile, recording]
   );
 
@@ -372,18 +512,36 @@ export function Timeline() {
     [project?.sequence.tracks, isTrackCompact]
   );
 
+  /** Whether a screen point falls on the "add track" row rendered right after the last real track
+   *  (see `AddTrackRow`) — checked by the row's own bounding rect rather than summed track heights,
+   *  since it's a real element laid out in normal flow immediately below them either way. */
+  const isOverNewTrackRow = useCallback((clientY: number): boolean => {
+    const rect = newTrackRowRef.current?.getBoundingClientRect();
+    if (!rect) return false;
+    return clientY >= rect.top && clientY < rect.bottom;
+  }, []);
+
   // Registered into the store so MediaLibrary's own touch drag (native HTML5 drag-and-drop never
   // fires from touch input) can hit-test its drop point against these tracks on release, without
   // MediaLibrary needing to know anything about this component's scroll offset or row layout — see
   // `assetDrag`/`resolveTimelineDropTarget`'s own doc comments in editorStore.ts.
   useEffect(() => {
-    setResolveTimelineDropTarget((clientX, clientY) => {
+    setResolveTimelineDropTarget((clientX, clientY, assetId) => {
       const trackId = resolveTrackAt(clientY);
-      if (!trackId) return null;
-      return { trackId, time: Math.max(0, timeFromEvent(clientX)) };
+      if (trackId) return { trackId, time: Math.max(0, timeFromEvent(clientX)) };
+      // Dropped below every real track, on the "add track" row itself: create a track of whichever
+      // kind the dropped asset actually belongs on (same mapping `addClip` itself enforces — see
+      // `trackKindForAsset`'s own comment) and land the clip there, so a drag can create a track AND
+      // place the clip in one gesture rather than needing the picker tapped first.
+      if (!assetId || !project || !isOverNewTrackRow(clientY)) return null;
+      const asset = project.assets.find((a) => a.id === assetId);
+      if (!asset) return null;
+      const command = new AddTrackCommand(trackKindForAsset(asset));
+      run(command);
+      return { trackId: command.trackId, time: Math.max(0, timeFromEvent(clientX)) };
     });
     return () => setResolveTimelineDropTarget(null);
-  }, [resolveTrackAt, timeFromEvent, setResolveTimelineDropTarget]);
+  }, [resolveTrackAt, isOverNewTrackRow, timeFromEvent, setResolveTimelineDropTarget, project, run]);
 
   // Moves the playhead marker and updates the ruler's aria-valuenow by writing directly to the DOM,
   // rather than through a `useEditorStore((s) => s.playhead)` selector. `PlaybackEngine` updates
@@ -677,56 +835,71 @@ export function Timeline() {
 
   return (
     <section className="flex h-full min-h-0 flex-col border-t border-white/10 bg-[#0b0d12]">
-      {/* flex-wrap rather than a fixed single row: "Timeline" + Add Track + zoom controls is tight
-          enough to clip off-screen on a narrow phone otherwise, since this row has no scroll of its
-          own — wrapping to a second line is a plain, no-JS way to guarantee nothing gets cut off. */}
-      <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-white/10 px-3 py-1.5">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-white/60">{t("Timeline")}</h2>
-        {/* Current position + total duration — both moved here from Preview's transport bar, which now
-            carries only the playback buttons themselves. This panel is what visualizes the whole
-            project's timespan, so both halves of "where am I / how long is this" read naturally here
-            together, rather than split across two different bars. */}
-        <div className="flex items-baseline gap-1 font-mono text-[11px] tabular-nums">
-          <CurrentTime fps={project.sequence.fps} />
-          <span className="text-white/30">/</span>
-          <span aria-label={t("Total duration")} className="text-white/45">
-            {formatTimecode(total, project.sequence.fps)}
-          </span>
+      {/* Hidden entirely below `lg` now (was `flex flex-wrap` unconditionally) — the label, live
+          position/duration readout, Set In/Out/Range, AND the zoom buttons all move elsewhere or
+          disappear on a phone: the readout merges into the ruler itself (see the absolutely-positioned
+          "current time" overlay pinned over `scrollRef` below — same live value, just anchored to the
+          ruler's own left edge instead of a separate row above it), Set In/Out/Range become toolbar
+          buttons (`VCutApp.tsx`'s `StatusBar`) since there's nowhere left to reach them here, and the
+          zoom buttons are simply dropped — pinch-to-zoom (see the touch handler above) is the mobile
+          gesture for this, and a phone's cramped vertical space is better spent on the tracks
+          themselves than a redundant precise-zoom fallback. Desktop is completely unaffected. */}
+      <header className="hidden flex-wrap items-center gap-x-2 gap-y-1 border-b border-white/10 px-3 py-1.5 lg:flex">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-white/60">{t("Timeline")}</h2>
+          {/* Current position + total duration — both moved here from Preview's transport bar, which now
+              carries only the playback buttons themselves. This panel is what visualizes the whole
+              project's timespan, so both halves of "where am I / how long is this" read naturally here
+              together, rather than split across two different bars. */}
+          <div className="flex items-baseline gap-1 font-mono text-[11px] tabular-nums">
+            <CurrentTime fps={project.sequence.fps} />
+            <span className="text-white/30">/</span>
+            <span aria-label={t("Total duration")} className="text-white/45">
+              {formatTimecode(total, project.sequence.fps)}
+            </span>
+          </div>
+          {/* Touch-reachable equivalents of the `I`/`O` keyboard shortcuts (see VCutApp.tsx) — a
+              touchscreen with no external keyboard had NO way to create an export range marker at all
+              before this: once a marker exists it can be dragged (see `scrubExportStart`/`scrubExportEnd`
+              below), but nothing except `I`/`O` could create the marker in the first place. Always
+              visible (not gated on `hasExportRange`) since these are what CREATES the range to begin
+              with — a button that only appears once a range already exists would be useless for exactly
+              the case this fixes. */}
+          <button
+            // A plain snapshot read (not a subscribed selector) — same "CurrentTime is isolated so the
+            // whole Timeline doesn't re-render 30-60×/sec during playback" reasoning above; this only
+            // needs the playhead's value at the moment of the click, never a live re-render.
+            onClick={() => setExportRangeStart(useEditorStore.getState().playhead)}
+            aria-label={t("Set export range start at playhead")}
+            title={t("Set export range start at playhead (I)")}
+            className="rounded px-1.5 py-0.5 text-[11px] text-amber-300/80 transition hover:bg-amber-500/15 hover:text-amber-200"
+          >
+            {t("Set In")}
+          </button>
+          <button
+            onClick={() => setExportRangeEnd(useEditorStore.getState().playhead)}
+            aria-label={t("Set export range end at playhead")}
+            title={t("Set export range end at playhead (O)")}
+            className="rounded px-1.5 py-0.5 text-[11px] text-amber-300/80 transition hover:bg-amber-500/15 hover:text-amber-200"
+          >
+            {t("Set Out")}
+          </button>
+          {hasExportRange && (
+            // Same amber as the in/out markers themselves — the visual link makes it obvious this
+            // button is what removes THOSE, not some unrelated action. Also reachable via Shift+X (see
+            // VCutApp.tsx) — this is the discoverable version for anyone who wouldn't otherwise know
+            // the shortcut, or the "Reset to full timeline" link buried inside the Export dialog.
+            <button
+              onClick={() => clearExportRange()}
+              aria-label={t("Clear export range")}
+              title={t("Clear export in/out range (Shift+X)")}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-amber-300/80 transition hover:bg-amber-500/15 hover:text-amber-200"
+            >
+              {t("× Range")}
+            </button>
+          )}
         </div>
-        {hasExportRange && (
-          // Same amber as the in/out markers themselves — the visual link makes it obvious this
-          // button is what removes THOSE, not some unrelated action. Also reachable via Shift+X (see
-          // VCutApp.tsx) — this is the discoverable version for anyone who wouldn't otherwise know
-          // the shortcut, or the "Reset to full timeline" link buried inside the Export dialog.
-          <button
-            onClick={() => clearExportRange()}
-            aria-label={t("Clear export range")}
-            title={t("Clear export in/out range (Shift+X)")}
-            className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-amber-300/80 transition hover:bg-amber-500/15 hover:text-amber-200"
-          >
-            {t("× Range")}
-          </button>
-        )}
         <div className="ml-auto flex items-center gap-1">
-          <button
-            onClick={() => run(new AddTrackCommand("video"))}
-            className="rounded px-2 py-1 text-[11px] text-white/60 transition hover:bg-white/10 hover:text-white"
-          >
-            {t("+ Video")}
-          </button>
-          <button
-            onClick={() => run(new AddTrackCommand("audio"))}
-            className="rounded px-2 py-1 text-[11px] text-white/60 transition hover:bg-white/10 hover:text-white"
-          >
-            {t("+ Audio")}
-          </button>
-          <button
-            onClick={() => run(new AddTrackCommand("text"))}
-            className="rounded px-2 py-1 text-[11px] text-white/60 transition hover:bg-white/10 hover:text-white"
-          >
-            {t("+ Text")}
-          </button>
-          <span className="mx-1 h-4 w-px bg-white/10" />
           {/* min-h/min-w 26px — same touch-target floor as TrackHeader's FlagButton (see its own
               comment: padding-only sizing measured as small as ~17×19px on a real mobile viewport). */}
           <button
@@ -756,7 +929,26 @@ export function Timeline() {
         </div>
       </header>
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
+        {/* Mobile's merged stand-in for the header's own (now `lg`-only, see above) live
+            position/duration readout — same live value (the exact same isolated `CurrentTime`, so
+            this doesn't cost a second 30-60×/sec-during-playback subscription), just anchored over the
+            ruler's own left edge instead of a separate row above it, to give that row's height back to
+            the tracks below on a phone. A plain `absolute` overlay on THIS wrapper (not `sticky` inside
+            the scrolling ruler itself, which was tried first and confirmed NOT to stay put — it
+            scrolled away with the ruler's own horizontally-scrolling content instead of sticking to
+            the viewport edge) — this wrapper never scrolls at all (only `scrollRef`, its child, does),
+            so a plain top-left-pinned absolute child is unaffected by scroll on EITHER axis by
+            construction, no sticky-positioning edge cases to fight. `z-30`/matching background: sits
+            above and fully covers whichever tick mark would otherwise be directly behind it. */}
+        <div
+          style={{ height: RULER_HEIGHT }}
+          className="pointer-events-none absolute left-0 top-0 z-30 flex items-center gap-1 border-b border-r border-white/10 bg-[#0d0f14] px-1.5 font-mono text-[10px] tabular-nums lg:hidden"
+        >
+          <CurrentTime fps={project.sequence.fps} />
+          <span className="text-white/30">/</span>
+          <span className="text-white/45">{formatTimecode(total, project.sequence.fps)}</span>
+        </div>
         {/* Track headers sit outside the horizontal scroll so they stay visible while scrubbing far
             along a long edit — desktop only. On mobile they scroll WITH the clips instead, as inline
             per-row chips inside the lanes themselves (see that render below); there's no separate
@@ -774,7 +966,6 @@ export function Timeline() {
                     key={track.id}
                     track={track}
                     height={isTrackCompact(track) ? EMPTY_TRACK_HEIGHT : TRACK_HEIGHT}
-                    compact={isTrackCompact(track)}
                     isMobile={isMobile}
                     dropIndicator={trackDropIndicator?.trackId === track.id ? trackDropIndicator.position : null}
                     onDragOverRow={(trackId, position) => setTrackDropIndicator({ trackId, position })}
@@ -782,6 +973,14 @@ export function Timeline() {
                     onDragEndRow={() => setTrackDropIndicator(null)}
                   />
                 ))}
+                <div
+                  style={{ height: NEW_TRACK_ROW_HEIGHT }}
+                  className={`flex items-center border-b border-white/10 px-2 transition ${
+                    assetDrag && isOverNewTrackRow(assetDrag.clientY) ? "bg-sky-500/15" : ""
+                  }`}
+                >
+                  <AddTrackButton onPick={(kind) => run(new AddTrackCommand(kind))} />
+                </div>
               </div>
             </div>
           </div>
@@ -931,14 +1130,35 @@ export function Timeline() {
                       <TrackHeader
                         track={track}
                         height={isTrackCompact(track) ? EMPTY_TRACK_HEIGHT : TRACK_HEIGHT}
-                        compact={isTrackCompact(track)}
-                        isMobile={isMobile}
+                            isMobile={isMobile}
                         dropIndicator={trackDropIndicator?.trackId === track.id ? trackDropIndicator.position : null}
                         onDragOverRow={(trackId, position) => setTrackDropIndicator({ trackId, position })}
                         onDropRow={dropTrackOnRow}
                         onDragEndRow={() => setTrackDropIndicator(null)}
                       />
                     </div>
+                  )}
+                  {track.clips.length === 0 && !track.locked && !(recording && recording.trackId === track.id) && (
+                    <AddClipButton
+                      kind={track.kind}
+                      label={track.kind === "video" ? t("Add video") : track.kind === "audio" ? t("Add audio") : t("Add text")}
+                      onClick={() => {
+                        if (track.kind === "text") {
+                          // Same compose-before-create flow the toolbar's own Text button uses (see
+                          // `editorStore.ts`'s `composeText` doc comment) — `trackId` pins the result
+                          // to THIS specific empty track rather than `commitComposedText`'s own generic
+                          // "first unlocked text track" fallback.
+                          setComposeText({ style: DEFAULT_TEXT_STYLE, trackId: track.id });
+                          return;
+                        }
+                        setEmptyTrackImportTarget(track);
+                        // Deferred a tick: the ref's `accept` attribute (set from `emptyTrackImportTarget`
+                        // in the render below) needs to reflect THIS track's kind before the native picker
+                        // opens, and a state update isn't guaranteed to have re-rendered yet at this exact
+                        // point in the same event handler.
+                        requestAnimationFrame(() => emptyTrackImportInputRef.current?.click());
+                      }}
+                    />
                   )}
                   {track.clips.map((clip) => (
                     <TimelineClip
@@ -980,7 +1200,51 @@ export function Timeline() {
                   )}
                 </div>
               ))}
+              {/* Drop-zone twin of the header column's `AddTrackButton` row above — same Y position
+                  (both sit right after the same track list, and the header column tracks this one's
+                  scroll via the transform above), hit-tested by `isOverNewTrackRow` via its own ref
+                  rather than summed heights. Highlighted the same way an existing track row is when
+                  a drag is hovering it (see `dropTrackId`/`resolveTrackAt` above). Mobile also needs
+                  its OWN tap target here, since there's no separate header column to hold one. */}
+              <div
+                ref={newTrackRowRef}
+                style={{ height: NEW_TRACK_ROW_HEIGHT }}
+                className={`relative border-b border-white/10 ${
+                  assetDrag && isOverNewTrackRow(assetDrag.clientY)
+                    ? "bg-sky-500/15 outline outline-1 -outline-offset-1 outline-sky-400/50"
+                    : ""
+                }`}
+              >
+                {isMobile && (
+                  <div
+                    style={{ position: "absolute", left: -HEADER_WIDTH - 4, top: 0, bottom: 0, width: HEADER_WIDTH }}
+                    className="z-10 flex items-center px-2"
+                  >
+                    <AddTrackButton onPick={(kind) => run(new AddTrackCommand(kind))} />
+                  </div>
+                )}
+              </div>
             </div>
+
+            {/* Backs every empty-track `AddClipButton` above — see `emptyTrackImportTarget`'s own
+                comment for why one shared, imperatively-clicked input beats one per row. */}
+            <input
+              ref={emptyTrackImportInputRef}
+              type="file"
+              multiple
+              accept={emptyTrackImportTarget && emptyTrackImportTarget.kind !== "text" ? ACCEPTED_EXTENSIONS_BY_KIND[emptyTrackImportTarget.kind] : undefined}
+              className="hidden"
+              onChange={(e) => {
+                const files = [...(e.target.files ?? [])];
+                e.target.value = "";
+                const target = emptyTrackImportTarget;
+                setEmptyTrackImportTarget(null);
+                if (files.length === 0 || !target) return;
+                void importFiles(files).then((assets) => {
+                  for (const asset of assets) addAssetAtPlayhead(asset.id, target.id, { avoidOverlap: true });
+                });
+              }}
+            />
 
             {/* Export range dimming: darkens whatever falls OUTSIDE the selected in/out range, so
                 it's obvious at a glance which portion of the timeline will actually render.
@@ -1005,6 +1269,46 @@ export function Timeline() {
               />
             )}
 
+            {/* The outro end card VCut appends at export time for a non-Pro hosted account (see
+                `export/route.ts`'s own `shouldIncludeOutro`) — never a real clip on a real track (see
+                the design discussion this came out of: making it one risked reintroducing a real OOM
+                bug from mixing it into the main timeline's own tracks, and a free user could simply
+                delete or drag their own paywall). This is a plain, non-interactive visual marker
+                instead: purely informational, so what you see here is honest about what you'll
+                actually get on export without the export itself needing to change at all.
+                `pointer-events-none` (nothing to select/drag/trim — there's no real clip behind it)
+                and `hatched` diagonal stripes rather than a solid fill specifically so it never gets
+                mistaken for an actual clip at a glance. Positioned right after the real content ends
+                (`total * pixelsPerSecond`), same `top: RULER_HEIGHT` convention as the dimming above.
+                `total > 0`: on a genuinely EMPTY project this would otherwise render AT time 0 —
+                confirmed a real, reported bug, sitting directly on top of every empty track's own
+                "+ Add video"/"+ Add audio" affordance and reading as if the outro WERE the timeline's
+                only content instead of something appended after it. Nothing to append after until
+                there's at least one real clip, so the marker simply doesn't apply yet either.
+                Interactive (not `pointer-events-none` anymore) — same "tell them why" upsell
+                `Preview.tsx`'s own click handler shows for the identical zone on the CANVAS, so
+                tapping the marker here answers the same "what is this / can I remove it" question
+                without needing to first scrub the playhead into it and click the preview instead. */}
+            {showOutroMarker && total > 0 && (
+              <button
+                type="button"
+                onClick={() =>
+                  setStatus(isMobile ? t("Upgrade to Pro to remove the outro") : t("Subscribe to VCut Pro to remove this outro from your exports."))
+                }
+                style={{
+                  left: total * pixelsPerSecond,
+                  width: OUTRO_DURATION_SECONDS * pixelsPerSecond,
+                  top: RULER_HEIGHT,
+                  backgroundImage: "repeating-linear-gradient(135deg, rgba(255,255,255,0.06) 0 6px, transparent 6px 12px)",
+                }}
+                className="absolute bottom-0 z-20 cursor-pointer overflow-hidden border-l border-white/15 bg-white/[0.03] text-left transition hover:bg-white/[0.06]"
+              >
+                <span className="absolute left-1 top-1 whitespace-nowrap text-[9px] font-medium uppercase tracking-wide text-white/40">
+                  {t("Outro (added on export)")}
+                </span>
+              </button>
+            )}
+
             {/* Export range markers — same shape/positioning convention as the playhead marker below,
                 amber instead of rose so the two are never confused. Unlike the playhead, each has a
                 real drag handle (the small flag): `I`/`O` (see VCutApp.tsx) set them at the current
@@ -1012,6 +1316,10 @@ export function Timeline() {
                 independent — setting only an out-point (leaving in at the implicit start) is valid. */}
             {exportRangeStart !== null && (
               <div style={{ left: exportStart * pixelsPerSecond }} className="absolute top-0 bottom-0 z-30 w-px bg-amber-400">
+                {/* The actual drag/tap target is bigger (24px) than the visible flag (10px) it's
+                    centered on — a 10×10px hit box is well under the ~44px minimum a finger can
+                    reliably land on. Keeping the VISIBLE flag small avoids cluttering a zoomed-in
+                    timeline with an oversized marker; only the invisible surrounding area grows. */}
                 <div
                   role="slider"
                   aria-label={t("Export range start")}
@@ -1021,8 +1329,10 @@ export function Timeline() {
                   tabIndex={0}
                   onMouseDown={scrubExportStart}
                   onTouchStart={scrubExportStart}
-                  className="absolute -left-[5px] top-0 h-2.5 w-2.5 cursor-ew-resize touch-none rounded-b-sm bg-amber-400"
-                />
+                  className="absolute -left-3 top-0 flex h-6 w-6 cursor-ew-resize touch-none items-start justify-center"
+                >
+                  <div className="h-2.5 w-2.5 rounded-b-sm bg-amber-400" />
+                </div>
               </div>
             )}
             {exportRangeEnd !== null && (
@@ -1036,8 +1346,10 @@ export function Timeline() {
                   tabIndex={0}
                   onMouseDown={scrubExportEnd}
                   onTouchStart={scrubExportEnd}
-                  className="absolute -left-[5px] top-0 h-2.5 w-2.5 cursor-ew-resize touch-none rounded-b-sm bg-amber-400"
-                />
+                  className="absolute -left-3 top-0 flex h-6 w-6 cursor-ew-resize touch-none items-start justify-center"
+                >
+                  <div className="h-2.5 w-2.5 rounded-b-sm bg-amber-400" />
+                </div>
               </div>
             )}
             </div>

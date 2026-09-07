@@ -141,7 +141,12 @@ export interface TextStyle {
  *  being unset doesn't stop `TEXT_BOX_PADDING` from already being a sensible constant. */
 export const DEFAULT_TEXT_STYLE: TextStyle = {
   fontFamily: DEFAULT_FONT_ID,
-  fontSize: 64,
+  // 96, not the original 64 — a real, explicit "make new text bigger by default" request. 64px on a
+  // typical 1080-wide sequence read as noticeably small relative to the frame, closer to a caption
+  // than the bold, easy-to-read-at-a-glance title text most short-form video text overlays actually
+  // want as their starting point (font size here is always true SEQUENCE pixels, not CSS/preview
+  // pixels — see this field's own doc comment).
+  fontSize: 96,
   color: "#ffffff",
   bold: false,
   italic: false,
@@ -789,14 +794,24 @@ export interface Project {
   /** The project's own reusable "My Sounds" library — see `CustomSfxAsset`'s own doc comment. Same
    *  always-present, backfilled-on-load contract as `luts`. */
   customSfx: CustomSfxAsset[];
+  /** The Supabase user id that owns this project — only ever set in the hosted web deployment (see
+   *  `studios/vcut/app/api/vcut/_lib/localOnly.ts`'s `VCUT_HOSTED` branch), stamped once at creation
+   *  and never changed afterward. `undefined` for every LOCAL project (desktop, dev) — there is no
+   *  concept of "owner" outside hosted mode, the same single-implicit-user assumption the rest of the
+   *  local storage layer already makes. Deliberately optional rather than a required `string`: adding
+   *  a REQUIRED field would force every local `project.json` ever written before this existed to fail
+   *  `deserializeProject`'s validation the instant it's opened again. */
+  ownerId?: string;
 }
 
 /** How long a still image occupies the timeline when first placed, in seconds. */
 export const IMAGE_DEFAULT_DURATION = 5;
 
 /** How long a text clip occupies the timeline when first placed, in seconds — same reasoning as
- *  `IMAGE_DEFAULT_DURATION`: text has no intrinsic duration of its own. */
-export const TEXT_DEFAULT_DURATION = 5;
+ *  `IMAGE_DEFAULT_DURATION`: text has no intrinsic duration of its own. Shorter than a still image's
+ *  own default: a title/caption is typically read in a couple of seconds, and a short default clip is
+ *  easier to nudge/extend to fit a specific beat than a long one is to trim down. */
+export const TEXT_DEFAULT_DURATION = 3;
 
 /** The "Short" preset from the product spec — vertical 1080×1920 @ 30fps, the default because
  *  short-form vertical video is VCut's primary target. */

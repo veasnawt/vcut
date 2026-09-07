@@ -315,6 +315,40 @@ describe("project serialization", () => {
     assert.ok(!("transitionOut" in restored.sequence.tracks[0].clips[0]));
   });
 
+  it("round-trips a clip's pixelEffect", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const raw = JSON.parse(serializeProject(project));
+    raw.sequence.tracks[0].clips[0].pixelEffect = { type: "glitch", speed: 2 };
+
+    const restored = deserializeProject(JSON.stringify(raw));
+
+    assert.deepEqual(restored.sequence.tracks[0].clips[0].pixelEffect, { type: "glitch", speed: 2 });
+  });
+
+  it("drops a pixelEffect with an unknown type entirely, keeping the clip", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const raw = JSON.parse(serializeProject(project));
+    raw.sequence.tracks[0].clips[0].pixelEffect = { type: "notARealEffect" };
+
+    const restored = deserializeProject(JSON.stringify(raw));
+
+    assert.equal(restored.sequence.tracks[0].clips[0].pixelEffect, undefined);
+    assert.ok(!("pixelEffect" in restored.sequence.tracks[0].clips[0]));
+  });
+
+  it("round-trips a clip's lutId", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const raw = JSON.parse(serializeProject(project));
+    raw.sequence.tracks[0].clips[0].lutId = "lut1";
+
+    const restored = deserializeProject(JSON.stringify(raw));
+
+    assert.equal(restored.sequence.tracks[0].clips[0].lutId, "lut1");
+  });
+
   it("refuses a file written by a newer VCut rather than round-tripping it lossily", () => {
     const project = emptyProject();
     const raw = JSON.parse(serializeProject(project));

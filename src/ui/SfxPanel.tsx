@@ -100,27 +100,25 @@ export function SfxPanel({ onClose }: { onClose: () => void }) {
   /** Whether `track` has genuinely nothing occupying `[playhead, playhead+duration)` — an SFX pick is
    *  almost always dropped on top of an ALREADY-full background-music/dialogue track (that's the whole
    *  point of a sound effect), so "just place it at the playhead" can't assume the spot is empty the
-   *  way `addTextAtPlayhead`'s own fresh text track usually can. Same overlap check
-   *  `nonOverlappingStart` (`timeline/queries.ts`) already makes, inlined here rather than imported
-   *  since this only needs the boolean, not `nonOverlappingStart`'s own "then fall back to the track's
-   *  end" behavior — that fallback is exactly what this function exists to AVOID (see
-   *  `targetAudioTrackId`'s own doc comment for why "silently jumps to the end of an occupied track"
-   *  was the reported bug). */
+   *  way a fresh text track usually can. Same overlap check `nonOverlappingStart` (`timeline/
+   *  queries.ts`) already makes, inlined here rather than imported since this only needs the boolean,
+   *  not `nonOverlappingStart`'s own fallback for what to do when the spot ISN'T free — this function
+   *  exists specifically to let `targetAudioTrackId` below try OTHER tracks first, landing the SFX
+   *  exactly at the playhead whenever any candidate track allows it, rather than accepting the first
+   *  audio track and letting `nonOverlappingStart` nudge it away from the playhead on that one. */
   function isFreeAt(track: Track, start: number, duration: number): boolean {
     const end = start + duration;
     return !track.clips.some((c) => c.timelineStart < end && clipEnd(c) > start);
   }
 
   /** Finds an unlocked audio track with genuinely free room at the playhead for this SFX's own
-   *  duration, or creates a fresh one — never a track that's merely "audio and unlocked" the way this
-   *  used to pick (see the note above): the OLD version paired with `addAssetAtPlayhead`'s own
-   *  `avoidOverlap: true` and `nonOverlappingStart`'s "if it overlaps, jump to the END of the whole
-   *  track" fallback, which is why picking a background-music track (almost always occupied at
-   *  whatever moment the user is adding an SFX for) silently landed the new clip far down the timeline
-   *  instead of at the playhead the user was actually looking at. Prefers the currently active track
-   *  when it's audio AND free, matching `addAssetAtPlayhead`'s own "stay on the active track" instinct;
-   *  otherwise the first unlocked audio track with room; a brand-new track (always empty, so always
-   *  free) only as the last resort. */
+   *  duration, or creates a fresh one — never just the first track that's merely "audio and unlocked"
+   *  (see `isFreeAt`'s own doc comment for why picking among several candidates this way keeps the SFX
+   *  landing exactly at the playhead more often, rather than relying on `addAssetAtPlayhead`'s own
+   *  `avoidOverlap: true`/`nonOverlappingStart` to nudge it forward on whichever track happened to be
+   *  occupied). Prefers the currently active track when it's audio AND free, matching
+   *  `addAssetAtPlayhead`'s own "stay on the active track" instinct; otherwise the first unlocked audio
+   *  track with room; a brand-new track (always empty, so always free) only as the last resort. */
   function targetAudioTrackId(duration: number): string {
     if (!project) throw new Error("No project loaded");
     const activeTrack = activeTrackId ? project.sequence.tracks.find((t) => t.id === activeTrackId) : undefined;

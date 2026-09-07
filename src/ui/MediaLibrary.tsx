@@ -2,7 +2,7 @@
 
 import React, { useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Art, Close, Image as ImageIcon, Music, Text as TextIcon, Video } from "@veasnawt/vicons";
+import { Art, Close, Image as ImageIcon, Music, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
 import { thumbnailUrl } from "../api/client.ts";
 import { AddClipCommand } from "../commands/index.ts";
 import { translateText } from "../i18n/translations.ts";
@@ -13,7 +13,15 @@ import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
 import { Dropdown } from "./Dropdown.tsx";
 import { ImportSourceMenu } from "./ImportSourceMenu.tsx";
+import { MediaPreviewModal } from "./MediaPreviewModal.tsx";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
+
+/** Which asset kinds `MediaPreviewModal` actually has real media to show — text/color have no backing
+ *  file at all (see `Asset.color`/`textContent`'s own doc comments), so a preview trigger for them
+ *  would open a modal with nothing real to play. */
+function isPreviewable(kind: Asset["kind"]): boolean {
+  return kind === "video" || kind === "audio" || kind === "image";
+}
 
 /** True once, at module load — which platform this bundle is running on never changes mid-session, so
  *  there's no need to re-check it on every render the way `Capacitor.isNativePlatform()` calls
@@ -131,6 +139,7 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
   const [sortKey, setSortKey] = useState<SortKey>("imported");
   const [dragOver, setDragOver] = useState(false);
   const [showImportMenu, setShowImportMenu] = useState(false);
+  const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
 
   /** "Photos" side of the native Import menu — the OS's own photo/video library, via
    *  `@capacitor/camera`'s multi-picker. Historically an IMAGE-first API (its `pickImages` name is
@@ -164,7 +173,7 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
       .filter((a) => !a.hiddenFromLibrary)
       // Text assets never belong here, unconditionally — unlike every other kind, one was never
       // IMPORTED media to begin with (`relPath` is always `""`, there's no file to preview/re-add),
-      // it's authored directly on the timeline (`addTextAtPlayhead`, Auto Captions, a duplicated text
+      // it's authored directly on the timeline (the Text tool, Auto Captions, a duplicated text
       // clip) and stays a purely timeline-scoped thing from then on. A structural exclusion by `kind`,
       // not another `hiddenFromLibrary: true` at each creation site (`createTextAsset` et al.) —
       // that flag is for content that's INCIDENTALLY not library-worthy (a quick voiceover take);
@@ -237,7 +246,7 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
       setAssetDrag(null);
       if (!armed || !moved) return;
       const point = clientPoint(upEvent);
-      const target = useEditorStore.getState().resolveTimelineDropTarget?.(point.x, point.y);
+      const target = useEditorStore.getState().resolveTimelineDropTarget?.(point.x, point.y, asset.id);
       if (target) run(new AddClipCommand(target.trackId, asset.id, target.time));
     }
 
@@ -375,6 +384,31 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                 >
                   <div className="relative aspect-video w-full shrink-0 overflow-hidden rounded bg-black lg:h-11 lg:w-16">
                     <AssetThumbnail asset={asset} projectId={projectId} />
+                    {/* A thumbnail (one static frame, or a short filmstrip strip) is enough to
+                        RECOGNIZE a clip already known, but not enough to hear an audio file or tell
+                        two similarly-thumbnailed takes apart — this opens the real thing
+                        (`MediaPreviewModal`) without placing it on the timeline first. A small centered
+                        button, NOT `inset-0` over the whole thumbnail — the thumbnail is also the
+                        drag-to-timeline surface (`onMouseDown`/`onTouchStart` on the card above), and
+                        covering all of it would swallow that gesture the instant it starts from
+                        anywhere over the picture. Small and off to one side of that surface instead,
+                        the same "a nested interactive element coexists fine inside a draggable card"
+                        precedent the corner remove button already relies on. Always visible (not
+                        hover-only): a genuinely new capability nothing on screen hinted at before now
+                        needs to be discoverable, on touch as much as with a mouse. */}
+                    {isPreviewable(asset.kind) && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPreviewAsset(asset);
+                        }}
+                        title={t("Preview {name}", { name: asset.name })}
+                        aria-label={t("Preview {name}", { name: asset.name })}
+                        className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white/80 transition hover:bg-black/80 hover:text-white"
+                      >
+                        <Play size={12} />
+                      </button>
+                    )}
                     {/* Kind badge — mobile-grid only. Desktop's thumbnail is too small (44×64) for this
                         to read cleanly there, and its row already spells the kind out via `describe()`
                         next to the name; the grid has no equivalent text label at a glance, so the icon
@@ -443,6 +477,9 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
         >
           {dragGhost.name}
         </div>
+      )}
+      {previewAsset && projectId && (
+        <MediaPreviewModal asset={previewAsset} projectId={projectId} onClose={() => setPreviewAsset(null)} />
       )}
     </section>
   );

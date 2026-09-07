@@ -571,8 +571,13 @@ export function TransformHandles({
       <div
         style={{
           position: "absolute",
-          left: cssCenterX - stageRect.left,
-          top: cssCenterY - stageRect.top,
+          // Rounded to the same integer pixel grid the corner/rotate handles below now snap to (see
+          // their own comment) — both derive from this same `cssCenterX`/`cssCenterY`, so rounding it
+          // once here, consistently, is what keeps the visible border and the handle dots agreeing on
+          // where "the corner" actually is instead of each independently rounding a different
+          // fractional value at paint time.
+          left: Math.round(cssCenterX - stageRect.left),
+          top: Math.round(cssCenterY - stageRect.top),
           width: cssWidth,
           height: cssHeight,
           transform: `translate(-50%, -50%) rotate(${transform.rotationDeg}deg)`,
@@ -620,8 +625,24 @@ export function TransformHandles({
               aria-label={t("Resize clip ({corner})", { corner: t(label) })}
               onMouseDown={(e) => beginDrag(e, "scale", { x, y })}
               onTouchStart={(e) => beginDrag(e, "scale", { x, y })}
-              style={{ position: "fixed", left: point.x, top: point.y, width: HANDLE_SIZE, height: HANDLE_SIZE, zIndex: 40 }}
-              className={`pointer-events-auto -translate-x-1/2 -translate-y-1/2 flex touch-none items-center justify-center ${cursor}`}
+              // A fixed numeric offset (`point` rounded to a whole pixel, HANDLE_SIZE known and even),
+              // not `left: point.x` + a `-translate-x-1/2`/`-translate-y-1/2` CSS transform — the two
+              // read as equivalent but aren't guaranteed to rasterize identically: a percentage
+              // transform is resolved against THIS element's own rendered box by the browser's layout
+              // engine, independently of how the (separately positioned/sized) selection border below
+              // rounds its own fractional CSS pixels, so the two can drift apart by a sub-pixel amount
+              // at some `cssScale` values — confirmed as a real, reported "handles aren't quite on the
+              // corner" complaint. Pre-rounding both to the same integer pixel grid here removes that
+              // whole class of drift instead of guessing at which element's rounding was "wrong."
+              style={{
+                position: "fixed",
+                left: Math.round(point.x) - HANDLE_SIZE / 2,
+                top: Math.round(point.y) - HANDLE_SIZE / 2,
+                width: HANDLE_SIZE,
+                height: HANDLE_SIZE,
+                zIndex: 40,
+              }}
+              className={`pointer-events-auto flex touch-none items-center justify-center ${cursor}`}
             >
               <div style={{ width: HANDLE_DOT_SIZE, height: HANDLE_DOT_SIZE }} className="rounded-full border border-white bg-sky-400 shadow" />
             </div>
@@ -632,8 +653,16 @@ export function TransformHandles({
             aria-label={t("Rotate clip")}
             onMouseDown={(e) => beginDrag(e, "rotate")}
             onTouchStart={(e) => beginDrag(e, "rotate")}
-            style={{ position: "fixed", left: rotatePoint.x, top: rotatePoint.y, width: HANDLE_SIZE, height: HANDLE_SIZE, zIndex: 40 }}
-            className="pointer-events-auto -translate-x-1/2 -translate-y-1/2 flex touch-none cursor-grab items-center justify-center"
+            // Same reasoning as the corner handles above.
+            style={{
+              position: "fixed",
+              left: Math.round(rotatePoint.x) - HANDLE_SIZE / 2,
+              top: Math.round(rotatePoint.y) - HANDLE_SIZE / 2,
+              width: HANDLE_SIZE,
+              height: HANDLE_SIZE,
+              zIndex: 40,
+            }}
+            className="pointer-events-auto flex touch-none cursor-grab items-center justify-center"
           >
             <div style={{ width: HANDLE_DOT_SIZE, height: HANDLE_DOT_SIZE }} className="rounded-full border border-white bg-emerald-400 shadow" />
           </div>
