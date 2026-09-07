@@ -1,6 +1,6 @@
 {
   "name": "@veasnawt/vcut",
-  "version": "0.1.0",
+  "version": "0.2.0-beta.1",
   "description": "VCut — a focused video editor for short-form creative work",
   "private": true,
   "main": "src/index.ts",
