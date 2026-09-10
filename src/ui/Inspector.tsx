@@ -424,23 +424,29 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
         active={pickerTab}
         onChange={setPickerTab}
       />
-      {pickerTab === "font" && (
-        <FontPickerGrid khmerOnly={language === "km"} selectedId={fontId ?? defaultFontIdFor(language)} onPick={setFontId} />
-      )}
-      {pickerTab === "style" && (
-        <>
-          <button
-            onClick={() => setPreset(null)}
-            className={`mb-1.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/70 transition hover:bg-white/10 hover:text-white ${
-              preset === null ? "ring-1 ring-sky-400/60" : ""
-            }`}
-          >
-            {t("Default")}
-          </button>
-          <TextStylePresetGrid selectedId={preset?.id} onPick={setPreset} />
-        </>
-      )}
-      {pickerTab === "animation" && <TextAnimationPickerGrid current={animation} onPick={setAnimation} />}
+      {/* Own capped-height scroll region — this section, unlike `AutoCaptionsDialog.tsx`'s modal, has
+          no fixed footer of its own (it's one naturally-scrolling column inside the Inspector sidebar),
+          so an uncapped Font grid (~25 tiles for Khmer) really did push Generate Captions far down a
+          long scroll. See that dialog's own identical wrapper for the fuller reasoning. */}
+      <div className="max-h-52 overflow-y-auto scrollbar-none pr-0.5">
+        {pickerTab === "font" && (
+          <FontPickerGrid khmerOnly={language === "km"} selectedId={fontId ?? defaultFontIdFor(language)} onPick={setFontId} />
+        )}
+        {pickerTab === "style" && (
+          <>
+            <button
+              onClick={() => setPreset(null)}
+              className={`mb-1.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/70 transition hover:bg-white/10 hover:text-white ${
+                preset === null ? "ring-1 ring-sky-400/60" : ""
+              }`}
+            >
+              {t("Default")}
+            </button>
+            <TextStylePresetGrid selectedId={preset?.id} onPick={setPreset} />
+          </>
+        )}
+        {pickerTab === "animation" && <TextAnimationPickerGrid current={animation} onPick={setAnimation} />}
+      </div>
       <button
         onClick={() => void begin()}
         className="mt-3 w-full rounded bg-sky-500 py-1.5 text-[12px] font-semibold text-white transition hover:bg-sky-400"

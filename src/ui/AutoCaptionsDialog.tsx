@@ -323,23 +323,32 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
                 active={pickerTab}
                 onChange={setPickerTab}
               />
-              {pickerTab === "font" && (
-                <FontPickerGrid khmerOnly={language === "km"} selectedId={fontId ?? defaultFontIdFor(language)} onPick={setFontId} />
-              )}
-              {pickerTab === "style" && (
-                <>
-                  <button
-                    onClick={() => setPreset(null)}
-                    className={`mb-1.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/70 transition hover:bg-white/10 hover:text-white ${
-                      preset === null ? "ring-1 ring-sky-400/60" : ""
-                    }`}
-                  >
-                    {t("Default")}
-                  </button>
-                  <TextStylePresetGrid selectedId={preset?.id} onPick={setPreset} />
-                </>
-              )}
-              {pickerTab === "animation" && <TextAnimationPickerGrid current={animation} onPick={setAnimation} />}
+              {/* Own capped-height scroll region, independent of the dialog's outer one — Font alone can
+                  run ~25 tiles for Khmer, and without this a tall tab's content would otherwise grow the
+                  WHOLE middle section (this dialog's footer is fixed outside it so Generate stays
+                  reachable either way, but `AutoCaptionsSection`'s own copy of this same UI in Inspector
+                  has no such fixed footer — there, an uncapped grid really did push its own Generate
+                  button far down a long scroll). Fixed height (not content-dependent) also means
+                  switching tabs never resizes the dialog around the user. */}
+              <div className="max-h-52 overflow-y-auto scrollbar-none pr-0.5">
+                {pickerTab === "font" && (
+                  <FontPickerGrid khmerOnly={language === "km"} selectedId={fontId ?? defaultFontIdFor(language)} onPick={setFontId} />
+                )}
+                {pickerTab === "style" && (
+                  <>
+                    <button
+                      onClick={() => setPreset(null)}
+                      className={`mb-1.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/70 transition hover:bg-white/10 hover:text-white ${
+                        preset === null ? "ring-1 ring-sky-400/60" : ""
+                      }`}
+                    >
+                      {t("Default")}
+                    </button>
+                    <TextStylePresetGrid selectedId={preset?.id} onPick={setPreset} />
+                  </>
+                )}
+                {pickerTab === "animation" && <TextAnimationPickerGrid current={animation} onPick={setAnimation} />}
+              </div>
             </>
           )}
           {error && <p className="mt-2 text-[12px] text-rose-300">{error}</p>}
