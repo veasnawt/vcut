@@ -42,7 +42,7 @@ import {
   SetTextCommand,
 } from "../commands/index.ts";
 import { clipDuration, findAsset, findClip } from "../project/createProject.ts";
-import { FONT_REGISTRY, preloadFont, resolveFont } from "../project/fonts.ts";
+import { preloadFont, resolveFont } from "../project/fonts.ts";
 import type { Clip, ClipEffects, ClipTransform, ColorGrading, TextCrop, TextStyle } from "../project/types.ts";
 import { DEFAULT_CHROMA_KEY, DEFAULT_TEXT_STYLE, IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../project/types.ts";
 import { applyTextStylePreset } from "../project/textStylePresets.ts";
@@ -72,6 +72,7 @@ import {
 } from "../timeline/transitions.ts";
 import { CurveEditor } from "./CurveEditor.tsx";
 import { Dropdown, type DropdownOption } from "./Dropdown.tsx";
+import { FontGridPicker } from "./FontGridPicker.tsx";
 import { defaultFontIdFor, FontPickerGrid } from "./FontPickerGrid.tsx";
 import { KeyframeTrack } from "./KeyframeTrack.tsx";
 import { NumberField } from "./NumberField.tsx";
@@ -1211,22 +1212,16 @@ export function Inspector() {
                   const font = resolveFont(style.fontFamily, project!.customFonts);
                   return (
                     <>
-                      <div className="flex items-center justify-between gap-2 py-1.5">
-                        <span className="text-[12px] text-white/50">{t("Font")}</span>
-                        <Dropdown
-                          value={style.fontFamily}
-                          onChange={(v) => {
+                      <div className="py-1.5">
+                        <p className="mb-1.5 text-[12px] text-white/50">{t("Font")}</p>
+                        <FontGridPicker
+                          customFonts={project!.customFonts}
+                          selectedId={style.fontFamily}
+                          onPick={(v) => {
                             preloadFont(resolveFont(v, project!.customFonts));
                             patchTextStyleForSelection({ fontFamily: v });
                           }}
-                          ariaLabel={t("Font")}
-                          className="min-w-0 flex-1 text-[13px]"
-                          searchable
                           searchPlaceholder={t("Search fonts…")}
-                          options={[
-                            ...project!.customFonts.map((f) => ({ value: f.id, label: f.name, style: { fontFamily: `"${f.cssFamily}"` } })),
-                            ...FONT_REGISTRY.map((f) => ({ value: f.id, label: f.label, style: { fontFamily: `"${f.cssFamily}"` } })),
-                          ]}
                         />
                       </div>
                       <NumberField
@@ -1385,32 +1380,24 @@ export function Inspector() {
                             run={run}
                             textAsset={{ id: asset.id, content, style: baseStyle }}
                           />
-                          {/* A plain `<div>`, not `<label>` — a `<label>` wrapping a `<button>` (the
-                              Dropdown's own toggle) makes the BROWSER forward any click landing
-                              anywhere inside it to that button natively, per HTML's label-forwarding
-                              behavior. That includes clicks on the popup's OWN options once it's open
-                              (still a DOM descendant of this wrapper), which re-toggled the button
-                              immediately after a selection closed it — confirmed the hard way: the
-                              dropdown reopened itself right after picking an option. The Dropdown's own
-                              `ariaLabel` prop already gives the button its accessible name, so the
-                              `<label>` wasn't buying anything a `<span>` here doesn't already provide. */}
-                          <div className="flex items-center justify-between gap-2 py-1.5">
-                            <span className="text-[12px] text-white/50">{t("Font")}</span>
-                            <Dropdown
-                              value={style.fontFamily}
-                              onChange={(v) => {
+                          <div className="py-1.5">
+                            <p className="mb-1.5 text-[12px] text-white/50">{t("Font")}</p>
+                            <FontGridPicker
+                              customFonts={project!.customFonts}
+                              selectedId={style.fontFamily}
+                              onPick={(v) => {
                                 clearPreview();
                                 patchTextStyle(asset.id, content, { fontFamily: v });
                               }}
-                              onHoverOption={(v) => {
+                              onHover={(v) => {
                                 // Live-previews the hovered font on the actual canvas before it's
                                 // committed — `previewTextStyle` already exists for exactly this (see
-                                // its own doc comment); `null` (mouse left the option, or the popup
-                                // closed) reverts to the clip's real, committed style. Also kicks off
-                                // `preloadFont` for whichever font is hovered — belt-and-suspenders on
-                                // top of the app-wide `preloadAllFonts` warm-up, in case this picker
-                                // was opened before that had a chance to finish (a slow connection, or
-                                // a font added to the registry after that warm-up already ran).
+                                // its own doc comment); `null` (mouse left the tile) reverts to the
+                                // clip's real, committed style. Also kicks off `preloadFont` for
+                                // whichever font is hovered — belt-and-suspenders on top of the app-wide
+                                // `preloadAllFonts` warm-up, in case this picker was opened before that
+                                // had a chance to finish (a slow connection, or a font added to the
+                                // registry after that warm-up already ran).
                                 if (v) {
                                   preloadFont(resolveFont(v, project!.customFonts));
                                   previewTextStyle(clip.id, asset.id, { fontFamily: v });
@@ -1418,28 +1405,7 @@ export function Inspector() {
                                   clearPreview();
                                 }
                               }}
-                              ariaLabel={t("Font")}
-                              className="min-w-0 flex-1 text-[13px]"
-                              searchable
                               searchPlaceholder={t("Search fonts…")}
-                              // The project's own uploaded fonts listed FIRST — a user who just
-                              // imported one almost always wants it right at the top, not buried
-                              // below the 30+-entry bundled registry `searchable` exists for in the
-                              // first place. `resolveFont`'s own doc comment is the ONE place that
-                              // decides a `fontFamily` id can name either library; this list is what
-                              // makes every id it could resolve actually reachable from the picker.
-                              options={[
-                                ...project!.customFonts.map((f) => ({
-                                  value: f.id,
-                                  label: f.name,
-                                  style: { fontFamily: `"${f.cssFamily}"` },
-                                })),
-                                ...FONT_REGISTRY.map((f) => ({
-                                  value: f.id,
-                                  label: f.label,
-                                  style: { fontFamily: `"${f.cssFamily}"` },
-                                })),
-                              ]}
                             />
                           </div>
                           {/* The project's own uploaded `.ttf`/`.otf` library, right below the picker it
