@@ -1528,7 +1528,8 @@ export class AddCaptionsCommand implements Command {
     segments: { content: string; start: number; end: number }[],
     sequenceHeight: number,
     preset?: TextStylePreset,
-    animation?: Clip["textAnimation"]
+    animation?: Clip["textAnimation"],
+    fontId?: string
   ) {
     // Solid background box (the "caption," not "title," look — see DEFAULT_TEXT_STYLE's own comment
     // on why a background box isn't the default there) and a bottom-third vertical position, computed
@@ -1539,7 +1540,16 @@ export class AddCaptionsCommand implements Command {
     // Captions dialogs, see their own doc comments) layers its color/bold/background/outline/shadow on
     // TOP of this base look — `applyTextStylePreset` never touches fontSize/position, so the caption-
     // specific size and bottom-third placement above survive regardless of which preset is picked.
-    let style: TextStyle = { ...DEFAULT_TEXT_STYLE, fontSize: 48, backgroundColor: "#000000", offsetY: Math.round(sequenceHeight * 0.32) };
+    // `fontId` (Auto Captions' own Font tab — see `AutoCaptionsDialog.tsx`'s own doc comment) is the
+    // ONE thing presets deliberately never touch either, so it's applied straight into the base style
+    // here rather than through `applyTextStylePreset` — same reasoning, a different independent axis.
+    let style: TextStyle = {
+      ...DEFAULT_TEXT_STYLE,
+      fontSize: 48,
+      backgroundColor: "#000000",
+      offsetY: Math.round(sequenceHeight * 0.32),
+      ...(fontId ? { fontFamily: fontId } : null),
+    };
     if (preset) style = applyTextStylePreset(style, preset);
     this.assets = segments.map((s) => createTextAsset(s.content, style));
     // Same "chosen up front" convention as `preset` — `animation` (also picked in the Captions dialog/

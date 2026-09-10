@@ -72,8 +72,10 @@ import {
 } from "../timeline/transitions.ts";
 import { CurveEditor } from "./CurveEditor.tsx";
 import { Dropdown, type DropdownOption } from "./Dropdown.tsx";
+import { defaultFontIdFor, FontPickerGrid } from "./FontPickerGrid.tsx";
 import { KeyframeTrack } from "./KeyframeTrack.tsx";
 import { NumberField } from "./NumberField.tsx";
+import { PickerTabs } from "./PickerTabs.tsx";
 import { TextAnimationPickerGrid } from "./TextAnimationPickerGrid.tsx";
 import { TextStylePresetGrid } from "./TextStylePresetGrid.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
@@ -225,13 +227,19 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
   // front" convention as `AutoCaptionsDialog.tsx` now, for parity between the two entry points.
   const [preset, setPreset] = useState<TextStylePreset | null>(null);
   const [animation, setAnimation] = useState<Clip["textAnimation"] | null>(null);
+  // See `AutoCaptionsDialog.tsx`'s identical field for why this resets on every `language` change
+  // (below) rather than staying sticky the way `preset`/`animation` do.
+  const [fontId, setFontId] = useState<string | null>(null);
   const [language, setLanguage] = useState("auto");
+  const [pickerTab, setPickerTab] = useState<"font" | "style" | "animation">("font");
   const [phase, setPhase] = useState<CaptionsPhase>("idle");
   const [stage, setStage] = useState<string>("");
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const jobIdRef = useRef<string | null>(null);
   const unwatchRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => setFontId(null), [language]);
 
   useEffect(() => {
     void captionsAvailable().then(setAvailable);
@@ -274,7 +282,7 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
           setStage(update.stage);
           setProgress(update.progress);
           if (update.status === "done") {
-            if (update.captions) landCaptions(update.captions, preset ?? undefined, animation ?? undefined);
+            if (update.captions) landCaptions(update.captions, preset ?? undefined, animation ?? undefined, fontId ?? defaultFontIdFor(language));
             setPhase("idle");
           } else {
             setPhase(update.status);
@@ -402,22 +410,37 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
       <p className="mb-2 text-[12px] leading-relaxed text-white/50">
         {t("Transcribes this clip's audio and adds the result as editable caption clips on a new track.")}
       </p>
-      {/* Chosen up front, same as `AutoCaptionsDialog.tsx`'s own Style/Animation pickers — the batch
-          this job produces lands already looking/animated the way you picked, instead of a fixed
-          default that then needs restyling clip by clip (or via the toolbar's own bulk Styles/
-          Animation tools) afterward. */}
-      <p className="mb-1.5 text-[11px] text-white/35">{t("Style")}</p>
-      <button
-        onClick={() => setPreset(null)}
-        className={`mb-1.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/70 transition hover:bg-white/10 hover:text-white ${
-          preset === null ? "ring-1 ring-sky-400/60" : ""
-        }`}
-      >
-        {t("Default")}
-      </button>
-      <TextStylePresetGrid selectedId={preset?.id} onPick={setPreset} />
-      <p className="mb-1.5 mt-3 text-[11px] text-white/35">{t("Animation")}</p>
-      <TextAnimationPickerGrid current={animation} onPick={setAnimation} />
+      {/* Chosen up front, same as `AutoCaptionsDialog.tsx`'s own Font/Style/Animation tabs — the batch
+          this job produces lands already looking/animated/fonted the way you picked, instead of a
+          fixed default that then needs restyling clip by clip (or via the toolbar's own bulk tools)
+          afterward. Tabbed, not stacked, for the same reason as that dialog: Font alone can run up to
+          ~25 tiles for Khmer. */}
+      <PickerTabs
+        tabs={[
+          { id: "font", label: t("Font") },
+          { id: "style", label: t("Style") },
+          { id: "animation", label: t("Animation") },
+        ]}
+        active={pickerTab}
+        onChange={setPickerTab}
+      />
+      {pickerTab === "font" && (
+        <FontPickerGrid khmerOnly={language === "km"} selectedId={fontId ?? defaultFontIdFor(language)} onPick={setFontId} />
+      )}
+      {pickerTab === "style" && (
+        <>
+          <button
+            onClick={() => setPreset(null)}
+            className={`mb-1.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/70 transition hover:bg-white/10 hover:text-white ${
+              preset === null ? "ring-1 ring-sky-400/60" : ""
+            }`}
+          >
+            {t("Default")}
+          </button>
+          <TextStylePresetGrid selectedId={preset?.id} onPick={setPreset} />
+        </>
+      )}
+      {pickerTab === "animation" && <TextAnimationPickerGrid current={animation} onPick={setAnimation} />}
       <button
         onClick={() => void begin()}
         className="mt-3 w-full rounded bg-sky-500 py-1.5 text-[12px] font-semibold text-white transition hover:bg-sky-400"
