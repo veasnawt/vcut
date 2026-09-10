@@ -395,6 +395,74 @@ export const FONT_REGISTRY: FontDefinition[] = [
       regular: "Preahvihear-Regular.ttf",
     },
   },
+  {
+    id: "bayon",
+    label: "Bayon (Khmer display)",
+    cssFamily: "VCutBayon",
+    files: {
+      regular: "Bayon-Regular.ttf",
+    },
+  },
+  {
+    id: "freehand",
+    label: "Freehand (Khmer)",
+    cssFamily: "VCutFreehand",
+    files: {
+      regular: "Freehand-Regular.ttf",
+    },
+  },
+  {
+    id: "kdamthmorpro",
+    label: "Kdam Thmor Pro (Khmer display)",
+    cssFamily: "VCutKdamThmorPro",
+    files: {
+      regular: "KdamThmorPro-Regular.ttf",
+    },
+  },
+  {
+    id: "khmer",
+    label: "Khmer",
+    cssFamily: "VCutKhmer",
+    files: {
+      regular: "Khmer-Regular.ttf",
+    },
+  },
+  {
+    id: "kohsantepheap",
+    label: "Koh Santepheap (Khmer)",
+    cssFamily: "VCutKohSantepheap",
+    files: {
+      // Google Fonts ships 5 static weights (Thin/Light/Regular/Bold/Black) — only Regular/Bold are
+      // bundled, same "regular + bold only, no finer weight axis" convention every other multi-weight
+      // font in this registry already follows (see Battambang's own comment above).
+      regular: "KohSantepheap-Regular.ttf",
+      bold: "KohSantepheap-Bold.ttf",
+    },
+  },
+  {
+    id: "konkhmersleokchher",
+    label: "Konkhmer Sleokchher (Khmer display)",
+    cssFamily: "VCutKonkhmerSleokchher",
+    files: {
+      regular: "KonkhmerSleokchher-Regular.ttf",
+    },
+  },
+  {
+    id: "odormeanchey",
+    label: "Odor Mean Chey (Khmer display)",
+    cssFamily: "VCutOdorMeanChey",
+    files: {
+      regular: "OdorMeanChey-Regular.ttf",
+    },
+  },
+  {
+    id: "taprom",
+    label: "Taprom (Khmer display)",
+    cssFamily: "VCutTaprom",
+    files: {
+      regular: "Taprom-Regular.ttf",
+    },
+  },
 ];
 
 export const DEFAULT_FONT_ID = FONT_REGISTRY[0].id;
