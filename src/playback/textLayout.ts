@@ -20,12 +20,14 @@
 import type { Clip, CustomFontAsset, TextStyle } from "../project/types.ts";
 import { resolveFont, resolveFontVariant } from "../project/fonts.ts";
 import {
-  activeWordIndex,
+  activeWordIndexFromBoundaries,
   computeTextAnimationTransform,
   DEFAULT_WORD_HIGHLIGHT_COLOR,
   segmentLine,
   splitWords,
   typewriterVisibleContent,
+  wordBoundaries,
+  type WordTiming,
 } from "../timeline/textAnimation.ts";
 
 /** Sequence pixels from the frame edge that `align: "left"`/`"right"` anchor to. */
@@ -259,8 +261,11 @@ export function drawTextFrame(
  *  state — not a second, potentially-drifting reimplementation of the same animation math.
  *  `elapsedSeconds` is simply `time - clip.timelineStart`, the same value every other per-clip timing
  *  calculation in this codebase already uses. `clipDurationSeconds` is only ever consulted for
- *  `wordHighlight` (see `activeWordIndex`'s own doc comment on why it needs the clip's own length,
- *  unlike every other animation type here). */
+ *  `wordHighlight` (see `wordBoundaries`'s own doc comment on why it needs the clip's own length,
+ *  unlike every other animation type here). `wordTimings` is `Clip.wordTimings` verbatim — real
+ *  per-word timing when Auto Captions' transcription provider returned it (currently Kiri, for Khmer),
+ *  `undefined` otherwise, in which case `wordHighlight` timing falls back to spreading evenly across
+ *  `clipDurationSeconds` exactly as it always has (see `Clip.wordTimings`'s own doc comment). */
 export function drawAnimatedTextFrame(
   context: CanvasRenderingContext2D,
   frameWidth: number,
@@ -270,7 +275,8 @@ export function drawAnimatedTextFrame(
   animation: Clip["textAnimation"],
   elapsedSeconds: number,
   clipDurationSeconds: number,
-  customFonts: CustomFontAsset[]
+  customFonts: CustomFontAsset[],
+  wordTimings?: WordTiming[]
 ): void {
   if (!animation) {
     drawTextFrame(context, frameWidth, frameHeight, content, style, undefined, customFonts);
@@ -278,7 +284,7 @@ export function drawAnimatedTextFrame(
   }
   // `speed` scales the effective elapsed time fed to EVERY animation type uniformly — applied once,
   // here, rather than threading a speed parameter through `computeTextAnimationTransform`/
-  // `typewriterVisibleContent`/`activeWordIndex` individually. None of those functions need their own
+  // `typewriterVisibleContent`/`wordBoundaries` individually. None of those functions need their own
   // notion of speed this way; they just see a bigger or smaller elapsed-time number than the clip's
   // real playhead position implies.
   const elapsed = elapsedSeconds * (animation.speed ?? 1);
@@ -289,7 +295,8 @@ export function drawAnimatedTextFrame(
   }
   if (animation.type === "wordHighlight") {
     const words = splitWords(content);
-    const active = activeWordIndex(words.length, elapsed, clipDurationSeconds);
+    const boundaries = wordBoundaries(words.length, clipDurationSeconds, wordTimings);
+    const active = activeWordIndexFromBoundaries(boundaries, elapsed);
     drawTextFrame(
       context,
       frameWidth,

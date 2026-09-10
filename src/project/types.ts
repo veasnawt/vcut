@@ -598,6 +598,18 @@ export interface Clip {
    *  functions — so none of them need their own notion of speed, they just see a bigger or smaller
    *  elapsed-time number than the clip's real playhead position. */
   textAnimation?: { type: TextAnimationType; highlightColor?: string; speed?: number };
+  /** Real per-word timing for `textAnimation.type === "wordHighlight"`, CLIP-RELATIVE seconds (same
+   *  "elapsed" space every other per-clip timing value in this codebase uses) — one entry per word
+   *  `timeline/textAnimation.ts`'s `splitWords(asset.textContent)` finds, in the same order. Only ever
+   *  set by Auto Captions when the transcription provider actually returned real per-word timestamps
+   *  (currently: Kiri, for Khmer — see `AddCaptionsCommand`'s own doc comment); absent for everything
+   *  else (manually typed word-highlight text, a provider/language with no real per-word alignment),
+   *  which keeps the OLD "spread evenly across the clip's own duration" approximation as the honest
+   *  fallback (`timeline/textAnimation.ts`'s `wordBoundaries`) rather than fabricating timing that was
+   *  never real. A length mismatch against `splitWords`'s own count (e.g. the caption text was hand-
+   *  edited after landing, adding/removing a word) is treated as "may as well be absent" the same way,
+   *  for the same reason — see `wordBoundaries`'s own doc comment. */
+  wordTimings?: { start: number; end: number }[];
   /** Meaningful only on a TEXT clip, same gating as `textAnimation`. Absent means no crop (full frame
    *  visible), same "small JSON, cheap default path" reasoning as `transform`. See `TextCrop`'s own doc
    *  comment for why this is a separate, frame-space mask rather than reusing `ClipTransform.crop`. */

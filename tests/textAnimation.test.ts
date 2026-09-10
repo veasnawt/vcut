@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { activeWordIndex, computeTextAnimationTransform, segmentLine, splitWords, typewriterVisibleContent } from "../src/timeline/textAnimation.ts";
+import {
+  activeWordIndex,
+  activeWordIndexFromBoundaries,
+  computeTextAnimationTransform,
+  segmentLine,
+  splitWords,
+  typewriterVisibleContent,
+  wordBoundaries,
+} from "../src/timeline/textAnimation.ts";
 
 describe("computeTextAnimationTransform", () => {
   it("bounce starts at rest (elapsed 0) and only ever moves upward, never below rest", () => {
@@ -178,5 +186,49 @@ describe("activeWordIndex", () => {
 
   it("never returns a negative index once there genuinely is at least one word and duration", () => {
     assert.equal(activeWordIndex(4, -5, 4), 0);
+  });
+});
+
+describe("wordBoundaries + activeWordIndexFromBoundaries", () => {
+  it("with no real timing, matches activeWordIndex's own even-spread behavior exactly at every point tested above", () => {
+    const boundaries = wordBoundaries(4, 4);
+    assert.deepEqual(boundaries, [0, 1, 2, 3, 4]);
+    assert.equal(activeWordIndexFromBoundaries(boundaries, 0), 0);
+    assert.equal(activeWordIndexFromBoundaries(boundaries, 0.5), 0);
+    assert.equal(activeWordIndexFromBoundaries(boundaries, 1.1), 1);
+    assert.equal(activeWordIndexFromBoundaries(boundaries, 2.1), 2);
+    assert.equal(activeWordIndexFromBoundaries(boundaries, 3.1), 3);
+    assert.equal(activeWordIndexFromBoundaries(boundaries, 100), 3, "clamps to the last word past the clip's own end");
+    assert.equal(activeWordIndexFromBoundaries(boundaries, -5), 0, "never negative");
+  });
+
+  it("returns -1 for zero words, same as activeWordIndex", () => {
+    assert.equal(activeWordIndexFromBoundaries(wordBoundaries(0, 5), 1), -1);
+  });
+
+  it("uses REAL, unevenly-spaced per-word timing when given — the actual sync fix", () => {
+    // A short word, then a long drawled one, then a short one again — nothing like an even 1s/word split.
+    const timings = [
+      { start: 0, end: 0.2 },
+      { start: 0.2, end: 2.5 },
+      { start: 2.5, end: 3 },
+    ];
+    const boundaries = wordBoundaries(3, 3, timings);
+    assert.deepEqual(boundaries, [0, 0.2, 2.5, 3]);
+    assert.equal(activeWordIndexFromBoundaries(boundaries, 0.1), 0, "still word 0 just before it ends");
+    assert.equal(activeWordIndexFromBoundaries(boundaries, 0.2), 1, "word 1 begins exactly at its own real start");
+    assert.equal(activeWordIndexFromBoundaries(boundaries, 2.4), 1, "still word 1 through its whole real (long) span");
+    assert.equal(activeWordIndexFromBoundaries(boundaries, 2.6), 2);
+    // The even-spread equivalent (1s/word) would have said word 1 at elapsed=2.4 — confirms this
+    // genuinely isn't just falling back to the old approximation.
+    assert.notEqual(activeWordIndex(3, 2.4, 3), 1);
+  });
+
+  it("falls back to even spread when the real timing array's length doesn't match the word count", () => {
+    // Simulates hand-edited caption text after landing (a word added/removed) — stale real timing for
+    // the OLD word list can't be trusted to still line up with the NEW one.
+    const staleTimings = [{ start: 0, end: 1 }, { start: 1, end: 2 }];
+    const boundaries = wordBoundaries(4, 4, staleTimings);
+    assert.deepEqual(boundaries, [0, 1, 2, 3, 4], "even spread, ignoring the mismatched real timings entirely");
   });
 });

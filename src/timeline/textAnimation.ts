@@ -151,6 +151,47 @@ export function activeWordIndex(wordCount: number, elapsedSeconds: number, clipD
   return Math.min(wordCount - 1, Math.max(0, Math.floor(elapsedSeconds / secondsPerWord)));
 }
 
+export interface WordTiming {
+  start: number;
+  end: number;
+}
+
+/** `wordCount + 1` clip-relative second boundaries — `boundaries[i]` is when word `i` begins,
+ *  `boundaries[wordCount]` is the clip's own end. Built from `wordTimings` (real per-word data, see
+ *  `Clip.wordTimings`'s own doc comment) whenever its length actually matches `wordCount`; a mismatch
+ *  (most likely the caption text was hand-edited after landing, adding/removing a word — real timing
+ *  for the OLD word list can't be trusted to still line up) falls back to spreading evenly across
+ *  `clipDurationSeconds`, `activeWordIndex`'s own historic behavior and still the only option for
+ *  content with no real per-word timing at all (manually typed word-highlight text; a provider/language
+ *  with no real per-word alignment). Shared by BOTH `drawAnimatedTextFrame` (live preview,
+ *  `playback/textLayout.ts`) and `khmerTextRenderer.ts`'s export-window slicing so the two can never
+ *  disagree about where one word's window ends and the next begins — see that render harness's own
+ *  doc comment for why staying in lockstep with the preview matters here specifically. */
+export function wordBoundaries(wordCount: number, clipDurationSeconds: number, wordTimings?: WordTiming[]): number[] {
+  if (wordTimings && wordTimings.length === wordCount) {
+    return [...wordTimings.map((w) => Math.max(0, w.start)), Math.max(0, clipDurationSeconds)];
+  }
+  const secondsPerWord = wordCount > 0 ? clipDurationSeconds / wordCount : 0;
+  return Array.from({ length: wordCount + 1 }, (_, i) => i * secondsPerWord);
+}
+
+/** Which word (a 0-based index into `splitWords(content)`) is active at `elapsedSeconds`, given its
+ *  own `wordBoundaries` — the last boundary at or before `elapsedSeconds`, clamped into range. For
+ *  EVENLY-spread boundaries (no real timing available) this is mathematically identical to
+ *  `activeWordIndex`'s own floor-division formula, just expressed as a lookup instead — so nothing
+ *  with no real per-word timing changes behavior at all, only content that now HAS real timing to
+ *  consult actually renders differently. */
+export function activeWordIndexFromBoundaries(boundaries: number[], elapsedSeconds: number): number {
+  const wordCount = boundaries.length - 1;
+  if (wordCount <= 0) return -1;
+  let index = 0;
+  for (let i = 1; i < wordCount; i++) {
+    if (elapsedSeconds < boundaries[i]) break;
+    index = i;
+  }
+  return index;
+}
+
 /** Characters per second the `typewriter` animation reveals content at — fast enough to finish a short
  *  caption line well within a normal clip's duration, slow enough to actually read as a typing effect
  *  rather than a near-instant cut. */

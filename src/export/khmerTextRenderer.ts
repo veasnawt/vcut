@@ -31,7 +31,7 @@
 import { clipDuration } from "../project/createProject.ts";
 import type { Clip, CustomFontAsset, TextStyle } from "../project/types.ts";
 import { computeSliceBoundaries } from "./buildExportPlan.ts";
-import { splitWords } from "../timeline/textAnimation.ts";
+import { splitWords, wordBoundaries, type WordTiming } from "../timeline/textAnimation.ts";
 
 export interface KhmerTextWindow {
   /** Seconds from the CLIP's own start (not the timeline) — matches how `buildExportPlan.ts`'s own
@@ -55,6 +55,10 @@ export interface RenderKhmerTextParams {
   elapsedSeconds: number;
   clipDurationSeconds: number;
   customFonts: CustomFontAsset[];
+  /** `Clip.wordTimings` verbatim — only meaningful (and only ever passed) for a `wordHighlight` window,
+   *  same optional/absent-means-fallback contract as `drawAnimatedTextFrame`'s own parameter of the
+   *  same name. */
+  wordTimings?: WordTiming[];
 }
 
 /** Renders one window's exact visible state to a transparent PNG and returns its path — supplied by
@@ -87,16 +91,29 @@ export async function renderKhmerClipWindows(clip: Clip, content: string, style:
   if (animation?.type === "wordHighlight") {
     const words = splitWords(content);
     if (words.length === 0) return [];
-    // Real (unscaled) seconds each word occupies — `drawAnimatedTextFrame` scales `elapsedSeconds` by
-    // `animation.speed` itself before resolving the active word, so the window WIDTH here has to
-    // account for speed up front to land each window's own midpoint on the word it's meant to render
-    // (same derivation `buildWordHighlightAss`'s own `secondsPerWord` uses).
     const speed = animation.speed ?? 1;
-    const secondsPerWord = duration / words.length / speed;
+    // Real per-word boundaries (`clip.wordTimings`, when present — see that field's own doc comment)
+    // make each window SWITCH at the moment its word is actually spoken, instead of every window
+    // spanning an identical evenly-divided slice regardless of real speech pacing — this is the
+    // export-time half of the word-highlight sync fix; the live-preview half is `drawAnimatedTextFrame`
+    // itself calling this SAME `wordBoundaries`, so the two can never disagree about a boundary (this
+    // file's own header comment on why that parity matters). Dividing by `speed` inverts the `*
+    // speed` scaling `drawAnimatedTextFrame` applies to `elapsedSeconds` before its own boundary lookup
+    // — needed so each window's UNSCALED offset here, once re-scaled inside that call, lands back on
+    // the correct boundary (matches the old `secondsPerWord = duration / words.length / speed`
+    // derivation exactly whenever there's no real timing to use instead).
+    //
+    // Every window's own start/end still has to span the clip's REAL, full duration regardless of
+    // speed (a window is a literal video-compositing span, not itself scaled by animation speed) —
+    // forced explicitly at both ends rather than trusted to the boundary math: a real first word
+    // rarely starts at EXACTLY clip-relative 0, but this file's own header comment requires the FIRST
+    // window's `startOffset` to be exactly 0 (no gap before it), and the speed-divided last boundary
+    // isn't `duration` at all once `speed !== 1`.
+    const boundaries = wordBoundaries(words.length, duration, clip.wordTimings).map((b) => b / speed);
     const windows: KhmerTextWindow[] = [];
     for (let k = 0; k < words.length; k++) {
-      const startOffset = k * secondsPerWord;
-      const endOffset = k === words.length - 1 ? duration : (k + 1) * secondsPerWord;
+      const startOffset = k === 0 ? 0 : boundaries[k];
+      const endOffset = k === words.length - 1 ? duration : boundaries[k + 1];
       const imagePath = await options.renderFrame({
         frameWidth: options.frameWidth,
         frameHeight: options.frameHeight,
@@ -106,6 +123,7 @@ export async function renderKhmerClipWindows(clip: Clip, content: string, style:
         elapsedSeconds: startOffset + (endOffset - startOffset) / 2,
         clipDurationSeconds: duration,
         customFonts: options.customFonts,
+        wordTimings: clip.wordTimings,
       });
       windows.push({ startOffset, endOffset, imagePath });
     }

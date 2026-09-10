@@ -671,6 +671,11 @@ export interface CaptionSegment {
   /** Absolute sequence-timeline seconds — already offset server-side, ready to place directly. */
   start: number;
   end: number;
+  /** Real per-word timing, CLIP-RELATIVE (seconds from THIS segment's own `start`) — present only when
+   *  the server's transcription provider returned genuine per-word timestamps (currently: Kiri, for
+   *  Khmer), absent otherwise. `AddCaptionsCommand` copies this straight onto `Clip.wordTimings` when
+   *  the landed animation is `wordHighlight` — see that field's own doc comment. */
+  words?: { text: string; start: number; end: number }[];
 }
 
 export interface CaptionsProgress {

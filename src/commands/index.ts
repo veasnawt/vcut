@@ -1525,7 +1525,7 @@ export class AddCaptionsCommand implements Command {
   private previousTracks: Track[] | null = null;
 
   constructor(
-    segments: { content: string; start: number; end: number }[],
+    segments: { content: string; start: number; end: number; words?: { text: string; start: number; end: number }[] }[],
     sequenceHeight: number,
     preset?: TextStylePreset,
     animation?: Clip["textAnimation"],
@@ -1556,9 +1556,13 @@ export class AddCaptionsCommand implements Command {
     // section BEFORE the job even runs) lands on every clip this batch creates, one shared choice
     // rather than a per-clip default that would then need applying to the whole batch afterward via
     // the toolbar's own bulk Animation tool.
+    // `wordTimings` only when the landed animation is actually `wordHighlight` — the field means
+    // nothing to any other animation type, and copying it onto a clip that will never consult it would
+    // just be dead weight in the saved project file (see `Clip.wordTimings`'s own doc comment).
     this.clips = segments.map((s, i) => ({
       ...createClip({ assetId: this.assets[i].id, sourceIn: 0, sourceOut: s.end - s.start, timelineStart: s.start }),
       ...(animation ? { textAnimation: animation } : null),
+      ...(animation?.type === "wordHighlight" && s.words ? { wordTimings: s.words.map((w) => ({ start: w.start, end: w.end })) } : null),
     }));
     this.clipIds = this.clips.map((c) => c.id);
   }

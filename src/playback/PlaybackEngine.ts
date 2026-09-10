@@ -1514,7 +1514,18 @@ export class PlaybackEngine {
       }
 
       withCrop(() => {
-        this.drawAnimatedText(context, frameWidth, frameHeight, asset.textContent ?? "", style, clip.textAnimation, elapsed, clipDuration(clip), project.customFonts);
+        this.drawAnimatedText(
+          context,
+          frameWidth,
+          frameHeight,
+          asset.textContent ?? "",
+          style,
+          clip.textAnimation,
+          elapsed,
+          clipDuration(clip),
+          project.customFonts,
+          clip.wordTimings
+        );
       });
     }
   }
@@ -1530,9 +1541,10 @@ export class PlaybackEngine {
     animation: Clip["textAnimation"],
     elapsedSeconds: number,
     clipDurationSeconds: number,
-    customFonts: CustomFontAsset[]
+    customFonts: CustomFontAsset[],
+    wordTimings?: Clip["wordTimings"]
   ): void {
-    drawAnimatedTextFrame(context, frameWidth, frameHeight, content, style, animation, elapsedSeconds, clipDurationSeconds, customFonts);
+    drawAnimatedTextFrame(context, frameWidth, frameHeight, content, style, animation, elapsedSeconds, clipDurationSeconds, customFonts, wordTimings);
   }
 
   /** Renders one text asset's content+style. Mirrors `buildExportPlan`'s FFmpeg `drawtext` chain in

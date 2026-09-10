@@ -424,6 +424,24 @@ function parseClipTextAnimation(raw: unknown): Clip["textAnimation"] {
   };
 }
 
+/** `Clip.wordTimings` — an array of real per-word `{start, end}` pairs, or nothing at all if the shape
+ *  is even slightly off (not an array, or any entry missing a finite `start`/`end`) rather than trying
+ *  to salvage a partial list: a wrong-length or malformed array is worse than none at all, since
+ *  `wordBoundaries` (`timeline/textAnimation.ts`) only trusts it when the length matches `splitWords`'
+ *  own count anyway — same "absent is the honest fallback" reasoning `parseClipTextAnimation` already
+ *  documents for a different field. */
+function parseClipWordTimings(raw: unknown): Clip["wordTimings"] {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const timings: { start: number; end: number }[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") return undefined;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.start !== "number" || !Number.isFinite(e.start) || typeof e.end !== "number" || !Number.isFinite(e.end)) return undefined;
+    timings.push({ start: e.start, end: e.end });
+  }
+  return timings;
+}
+
 /** Mirrors `parseClipTextAnimation`'s exact shape, for `Clip.pixelEffect` instead — same "unknown/
  *  missing type drops the whole field, speed clamped to a sane range" leniency. Was missing entirely
  *  until this fix: `parseClip` never read `raw.pixelEffect` back at all, so a glitch/water-ripple
@@ -454,6 +472,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
   const transitionIn = parseClipTransitionSpec(raw.transitionIn);
   const transitionOut = parseClipTransitionSpec(raw.transitionOut);
   const textAnimation = parseClipTextAnimation(raw.textAnimation);
+  const wordTimings = parseClipWordTimings(raw.wordTimings);
   const pixelEffect = parseClipPixelEffect(raw.pixelEffect);
   const textCrop = parseTextCrop(raw.textCrop);
   const transformKeyframes = parseTransformKeyframes(raw.transformKeyframes);
@@ -478,6 +497,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
     ...(transitionIn ? { transitionIn } : null),
     ...(transitionOut ? { transitionOut } : null),
     ...(textAnimation ? { textAnimation } : null),
+    ...(wordTimings ? { wordTimings } : null),
     ...(pixelEffect ? { pixelEffect } : null),
     ...(typeof raw.lutId === "string" ? { lutId: raw.lutId } : null),
     ...(textCrop ? { textCrop } : null),
