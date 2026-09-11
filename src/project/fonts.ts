@@ -268,6 +268,178 @@ export const FONT_REGISTRY: FontDefinition[] = [
       bold: "Caveat-Bold.ttf",
     },
   },
+  // More commonly-used English faces, same Google Fonts static-build sourcing as the block above.
+  {
+    id: "dmsans",
+    label: "DM Sans",
+    cssFamily: "VCutDMSans",
+    files: {
+      regular: "DMSans-Regular.ttf",
+      bold: "DMSans-Bold.ttf",
+      italic: "DMSans-Italic.ttf",
+      boldItalic: "DMSans-BoldItalic.ttf",
+    },
+  },
+  {
+    id: "rubik",
+    label: "Rubik",
+    cssFamily: "VCutRubik",
+    files: {
+      regular: "Rubik-Regular.ttf",
+      bold: "Rubik-Bold.ttf",
+      italic: "Rubik-Italic.ttf",
+      boldItalic: "Rubik-BoldItalic.ttf",
+    },
+  },
+  {
+    id: "manrope",
+    label: "Manrope",
+    cssFamily: "VCutManrope",
+    files: {
+      // Google Fonts ships this as a `wght`-only variable source (no italic axis at all) — same
+      // "regular + bold only" leniency as Oswald/Koh Santepheap above.
+      regular: "Manrope-Regular.ttf",
+      bold: "Manrope-Bold.ttf",
+    },
+  },
+  {
+    id: "quicksand",
+    label: "Quicksand",
+    cssFamily: "VCutQuicksand",
+    files: {
+      regular: "Quicksand-Regular.ttf",
+      bold: "Quicksand-Bold.ttf",
+    },
+  },
+  {
+    id: "librebaskerville",
+    label: "Libre Baskerville",
+    cssFamily: "VCutLibreBaskerville",
+    files: {
+      // No bold italic — Google Fonts doesn't ship one for this family.
+      regular: "LibreBaskerville-Regular.ttf",
+      bold: "LibreBaskerville-Bold.ttf",
+      italic: "LibreBaskerville-Italic.ttf",
+    },
+  },
+  {
+    id: "josefinsans",
+    label: "Josefin Sans",
+    cssFamily: "VCutJosefinSans",
+    files: {
+      regular: "JosefinSans-Regular.ttf",
+      bold: "JosefinSans-Bold.ttf",
+      italic: "JosefinSans-Italic.ttf",
+      boldItalic: "JosefinSans-BoldItalic.ttf",
+    },
+  },
+  {
+    id: "ptsans",
+    label: "PT Sans",
+    cssFamily: "VCutPTSans",
+    files: {
+      regular: "PTSans-Regular.ttf",
+      bold: "PTSans-Bold.ttf",
+      italic: "PTSans-Italic.ttf",
+      boldItalic: "PTSans-BoldItalic.ttf",
+    },
+  },
+  {
+    id: "barlow",
+    label: "Barlow",
+    cssFamily: "VCutBarlow",
+    files: {
+      regular: "Barlow-Regular.ttf",
+      bold: "Barlow-Bold.ttf",
+      italic: "Barlow-Italic.ttf",
+      boldItalic: "Barlow-BoldItalic.ttf",
+    },
+  },
+  // "Cool"/display faces — bold personality over body-text neutrality, for headline-style clips.
+  {
+    id: "bangers",
+    label: "Bangers (comic)",
+    cssFamily: "VCutBangers",
+    files: {
+      regular: "Bangers-Regular.ttf",
+    },
+  },
+  {
+    id: "bungee",
+    label: "Bungee (display)",
+    cssFamily: "VCutBungee",
+    files: {
+      regular: "Bungee-Regular.ttf",
+    },
+  },
+  {
+    id: "righteous",
+    label: "Righteous (display)",
+    cssFamily: "VCutRighteous",
+    files: {
+      regular: "Righteous-Regular.ttf",
+    },
+  },
+  {
+    id: "lobster",
+    label: "Lobster (script)",
+    cssFamily: "VCutLobster",
+    files: {
+      regular: "Lobster-Regular.ttf",
+    },
+  },
+  {
+    id: "permanentmarker",
+    label: "Permanent Marker (handwriting)",
+    cssFamily: "VCutPermanentMarker",
+    files: {
+      regular: "PermanentMarker-Regular.ttf",
+    },
+  },
+  {
+    id: "pressstart2p",
+    label: "Press Start 2P (pixel)",
+    cssFamily: "VCutPressStart2P",
+    files: {
+      regular: "PressStart2P-Regular.ttf",
+    },
+  },
+  {
+    id: "orbitron",
+    label: "Orbitron (futuristic)",
+    cssFamily: "VCutOrbitron",
+    files: {
+      regular: "Orbitron-Regular.ttf",
+      bold: "Orbitron-Bold.ttf",
+    },
+  },
+  {
+    id: "dancingscript",
+    label: "Dancing Script (script)",
+    cssFamily: "VCutDancingScript",
+    files: {
+      regular: "DancingScript-Regular.ttf",
+      bold: "DancingScript-Bold.ttf",
+    },
+  },
+  {
+    id: "comfortaa",
+    label: "Comfortaa (rounded)",
+    cssFamily: "VCutComfortaa",
+    files: {
+      regular: "Comfortaa-Regular.ttf",
+      bold: "Comfortaa-Bold.ttf",
+    },
+  },
+  {
+    id: "fredoka",
+    label: "Fredoka (rounded)",
+    cssFamily: "VCutFredoka",
+    files: {
+      regular: "Fredoka-Regular.ttf",
+      bold: "Fredoka-Bold.ttf",
+    },
+  },
   {
     id: "hanuman",
     label: "Hanuman (Khmer)",
