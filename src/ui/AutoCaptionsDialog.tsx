@@ -84,8 +84,7 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
   // logic below skip past that check entirely instead of getting stuck on "Checking…" forever.
   // `credits` is the hosted-only replacement gate: `available` alone already reflects whether the
   // server token is configured.
-  const { hosted, credits } = useHostedCreditsGate();
-  const outOfCredits = hosted && credits !== null && credits.creditsRemaining <= 0;
+  const { hosted, credits, outOfCredits, isPro } = useHostedCreditsGate();
 
   const [preset, setPreset] = useState<TextStylePreset | null>(null);
   const [animation, setAnimation] = useState<Clip["textAnimation"] | null>(null);
@@ -382,15 +381,24 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
             </>
           ) : outOfCredits ? (
             <>
+              {/* No upgrade button for a Pro user who's simply used their own monthly allotment —
+                  see `useHostedCreditsGate`'s own doc comment on why this used to show unconditionally
+                  regardless of plan. */}
               <p className="text-[12px] leading-relaxed text-amber-300">
-                {t("You're out of credits for this month — upgrade to Pro for more, or wait for your credits to refill.")}
+                {isPro
+                  ? t("You're out of credits for this month — they'll refresh on {date}.", {
+                      date: credits?.creditsResetAt ? new Date(credits.creditsResetAt).toLocaleDateString() : "",
+                    })
+                  : t("You're out of credits for this month — upgrade to Pro for more, or wait for your credits to refill.")}
               </p>
-              <button
-                onClick={() => void startCheckout().then((url) => (window.location.href = url))}
-                className="mt-2 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400"
-              >
-                {t("Upgrade to Pro")}
-              </button>
+              {!isPro && (
+                <button
+                  onClick={() => void startCheckout().then((url) => (window.location.href = url))}
+                  className="mt-2 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400"
+                >
+                  {t("Upgrade to Pro")}
+                </button>
+              )}
             </>
           ) : phase === "running" ? (
             <>

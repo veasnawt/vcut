@@ -14,13 +14,26 @@ import { getBillingStatus, type BillingStatus } from "../api/billing.ts";
  *  moment a job actually starts (`hostedCreditGatedRoute`'s `spend()`). A caller showing "Generate"
  *  when this hook says credits are available, only to get a 402 back anyway (a concurrent request
  *  from another tab spent the last one first), is a real but rare and harmless race — the existing
- *  `error` state every one of these three UIs already has is what surfaces that. */
-export function useHostedCreditsGate(): { hosted: boolean; credits: BillingStatus | null } {
+ *  `error` state every one of these three UIs already has is what surfaces that.
+ *
+ *  `outOfCredits`/`isPro` used to be re-derived independently at each of those three call sites (a
+ *  literal copy-pasted `hosted && credits !== null && credits.creditsRemaining <= 0`) — centralized
+ *  here once a real, reported bug showed up from that duplication: every one of the three "out of
+ *  credits" messages offered an "Upgrade to Pro" button unconditionally, with no `isPro` check at
+ *  all, so a Pro user who'd simply used up their own (much larger) monthly allotment saw the exact
+ *  same "upgrade to Pro" prompt a free user would — nonsensical for someone already subscribed, and
+ *  a button that would have sent them to checkout to (re-)subscribe to a plan they're already on.
+ *  Fixing it once here, rather than in three separately-duplicated conditions, is what keeps a FOURTH
+ *  future call site from reintroducing the same gap. */
+export function useHostedCreditsGate(): { hosted: boolean; credits: BillingStatus | null; outOfCredits: boolean; isPro: boolean } {
   const [credits, setCredits] = useState<BillingStatus | null>(null);
 
   useEffect(() => {
     if (HOSTED) void getBillingStatus().then(setCredits);
   }, []);
 
-  return { hosted: HOSTED, credits };
+  const outOfCredits = HOSTED && credits !== null && credits.creditsRemaining <= 0;
+  const isPro = credits?.plan === "pro";
+
+  return { hosted: HOSTED, credits, outOfCredits, isPro };
 }

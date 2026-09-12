@@ -219,8 +219,7 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
   // See `AutoCaptionsDialog.tsx`'s identical fields for the full reasoning — this section and that
   // dialog are two triggers for the same server-side feature, gained hosted-mode credits the same way
   // at the same time.
-  const { hosted, credits } = useHostedCreditsGate();
-  const outOfCredits = hosted && credits !== null && credits.creditsRemaining <= 0;
+  const { hosted, credits, outOfCredits, isPro } = useHostedCreditsGate();
 
   // Neither existed on THIS section before — only the toolbar's whole-sequence dialog let a look/
   // animation be chosen up front, so a per-clip caption pass always landed with the bare default and
@@ -373,17 +372,26 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
   }
 
   if (outOfCredits) {
+    // No upgrade button for a Pro user who's simply used their own monthly allotment — see
+    // `useHostedCreditsGate`'s own doc comment on why this used to show unconditionally regardless
+    // of plan.
     return (
       <>
         <p className="text-[12px] leading-relaxed text-amber-300">
-          {t("You're out of credits for this month — upgrade to Pro for more, or wait for your credits to refill.")}
+          {isPro
+            ? t("You're out of credits for this month — they'll refresh on {date}.", {
+                date: credits?.creditsResetAt ? new Date(credits.creditsResetAt).toLocaleDateString() : "",
+              })
+            : t("You're out of credits for this month — upgrade to Pro for more, or wait for your credits to refill.")}
         </p>
-        <button
-          onClick={handleUpgradeClick}
-          className="mt-2 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400"
-        >
-          {t("Upgrade to Pro")}
-        </button>
+        {!isPro && (
+          <button
+            onClick={handleUpgradeClick}
+            className="mt-2 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400"
+          >
+            {t("Upgrade to Pro")}
+          </button>
+        )}
       </>
     );
   }
@@ -509,8 +517,7 @@ function RemoveObjectSection({
   const [backgroundPrompt, setBackgroundPrompt] = useState("");
   // See `AutoCaptionsDialog.tsx`'s identical fields for the full reasoning — Remove Object gained
   // hosted-mode credits the same way, at the same time, as Auto Captions.
-  const { hosted, credits } = useHostedCreditsGate();
-  const outOfCredits = hosted && credits !== null && credits.creditsRemaining <= 0;
+  const { hosted, credits, outOfCredits, isPro } = useHostedCreditsGate();
 
   const [phase, setPhase] = useState<InpaintPhase>("idle");
   const [stage, setStage] = useState<string>("");
@@ -809,17 +816,26 @@ function RemoveObjectSection({
   }
 
   if (outOfCredits) {
+    // No upgrade button for a Pro user who's simply used their own monthly allotment — see
+    // `useHostedCreditsGate`'s own doc comment on why this used to show unconditionally regardless
+    // of plan.
     return (
       <>
         <p className="text-[12px] leading-relaxed text-amber-300">
-          {t("You're out of credits for this month — upgrade to Pro for more, or wait for your credits to refill.")}
+          {isPro
+            ? t("You're out of credits for this month — they'll refresh on {date}.", {
+                date: credits?.creditsResetAt ? new Date(credits.creditsResetAt).toLocaleDateString() : "",
+              })
+            : t("You're out of credits for this month — upgrade to Pro for more, or wait for your credits to refill.")}
         </p>
-        <button
-          onClick={handleUpgradeClick}
-          className="mt-2 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400"
-        >
-          {t("Upgrade to Pro")}
-        </button>
+        {!isPro && (
+          <button
+            onClick={handleUpgradeClick}
+            className="mt-2 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400"
+          >
+            {t("Upgrade to Pro")}
+          </button>
+        )}
       </>
     );
   }

@@ -64,8 +64,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   const generateAiImage = useEditorStore((s) => s.generateAiImage);
   const startAiVideoGeneration = useEditorStore((s) => s.startAiVideoGeneration);
   const cancelAiVideoGeneration = useEditorStore((s) => s.cancelAiVideoGeneration);
-  const { hosted, credits } = useHostedCreditsGate();
-  const outOfCredits = hosted && credits !== null && credits.creditsRemaining <= 0;
+  const { hosted, credits, outOfCredits, isPro } = useHostedCreditsGate();
 
   const [kind, setKind] = useState<"image" | "video">("image");
   const [prompt, setPrompt] = useState("");
@@ -188,15 +187,25 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
         </p>
       ) : outOfCredits ? (
         <>
+          {/* A Pro user who's simply used their own (much larger) monthly allotment gets no upgrade
+              button at all — there's nothing left to upgrade TO, and offering one anyway (a real,
+              reported bug: this used to show unconditionally) reads as VCut not knowing its own
+              subscriber is already Pro, right when it matters most. */}
           <p className="text-[12px] leading-relaxed text-amber-300">
-            {t("You're out of credits for this month — upgrade to Pro for more, or wait for your credits to refill.")}
+            {isPro
+              ? t("You're out of credits for this month — they'll refresh on {date}.", {
+                  date: credits?.creditsResetAt ? new Date(credits.creditsResetAt).toLocaleDateString() : "",
+                })
+              : t("You're out of credits for this month — upgrade to Pro for more, or wait for your credits to refill.")}
           </p>
-          <button
-            onClick={handleUpgradeClick}
-            className="mt-2 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400"
-          >
-            {t("Upgrade to Pro")}
-          </button>
+          {!isPro && (
+            <button
+              onClick={handleUpgradeClick}
+              className="mt-2 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400"
+            >
+              {t("Upgrade to Pro")}
+            </button>
+          )}
         </>
       ) : (
         <>
