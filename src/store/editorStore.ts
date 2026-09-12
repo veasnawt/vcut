@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import * as api from "../api/client.ts";
 import { ApiRequestError } from "../api/client.ts";
-import type { AiAspectRatio, CaptionSegment, SourceRect, StockSearchResult } from "../api/client.ts";
+import type { AiAspectRatio, AiVideoProgress, CaptionSegment, SourceRect, StockSearchResult } from "../api/client.ts";
 import type { Command } from "../commands/index.ts";
 import {
   AddCaptionsCommand,
@@ -56,6 +56,23 @@ const AUTOSAVE_DELAY_MS = 1500;
 const DEFAULT_PIXELS_PER_SECOND = 60;
 
 export type StatusTone = "info" | "error";
+
+/** One AI image/video generation, as `AiGeneratePanel.tsx` renders it — see `EditorState.aiGenerations`'s
+ *  own doc comment for why this lives in the store rather than component state. `aspectRatio` is kept
+ *  even after the asset itself exists so the tile can show the right SHAPE while still generating
+ *  (before there's a thumbnail to measure), not just after. `progress`/`stage` only ever apply to video
+ *  (image generation is a single request/response with no partial progress to report). */
+export interface AiGenerationItem {
+  id: string;
+  kind: "image" | "video";
+  prompt: string;
+  aspectRatio: AiAspectRatio;
+  status: "generating" | "done" | "failed";
+  asset?: Asset;
+  error?: string;
+  progress?: number;
+  stage?: string;
+}
 
 export interface EditorState {
   projectId: string | null;
@@ -169,6 +186,14 @@ export interface EditorState {
 
   status: { message: string; tone: StatusTone } | null;
   importing: boolean;
+  /** Every AI image/video generation this session, newest first — lives HERE rather than as local
+   *  `AiGeneratePanel` state because that component can genuinely unmount mid-generation: on mobile,
+   *  the "AI" tab only exists inside the bottom media SHEET (`VCutApp.tsx`'s own `mobileSheet`), which
+   *  unmounts entirely the instant a user taps a different toolbar button — a component-local history
+   *  (and, worse, a component-owned `watchAiVideo` SSE subscription) would vanish and silently orphan
+   *  a job that was still running server-side. Store-level state has no such lifecycle: it survives
+   *  exactly as long as the editor session does, same as `project` itself. */
+  aiGenerations: AiGenerationItem[];
   /** Which "My Sounds" import is currently in flight — disables `SfxPanel`'s own import button so a
    *  second click can't fire a second upload while the first is still running. Session-only, same
    *  category as `importing` (this project's own separate flag, not shared with it, since a plain
@@ -370,16 +395,24 @@ export interface EditorState {
    *  throwing, so a caller never needs its own try/catch just to keep the UI responsive after one bad
    *  download. */
   importStockResult: (result: StockSearchResult) => Promise<Asset | null>;
-  /** Generates one image from a prompt (`ai-image/route.ts`, Replicate's Flux Schnell) and lands it in
-   *  `project.assets` — same "not undo-able, an import is more like an asset creation than a timeline
-   *  edit" reasoning `importStockResult` itself follows, just sourced from a generation instead of a
-   *  download. Returns `null` on failure (surfaced via `setStatus`), same convention. */
-  generateAiImage: (prompt: string, aspectRatio: AiAspectRatio) => Promise<Asset | null>;
-  /** Appends one already-generated `Asset` to `project.assets` — the "landing" half of AI video
-   *  generation, kept separate from the "starting" half (`startAiVideo`/`watchAiVideo`, called directly
-   *  from the dialog UI, same as Remove Object's own job lives in `Inspector.tsx` rather than the
-   *  store) because a job's progress isn't state this store needs to own, only its eventual result is. */
-  addGeneratedAsset: (asset: Asset) => void;
+  /** Generates one image from a prompt (`ai-image/route.ts`, Replicate's Flux Schnell), tracking it as a
+   *  new `aiGenerations` entry throughout (see that field's own doc comment) and landing the result in
+   *  `project.assets` (`hiddenFromLibrary`, same reasoning `importFiles`'s own comment gives — a
+   *  generation belongs in the AI tab's own history, not duplicated into "My Media" too) once it
+   *  succeeds. Failures patch that same entry to `status: "failed"` rather than throwing or returning
+   *  anything — `AiGeneratePanel.tsx` reads the outcome back off `aiGenerations`, same as it does while
+   *  the request is still running. */
+  generateAiImage: (prompt: string, aspectRatio: AiAspectRatio) => Promise<void>;
+  /** Starts an AI video generation job (`ai-video/route.ts`, Replicate's Seedance 2.0) as a new
+   *  `aiGenerations` entry, watches it via SSE, and patches that entry's progress/result as it comes in
+   *  — the video equivalent of `generateAiImage` above, just job-based instead of a single request/
+   *  response (see `ai-video/route.ts`'s own comment on why). Single-flight: starting a new one while
+   *  one is already running isn't exposed in the UI (the Generate button becomes Cancel instead), so
+   *  this doesn't guard against it itself. */
+  startAiVideoGeneration: (prompt: string, aspectRatio: AiAspectRatio) => Promise<void>;
+  /** Cancels whichever AI video job `startAiVideoGeneration` most recently started, if any is still
+   *  running — mirrors `cancelInpaint`'s own "racing the job's own completion is normal" tolerance. */
+  cancelAiVideoGeneration: () => void;
   removeAsset: (asset: Asset) => Promise<void>;
   /** Imports one file into the project's own reusable "My Sounds" library (`project.customSfx`) —
    *  same "not undo-able, an import is more like an asset creation than a timeline edit" reasoning
@@ -502,6 +535,13 @@ const undoStack = new UndoStack();
 
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Same "not reactive state" reasoning `undoStack` above already gives — `watchAiVideo`'s own unwatch
+ *  closure isn't serializable and doesn't need to trigger a re-render itself (the `aiGenerations` patch
+ *  it drives already does). Single-flight (one at a time, matching `startAiVideoGeneration`'s own doc
+ *  comment) is exactly why a single pair of variables is enough rather than a map keyed by job id. */
+let activeAiVideoJobId: string | null = null;
+let unwatchActiveAiVideo: (() => void) | null = null;
+
 export const useEditorStore = create<EditorState>((set, get) => {
   /** Copies the undo stack's derived state into the store after any change to it. */
   function syncUndoState() {
@@ -535,6 +575,10 @@ export const useEditorStore = create<EditorState>((set, get) => {
       removeObjectRect: state.removeObjectRect && !alive.has(state.removeObjectRect.clipId) ? null : state.removeObjectRect,
     }));
     markDirtyAndScheduleSave();
+  }
+
+  function patchAiGeneration(id: string, patch: Partial<AiGenerationItem>) {
+    set((state) => ({ aiGenerations: state.aiGenerations.map((item) => (item.id === id ? { ...item, ...patch } : item)) }));
   }
 
   return {
@@ -578,6 +622,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     status: null,
     language: readStoredLanguage(),
     importing: false,
+    aiGenerations: [],
     importingSfx: false,
     importingLut: false,
     importingFont: false,
@@ -929,33 +974,78 @@ export const useEditorStore = create<EditorState>((set, get) => {
 
     async generateAiImage(prompt, aspectRatio) {
       const { projectId, project } = get();
-      if (!projectId || !project) return null;
+      if (!projectId || !project) return;
+      const id = crypto.randomUUID();
+      set((state) => ({ aiGenerations: [{ id, kind: "image", prompt, aspectRatio, status: "generating" }, ...state.aiGenerations] }));
       set({ importing: true });
       try {
         const generated = await api.generateAiImage(projectId, prompt, aspectRatio);
         // `hiddenFromLibrary`, same marker `VoiceoverRecorder`'s own takes use: a generation belongs
-        // in the AI tab's own history (`AiGeneratePanel`'s own `history` state already shows it there),
-        // not duplicated into "My Media" too — `addAssetAtPlayhead` is still how it reaches the
-        // timeline, exactly like a hidden voiceover take does.
+        // in the AI tab's own `aiGenerations` history, not duplicated into "My Media" too —
+        // `addAssetAtPlayhead` is still how it reaches the timeline, exactly like a hidden voiceover
+        // take does.
         const asset = { ...generated, hiddenFromLibrary: true };
         const current = get().project;
         if (current) applyProject({ ...current, assets: [...current.assets, asset] });
-        return asset;
+        patchAiGeneration(id, { status: "done", asset });
       } catch (err) {
-        get().setStatus(err instanceof Error ? err.message : String(err), "error");
-        return null;
+        patchAiGeneration(id, { status: "failed", error: err instanceof Error ? err.message : String(err) });
       } finally {
         set({ importing: false });
       }
     },
 
-    addGeneratedAsset(generated) {
-      const current = get().project;
-      if (!current) return;
-      // See `generateAiImage`'s own identical comment — same reasoning, just for the job-based (video)
-      // generation path.
-      const asset = { ...generated, hiddenFromLibrary: true };
-      applyProject({ ...current, assets: [...current.assets, asset] });
+    async startAiVideoGeneration(prompt, aspectRatio) {
+      const { projectId, project } = get();
+      if (!projectId || !project) return;
+      const id = crypto.randomUUID();
+      set((state) => ({
+        aiGenerations: [{ id, kind: "video", prompt, aspectRatio, status: "generating", progress: 0, stage: "" }, ...state.aiGenerations],
+      }));
+      try {
+        const started = await api.startAiVideo(projectId, prompt, aspectRatio);
+        activeAiVideoJobId = started.jobId;
+        unwatchActiveAiVideo = api.watchAiVideo(
+          started.jobId,
+          (update: AiVideoProgress) => {
+            // See `generateAiImage`'s own identical comment on `hiddenFromLibrary` — same reasoning,
+            // just for this job-based path.
+            const asset = update.asset ? { ...update.asset, hiddenFromLibrary: true } : undefined;
+            patchAiGeneration(id, {
+              progress: update.progress,
+              stage: update.stage,
+              ...(update.status === "done" && asset ? { status: "done", asset } : null),
+              ...(update.status === "failed"
+                ? { status: "failed", error: update.error ?? translateText(get().language, "Generation failed") }
+                : null),
+              ...(update.status === "cancelled" ? { status: "failed", error: translateText(get().language, "Cancelled") } : null),
+            });
+            if (update.status === "done" && asset) {
+              const current = get().project;
+              if (current) applyProject({ ...current, assets: [...current.assets, asset] });
+            }
+            if (update.status !== "running") {
+              activeAiVideoJobId = null;
+              unwatchActiveAiVideo = null;
+            }
+          },
+          (message) => {
+            patchAiGeneration(id, { status: "failed", error: message });
+            activeAiVideoJobId = null;
+            unwatchActiveAiVideo = null;
+          }
+        );
+      } catch (err) {
+        patchAiGeneration(id, { status: "failed", error: err instanceof Error ? err.message : String(err) });
+      }
+    },
+
+    cancelAiVideoGeneration() {
+      // No need to also patch the item or call `unwatchActiveAiVideo` here — cancelling races the
+      // job's own completion (same tolerance `cancelInpaint` already documents), and the SSE stream
+      // itself delivers one final "cancelled" update through the exact same `onUpdate` handler above,
+      // which already clears both module variables once `update.status !== "running"`.
+      if (activeAiVideoJobId) void api.cancelAiVideo(activeAiVideoJobId);
     },
 
     addTextAsset(style, content = "") {

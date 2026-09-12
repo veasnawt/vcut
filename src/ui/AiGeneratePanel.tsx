@@ -1,20 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import {
-  AI_ASPECT_RATIOS,
-  aiImageAvailable,
-  aiVideoAvailable,
-  cancelAiVideo,
-  startAiVideo,
-  thumbnailUrl,
-  watchAiVideo,
-  type AiAspectRatio,
-  type AiVideoProgress,
-} from "../api/client.ts";
+import { useEffect, useState } from "react";
+import { AI_ASPECT_RATIOS, aiImageAvailable, aiVideoAvailable, thumbnailUrl, type AiAspectRatio } from "../api/client.ts";
 import { startCheckout } from "../api/billing.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
-import type { Asset } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 
@@ -27,27 +16,13 @@ function handleUpgradeClick() {
     .catch(() => {});
 }
 
-type VideoPhase = "idle" | "running" | "done" | "failed" | "cancelled";
-
-/** One generation this session, oldest last — deliberately NOT a persisted server-side history (there's
- *  no route for it). This is now the ONLY place a generation is visible: the store marks every
- *  generated asset `hiddenFromLibrary` (see `generateAiImage`'s own comment in `editorStore.ts`), so it
- *  never shows in "My Media" — the entry here appears the instant a generation STARTS
- *  (`status: "generating"`, so there's always a visible preview of the in-flight request, not just a
- *  spinner floating over an empty panel), flips to its real thumbnail or an inline error once the
- *  request settles, and — since nothing else surfaces it once done — is also the only way to actually
- *  use the result: double-click (or tap, in the mobile bottom sheet) adds it to the timeline, same as a
- *  `MediaLibrary` tile. */
-interface HistoryItem {
-  id: string;
-  kind: "image" | "video";
-  prompt: string;
-  status: "generating" | "done" | "failed";
-  asset?: Asset;
-  error?: string;
-  /** Video only — image generation is a single request/response with no partial progress to show. */
-  progress?: number;
-  stage?: string;
+/** CSS's `aspect-ratio` property takes the same "W/H" shape `AiAspectRatio`'s own colon-separated
+ *  string already is, just with a different separator — this is the only translation needed. Used so
+ *  a tile's box actually matches the ratio it was GENERATED at (a 9:16 request shows as a tall tile,
+ *  not a cropped 16:9 one), including before there's a real image to measure: the placeholder itself
+ *  is already the right shape while still generating. */
+function cssAspectRatio(ratio: AiAspectRatio): string {
+  return ratio.replace(":", " / ");
 }
 
 /** AI image/video generation from a text prompt (`ai-image/route.ts` and `ai-video/route.ts`, both
@@ -57,16 +32,18 @@ interface HistoryItem {
  *  doc comment) — there is no local/desktop self-serve provider-key UI for this, unlike Remove Object's
  *  `RemoveObjectSection`, matching Captions'/Kiri's own minimal hosted-only pattern instead.
  *
- *  `MediaPanel.tsx` keeps this mounted (hidden, not unmounted) while another tab is active — a video
- *  job's `watchAiVideo` subscription would otherwise be torn down by this component's own unmount the
- *  moment a user glanced at "My Media" mid-generation, silently orphaning a job that was still running
- *  server-side with no way left to learn how it finished. */
+ *  The actual generation history (`aiGenerations`) lives in `editorStore`, not here — see that field's
+ *  own doc comment for why local component state couldn't survive what this panel's mobile home
+ *  (the bottom sheet) does to it. This component is a pure view over that store state: every action
+ *  below is a one-line dispatch, and the tiles below just render whatever the store currently holds. */
 export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } = {}) {
   const t = useTranslation();
   const projectId = useEditorStore((s) => s.projectId);
   const importing = useEditorStore((s) => s.importing);
+  const aiGenerations = useEditorStore((s) => s.aiGenerations);
   const generateAiImage = useEditorStore((s) => s.generateAiImage);
-  const addGeneratedAsset = useEditorStore((s) => s.addGeneratedAsset);
+  const startAiVideoGeneration = useEditorStore((s) => s.startAiVideoGeneration);
+  const cancelAiVideoGeneration = useEditorStore((s) => s.cancelAiVideoGeneration);
   const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
   const { hosted, credits } = useHostedCreditsGate();
   const outOfCredits = hosted && credits !== null && credits.creditsRemaining <= 0;
@@ -76,100 +53,62 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   const [aspectRatio, setAspectRatio] = useState<AiAspectRatio>("9:16");
   const [imageAvailable, setImageAvailable] = useState<boolean | null>(null);
   const [videoAvailable, setVideoAvailable] = useState<boolean | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<HistoryItem[]>([]);
-
-  const [videoPhase, setVideoPhase] = useState<VideoPhase>("idle");
-  const jobIdRef = useRef<string | null>(null);
-  const videoItemIdRef = useRef<string | null>(null);
-  const unwatchRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     void aiImageAvailable().then(setImageAvailable);
     void aiVideoAvailable().then(setVideoAvailable);
   }, []);
 
-  useEffect(() => () => unwatchRef.current?.(), []);
+  // Single-flight (the store's own `startAiVideoGeneration` doc comment explains why): derived from
+  // the shared history rather than a flag of its own, so it stays correct regardless of which
+  // component instance (desktop column vs. mobile sheet) actually started the job.
+  const videoBusy = aiGenerations.some((g) => g.kind === "video" && g.status === "generating");
 
-  function patchHistory(id: string, patch: Partial<HistoryItem>) {
-    setHistory((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
-  }
-
-  async function handleGenerateImage() {
+  function handleGenerate() {
     const trimmed = prompt.trim();
     if (!trimmed || !projectId) return;
-    setError(null);
-    const id = crypto.randomUUID();
-    setHistory((prev) => [{ id, kind: "image", prompt: trimmed, status: "generating" }, ...prev]);
-    const asset = await generateAiImage(trimmed, aspectRatio);
-    if (asset) {
-      patchHistory(id, { status: "done", asset });
-      setPrompt("");
-    } else {
-      patchHistory(id, { status: "failed", error: t("Generation failed") });
-    }
-  }
-
-  async function handleGenerateVideo() {
-    const trimmed = prompt.trim();
-    if (!trimmed || !projectId) return;
-    setError(null);
-    const id = crypto.randomUUID();
-    videoItemIdRef.current = id;
-    setHistory((prev) => [{ id, kind: "video", prompt: trimmed, status: "generating", progress: 0, stage: "" }, ...prev]);
-    setVideoPhase("running");
-    try {
-      const started = await startAiVideo(projectId, trimmed, aspectRatio);
-      jobIdRef.current = started.jobId;
-      unwatchRef.current = watchAiVideo(
-        started.jobId,
-        (update: AiVideoProgress) => {
-          setVideoPhase(update.status);
-          patchHistory(id, {
-            progress: update.progress,
-            stage: update.stage,
-            ...(update.status === "done" && update.asset ? { status: "done", asset: update.asset } : null),
-            ...(update.status === "failed" ? { status: "failed", error: update.error ?? t("Generation failed") } : null),
-            ...(update.status === "cancelled" ? { status: "failed", error: t("Cancelled") } : null),
-          });
-          if (update.status === "done" && update.asset) {
-            addGeneratedAsset(update.asset);
-            setPrompt("");
-          }
-          if (update.status === "failed" && update.error) setError(update.error);
-        },
-        (message) => setError(message)
-      );
-    } catch (err) {
-      setVideoPhase("failed");
-      const message = err instanceof Error ? err.message : t("Could not start the job");
-      setError(message);
-      patchHistory(id, { status: "failed", error: message });
-    }
-  }
-
-  function stopVideo() {
-    if (jobIdRef.current) void cancelAiVideo(jobIdRef.current);
-    setVideoPhase("cancelled");
-    if (videoItemIdRef.current) patchHistory(videoItemIdRef.current, { status: "failed", error: t("Cancelled") });
+    // Cleared immediately on submit, not on completion — same "send, then the input is yours again"
+    // feel a chat input has, and it means a slow generation never leaves stale text sitting there.
+    setPrompt("");
+    if (kind === "image") void generateAiImage(trimmed, aspectRatio);
+    else void startAiVideoGeneration(trimmed, aspectRatio);
   }
 
   if (!projectId) return null;
 
   const available = kind === "image" ? imageAvailable : videoAvailable;
-  const videoBusy = videoPhase === "running";
   const busy = kind === "image" ? importing : videoBusy;
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto p-3">
+      {/* Custom keyframes: Tailwind's own animation utilities cover spin/pulse/bounce/ping, not an
+          arbitrary shifting gradient — declared once here rather than in a host app's global CSS
+          because this package ships as source into THREE separate apps (web, mobile, desktop), each
+          with its own stylesheet; a self-contained rule is the only way every one of them gets it. */}
+      <style>{`
+        @keyframes vcut-ai-generating-sweep {
+          0%, 100% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+        }
+        @keyframes vcut-ai-generating-pulse {
+          0%, 100% { transform: scale(1); opacity: 0.75; }
+          50% { transform: scale(1.18); opacity: 1; }
+        }
+        .vcut-ai-generating-bg {
+          background-image: linear-gradient(120deg, #1e2a4a, #5b21b6, #9d2a6b, #1e2a4a);
+          background-size: 300% 300%;
+          animation: vcut-ai-generating-sweep 3.2s ease-in-out infinite;
+        }
+        .vcut-ai-generating-icon {
+          animation: vcut-ai-generating-pulse 1.7s ease-in-out infinite;
+        }
+      `}</style>
+
       <div className="mb-3 flex shrink-0 overflow-hidden rounded-md border border-white/10">
         {(["image", "video"] as const).map((k) => (
           <button
             key={k}
-            onClick={() => {
-              setKind(k);
-              setError(null);
-            }}
+            onClick={() => setKind(k)}
             disabled={videoBusy}
             className={`flex-1 px-2.5 py-1 text-xs font-medium transition disabled:cursor-default disabled:opacity-60 ${
               kind === k ? "bg-sky-500 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"
@@ -224,20 +163,24 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
             ))}
           </div>
 
-          {error && <p className="mt-2 text-[11px] leading-relaxed text-rose-300">{error}</p>}
-
           <button
-            onClick={() => void (kind === "image" ? handleGenerateImage() : videoBusy ? stopVideo() : handleGenerateVideo())}
-            disabled={!prompt.trim() || (kind === "image" && busy)}
+            onClick={() => (kind === "video" && videoBusy ? cancelAiVideoGeneration() : handleGenerate())}
+            disabled={!prompt.trim() && !(kind === "video" && videoBusy)}
             className="mt-3 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400 disabled:cursor-default disabled:opacity-50"
           >
             {kind === "image" ? (busy ? t("Generating…") : t("Generate image")) : videoBusy ? t("Cancel") : t("Generate video")}
           </button>
 
-          {history.length > 0 && (
-            <ul className="mt-3 grid grid-cols-2 gap-2">
-              {history.map((item) => (
-                <li key={item.id}>
+          {aiGenerations.length > 0 && (
+            // A CSS multi-column flow, not `grid grid-cols-2` — a fixed-row grid forces every tile to
+            // the SAME height regardless of its own aspect ratio, which is exactly what stopped a 9:16
+            // placeholder/thumbnail from ever looking tall: the grid cell itself capped it back down to
+            // match its 16:9 neighbor. Columns let each tile keep its own natural height instead, so
+            // ratios genuinely differ from one tile to the next and the whole grid packs tightly around
+            // them rather than padding every row out to its tallest member.
+            <div className="mt-3 columns-2 gap-2">
+              {aiGenerations.map((item) => (
+                <div key={item.id} className="mb-2 break-inside-avoid">
                   <div
                     role={item.status === "done" ? "button" : undefined}
                     tabIndex={item.status === "done" ? 0 : undefined}
@@ -265,28 +208,37 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                       item.status === "done" ? "cursor-pointer transition hover:ring-1 hover:ring-sky-400/60" : ""
                     }`}
                   >
-                    <div className="relative aspect-video w-full overflow-hidden bg-black">
+                    {/* `absolute inset-0` on every branch below, not `h-full w-full` — a percentage
+                        height only resolves against a PARENT with an explicit height, and this parent's
+                        height comes from `aspect-ratio` alone (no explicit `height`), which doesn't
+                        reliably count for that: a long error message (`item.error`, sometimes a raw
+                        provider response) could inflate its own box past the ratio-implied height
+                        instead of being clipped by this parent's own `overflow-hidden`. Anchoring
+                        directly to the parent's edges has no such ambiguity. */}
+                    <div className="relative w-full overflow-hidden bg-black" style={{ aspectRatio: cssAspectRatio(item.aspectRatio) }}>
                       {item.status === "done" && item.asset ? (
                         <img
                           src={thumbnailUrl(projectId, item.asset) ?? ""}
                           alt=""
-                          className="h-full w-full object-cover"
+                          className="absolute inset-0 h-full w-full object-cover"
                           draggable={false}
                         />
                       ) : item.status === "failed" ? (
-                        <div className="flex h-full w-full items-center justify-center bg-rose-950/30 p-2 text-center text-[10px] leading-snug text-rose-300">
-                          {item.error}
+                        <div className="absolute inset-0 flex items-center justify-center bg-rose-950/30 p-2 text-center">
+                          <span className="line-clamp-5 text-[10px] leading-snug text-rose-300">{item.error}</span>
                         </div>
                       ) : (
-                        <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-white/5 p-2">
-                          <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/20 border-t-white/60" />
-                          <span className="text-center text-[10px] leading-snug text-white/50">
+                        <div className="vcut-ai-generating-bg absolute inset-0 flex flex-col items-center justify-center gap-2 p-2">
+                          <svg viewBox="0 0 24 24" fill="currentColor" className="vcut-ai-generating-icon h-6 w-6 text-white/90">
+                            <path d="M12 3c.5 5 2 7.5 5.5 8.5-3.5 1-5 3.5-5.5 8.5-.5-5-2-7.5-5.5-8.5C10 10.5 11.5 8 12 3z" />
+                          </svg>
+                          <span className="text-center text-[10px] font-medium leading-snug text-white/85">
                             {item.kind === "video" ? item.stage || t("Starting…") : t("Generating…")}
                           </span>
                           {item.kind === "video" && (
-                            <div className="h-1 w-3/4 overflow-hidden rounded-full bg-white/10">
+                            <div className="h-1 w-3/4 overflow-hidden rounded-full bg-black/30">
                               <div
-                                className="h-full rounded-full bg-sky-400 transition-all"
+                                className="h-full rounded-full bg-white/85 transition-all"
                                 style={{ width: `${Math.round((item.progress ?? 0) * 100)}%` }}
                               />
                             </div>
@@ -298,9 +250,9 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                       {item.prompt}
                     </p>
                   </div>
-                </li>
+                </div>
               ))}
-            </ul>
+            </div>
           )}
         </>
       )}
