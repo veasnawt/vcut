@@ -987,3 +987,21 @@ export async function captionsAvailable(): Promise<boolean> {
     return false;
   }
 }
+
+/** Saves the CURRENT project's structure (aspect ratio, tracks, any text/color-matte clips already
+ *  laid out — never real media, see `templates/route.ts`'s own `sanitizeProjectForTemplate` call for
+ *  exactly what's kept) as a new reusable template — Pro-only end to end, same as using one to start
+ *  a new project (`ProjectsDashboard.tsx`'s own "start from a template" flow calls the project-
+ *  creation route directly rather than through this file — see that file's own doc comment on why it
+ *  duplicates `apiFetch`/`mediaUrl` instead of importing this module). Hosted-only: there's no local/
+ *  desktop "Pro" concept to save a template against, so this isn't given an `isNative` branch the way
+ *  LUT/font import are — the button that calls this simply doesn't render outside a hosted, Pro
+ *  session in the first place. */
+export async function saveAsTemplate(projectId: string, name: string): Promise<{ id: string; name: string }> {
+  const response = await apiFetch(`${BASE}/templates`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projectId, name }),
+  });
+  return unwrap<{ id: string; name: string }>(response);
+}

@@ -481,6 +481,11 @@ export interface EditorState {
    *  since-removed font), but still applies the server's own returned project rather than filtering
    *  locally, the same "server is authoritative" reasoning `removeLut` gives. */
   removeFont: (id: string) => Promise<void>;
+  /** Saves the current project's structure as a new reusable template (Pro-only, see
+   *  `api.saveAsTemplate`'s own doc comment for exactly what's kept vs. dropped). Reports success/
+   *  failure via `setStatus`, the same fire-and-toast shape `removeFont` above already has — nothing
+   *  else in the editor needs to react to a template existing, unlike an asset/clip mutation. */
+  saveAsTemplate: (name: string) => Promise<void>;
   /** Creates a color-matte asset AND immediately places it as a clip at the playhead — same
    *  "lands the result somewhere visible in one action" shape `commitComposedText` gives the Text
    *  tool, just on a VIDEO track (a color matte is just a video-track clip whose source is a solid
@@ -1295,6 +1300,18 @@ export const useEditorStore = create<EditorState>((set, get) => {
         get().setStatus(translateText(get().language, "Removed {name}", { name: font.name }));
       } catch (err) {
         const message = err instanceof Error ? err.message : "Could not remove that font";
+        get().setStatus(translateText(get().language, message), "error");
+      }
+    },
+
+    async saveAsTemplate(name) {
+      const { projectId } = get();
+      if (!projectId) return;
+      try {
+        await api.saveAsTemplate(projectId, name);
+        get().setStatus(translateText(get().language, 'Saved "{name}" as a template', { name }));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Could not save that template";
         get().setStatus(translateText(get().language, message), "error");
       }
     },

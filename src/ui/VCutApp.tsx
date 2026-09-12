@@ -30,6 +30,7 @@ import {
   Video,
   Volume,
 } from "@veasnawt/vicons";
+import { startCheckout } from "../api/billing.ts";
 import { HOSTED } from "../api/client.ts";
 import { reportError } from "../api/crashLog.ts";
 import { isDesktopSignInAvailable, openDesktopSignIn, subscribeToDesktopAuthCallback } from "../api/desktopAuth.ts";
@@ -56,6 +57,7 @@ import { MixerPanel } from "./MixerPanel.tsx";
 import { MobileSignInDialog } from "./MobileSignInDialog.tsx";
 import { NewTextComposer } from "./NewTextComposer.tsx";
 import { PixelEffectPickerMenu } from "./PixelEffectPickerMenu.tsx";
+import { SaveAsTemplateDialog } from "./SaveAsTemplateDialog.tsx";
 import { StylePickerMenu } from "./StylePickerMenu.tsx";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { Preview } from "./Preview.tsx";
@@ -68,6 +70,16 @@ import { UserMenu } from "./UserMenu.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 import { useIsMobile } from "./useIsMobile.ts";
 import { VoiceRecordModal } from "./VoiceRecordModal.tsx";
+
+/** Same "single fire-and-navigate action, no special busy/error state" reasoning `Inspector.tsx`'s
+ *  own `handleUpgradeClick` documents — duplicated rather than imported since it isn't exported from
+ *  there (it's a private module-level helper, and this is 4 lines). Used by the header's own "Save as
+ *  template" button when a free user clicks it. */
+function handleUpgradeClick() {
+  void startCheckout()
+    .then((url) => (window.location.href = url))
+    .catch(() => {});
+}
 
 /** Bounds for the draggable Preview/Timeline divider — see `beginTimelineResize`. A fixed pixel
  *  floor for Timeline (below this a track row plus its ruler stops being useful) and a
@@ -1264,6 +1276,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   const { hosted, credits } = useHostedCreditsGate();
   const [showMobileSignIn, setShowMobileSignIn] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showSaveAsTemplate, setShowSaveAsTemplate] = useState(false);
   const userMenuButtonRef = useRef<HTMLButtonElement>(null);
 
   // The desktop half of sign-in: `main.ts` extracts `access_token`/`refresh_token` from the
@@ -1798,6 +1811,21 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
               {t("Sign in")}
             </button>
           )}
+          {/* Hosted-web only (no local/desktop "Pro" concept) — clicking it either opens the naming
+              dialog (already Pro) or hands off to checkout (still free), the same "show it, prompt
+              upgrade on click" pattern Auto Captions/Remove Object already use elsewhere, rather than
+              hiding the feature entirely from anyone who hasn't upgraded yet. Text-only and this far
+              down the header's priority order on purpose — saving a template is a rare, deliberate
+              action next to Export's every-session one, not worth matching its visual weight. */}
+          {hosted && (
+            <button
+              onClick={() => (credits?.plan === "pro" ? setShowSaveAsTemplate(true) : handleUpgradeClick())}
+              title={t("Save the current project's structure as a reusable template")}
+              className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/60 transition hover:bg-white/10 hover:text-white"
+            >
+              {t("Save as template")}
+            </button>
+          )}
           <button
             onClick={() => setLanguage(language === "en" ? "km" : "en")}
             title={t("Switch language")}
@@ -1814,6 +1842,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           </button>
         </div>
       </header>
+      {showSaveAsTemplate && <SaveAsTemplateDialog onClose={() => setShowSaveAsTemplate(false)} />}
 
       {/* Three panes at `lg`+ (1024px): media on the left, preview + inspector in the middle,
           timeline across the bottom — the original desktop layout, unchanged. Below `lg`, there's no
