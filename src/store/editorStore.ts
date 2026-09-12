@@ -646,6 +646,22 @@ export const useEditorStore = create<EditorState>((set, get) => {
           selectedClipIds: [],
           activeTrackId: project.sequence.tracks.find((t) => t.kind === "video")?.id ?? null,
           recording: null,
+          // Rebuilds the AI tab's own history from whichever assets carry `aiGeneration` (see that
+          // field's own doc comment) — `aiGenerations` itself doesn't persist, only the assets it once
+          // produced do, so this is what makes a past generation's tile survive a reload instead of
+          // looking like it vanished even though the real image/video it made never actually did.
+          // Newest first, same order a fresh generation is prepended in.
+          aiGenerations: project.assets
+            .filter((a): a is Asset & { aiGeneration: NonNullable<Asset["aiGeneration"]> } => Boolean(a.aiGeneration))
+            .sort((a, b) => b.importedAt - a.importedAt)
+            .map((a) => ({
+              id: a.id,
+              kind: a.kind === "video" ? "video" : "image",
+              prompt: a.aiGeneration.prompt,
+              aspectRatio: a.aiGeneration.aspectRatio as AiAspectRatio,
+              status: "done",
+              asset: a,
+            })),
         });
         syncUndoState();
       } catch (err) {
@@ -983,8 +999,10 @@ export const useEditorStore = create<EditorState>((set, get) => {
         // `hiddenFromLibrary`, same marker `VoiceoverRecorder`'s own takes use: a generation belongs
         // in the AI tab's own `aiGenerations` history, not duplicated into "My Media" too —
         // `addAssetAtPlayhead` is still how it reaches the timeline, exactly like a hidden voiceover
-        // take does.
-        const asset = { ...generated, hiddenFromLibrary: true };
+        // take does. `aiGeneration`: see its own doc comment on `Asset` — without it, `load()` below
+        // has no way to tell this asset apart from a hidden voiceover take once the page reloads and
+        // this in-memory `aiGenerations` list itself is gone.
+        const asset = { ...generated, hiddenFromLibrary: true, aiGeneration: { prompt, aspectRatio } };
         const current = get().project;
         if (current) applyProject({ ...current, assets: [...current.assets, asset] });
         patchAiGeneration(id, { status: "done", asset });
@@ -1008,9 +1026,9 @@ export const useEditorStore = create<EditorState>((set, get) => {
         unwatchActiveAiVideo = api.watchAiVideo(
           started.jobId,
           (update: AiVideoProgress) => {
-            // See `generateAiImage`'s own identical comment on `hiddenFromLibrary` — same reasoning,
-            // just for this job-based path.
-            const asset = update.asset ? { ...update.asset, hiddenFromLibrary: true } : undefined;
+            // See `generateAiImage`'s own identical comment on `hiddenFromLibrary`/`aiGeneration` —
+            // same reasoning, just for this job-based path.
+            const asset = update.asset ? { ...update.asset, hiddenFromLibrary: true, aiGeneration: { prompt, aspectRatio } } : undefined;
             patchAiGeneration(id, {
               progress: update.progress,
               stage: update.stage,

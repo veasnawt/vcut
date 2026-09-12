@@ -62,6 +62,14 @@ export interface Asset {
    *  the user never deliberately "imported" — absent (the default) for everything else, including a
    *  plain drag-dropped audio file. */
   hiddenFromLibrary?: boolean;
+  /** Set only on an asset created by AI image/video generation (`generateAiImage`/
+   *  `startAiVideoGeneration` in `editorStore.ts`) — carries just enough to rebuild the AI tab's own
+   *  generation-history tile (`AiGeneratePanel.tsx`'s `aiGenerations`, a plain in-memory list with no
+   *  persistence of its own) after a reload. Without this, refreshing the browser mid-session made
+   *  every past generation's tile vanish even though the real asset it produced was never lost — it
+   *  was sitting right there in `project.assets`, just with nothing left connecting it back to "this
+   *  came from a generation, here's the prompt that made it." */
+  aiGeneration?: { prompt: string; aspectRatio: string };
   /** Present only when `kind === "text"`. A text asset has no backing file — `relPath` is an empty
    *  string and `hasAudio` is always false — its "content" is this string, authored directly rather
    *  than imported. Lives on the ASSET (not the clip) for the same reason a video's pixels do: it's

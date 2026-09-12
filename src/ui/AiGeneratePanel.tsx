@@ -207,7 +207,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                           }
                         : undefined
                     }
-                    title={item.status === "done" ? t("Double-click to add at the playhead") : undefined}
+                    title={item.status === "done" ? `${item.prompt}\n${t("Double-click to add at the playhead")}` : item.prompt}
                     className={`flex w-full flex-col overflow-hidden rounded-lg bg-black/40 text-left ${
                       item.status === "done" ? "cursor-pointer transition hover:ring-1 hover:ring-sky-400/60" : ""
                     }`}
@@ -230,12 +230,23 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                       style={{ aspectRatio: cssAspectRatio(item.aspectRatio) }}
                     >
                       {item.status === "done" && item.asset ? (
-                        <img
-                          src={thumbnailUrl(projectId, item.asset) ?? ""}
-                          alt=""
-                          className="absolute inset-0 h-full w-full object-cover"
-                          draggable={false}
-                        />
+                        thumbnailUrl(projectId, item.asset) ? (
+                          <img
+                            src={thumbnailUrl(projectId, item.asset)!}
+                            alt=""
+                            className="absolute inset-0 h-full w-full object-cover"
+                            draggable={false}
+                          />
+                        ) : (
+                          // A video whose thumbnail failed to generate server-side (or hasn't yet) has
+                          // no URL to show at all — `thumbnailUrl` returns `null`, not a broken one.
+                          // Same fallback `MediaLibrary.tsx`'s own `AssetThumbnail` already uses for the
+                          // identical case, instead of an `<img src="">` that just renders as a broken-
+                          // image glyph.
+                          <div className="absolute inset-0 flex items-center justify-center bg-white/5 text-[10px] uppercase tracking-wide text-white/40">
+                            {t(item.asset.kind)}
+                          </div>
+                        )
                       ) : item.status === "failed" ? (
                         <div className="absolute inset-0 flex items-center justify-center bg-rose-950/30 p-2 text-center">
                           <span className="line-clamp-5 text-[10px] leading-snug text-rose-300">{item.error}</span>
@@ -264,9 +275,6 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                         </div>
                       )}
                     </div>
-                    <p className="truncate px-1.5 py-1 text-[10px] text-white/40" title={item.prompt}>
-                      {item.prompt}
-                    </p>
                   </div>
                 </div>
               ))}

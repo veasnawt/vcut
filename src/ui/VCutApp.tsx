@@ -66,6 +66,7 @@ import { TextStylePickerMenu } from "./TextStylePickerMenu.tsx";
 import { TransitionPickerMenu } from "./TransitionPickerMenu.tsx";
 import { UserMenu } from "./UserMenu.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
+import { useIsMobile } from "./useIsMobile.ts";
 import { VoiceRecordModal } from "./VoiceRecordModal.tsx";
 
 /** Bounds for the draggable Preview/Timeline divider — see `beginTimelineResize`. A fixed pixel
@@ -1290,6 +1291,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   // `EditorState.mobileSheet`'s own doc comment for the full reasoning.
   const mobileSheet = useEditorStore((s) => s.mobileSheet);
   const setMobileSheet = useEditorStore((s) => s.setMobileSheet);
+  const isMobile = useIsMobile();
 
   // Independent of `mobileSheet` above — that one is deliberately the mobile-only "borrow the bottom
   // row because there's no side column to put this in" concept (see its own comment). This decides
@@ -1817,15 +1819,20 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           <Preview onResizeStart={beginTimelineResize} />
         </div>
 
-        {/* Permanent side columns, `lg`+ only — below `lg` these render nothing at all (not even
-            hidden-but-mounted for state-preservation reasons; there's no state here that needs to
-            survive being unmounted). Reached on mobile via the toolbar's Media/Properties buttons
-            instead, which swap the Timeline row's content below. */}
+        {/* Permanent side columns, `lg`+ only — below `lg` these render nothing at all. Genuinely
+            UNMOUNTED there (`!isMobile &&`), not just `hidden`-but-still-mounted via CSS alone: a bare
+            `hidden lg:block` wrapper still leaves the child MOUNTED underneath at narrow widths, and
+            the mobile-sheet copies of these same two panels below mount their OWN separate instance
+            whenever `mobileSheet` opens one — confirmed as a real, live bug, not a theoretical one:
+            `MediaPanel`'s own tabs, search query, and AI-generation availability checks all ran
+            TWICE simultaneously (one hidden instance here, one visible in the sheet) the whole time a
+            phone-width session had the sheet open. Reached on mobile via the toolbar's Media/Properties
+            buttons instead, which swap the Timeline row's content below. */}
         <div className="hidden min-h-0 min-w-0 lg:col-start-1 lg:row-start-1 lg:block">
-          <MediaPanel />
+          {!isMobile && <MediaPanel />}
         </div>
         <div className="hidden min-h-0 min-w-0 lg:col-start-3 lg:row-start-1 lg:block">
-          <Inspector />
+          {!isMobile && <Inspector />}
         </div>
 
         {/* The one row Timeline shares with Media/Properties below `lg`, and with Mixer at every

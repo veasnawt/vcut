@@ -25,7 +25,7 @@ export function MediaPanel({ onAssetAdded }: { onAssetAdded?: () => void } = {})
       <div className="flex shrink-0 border-b border-white/10">
         {(
           [
-            ["library", t("My Media")],
+            ["library", t("Media")],
             ["stock", t("Stock")],
             ["generate", t("AI")],
           ] as const

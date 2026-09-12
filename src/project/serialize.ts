@@ -92,6 +92,19 @@ function parseTextStyle(raw: unknown): TextStyle {
   };
 }
 
+/** Guards `Asset.aiGeneration` the same "additive, fall back to absent rather than throw" way every
+ *  other optional field in `parseAsset` below is guarded — a malformed or missing value just means this
+ *  particular asset's AI-generation history tile won't be rebuilt on load (see `editorStore.ts`'s own
+ *  `load()`), never a reason to reject the whole project. */
+function isAiGeneration(value: unknown): value is { prompt: string; aspectRatio: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).prompt === "string" &&
+    typeof (value as Record<string, unknown>).aspectRatio === "string"
+  );
+}
+
 function parseAsset(raw: Record<string, unknown>): Asset {
   const kind = str(raw.kind, "asset kind");
   if (kind !== "video" && kind !== "audio" && kind !== "image" && kind !== "text" && kind !== "color") {
@@ -119,6 +132,7 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     importedAt: num(raw.importedAt, "asset import time", 0),
     ...(typeof raw.offline === "boolean" ? { offline: raw.offline } : null),
     ...(typeof raw.hiddenFromLibrary === "boolean" ? { hiddenFromLibrary: raw.hiddenFromLibrary } : null),
+    ...(isAiGeneration(raw.aiGeneration) ? { aiGeneration: raw.aiGeneration } : null),
     ...(kind === "text" ? { textContent: str(raw.textContent, "text content", ""), textStyle: parseTextStyle(raw.textStyle) } : null),
     // Same "additive presentation data, not something that defines what the asset fundamentally IS"
     // spirit as `textContent`/`textStyle` above — a missing/malformed color falls back to black rather
