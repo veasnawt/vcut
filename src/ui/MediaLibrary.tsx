@@ -273,9 +273,57 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
         void importFiles([...e.dataTransfer.files]);
       }}
     >
-      <header className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-white/60">{t("Media")}</h2>
-        <div className="flex shrink-0 items-center gap-1.5">
+      {/* Container-query grid: same "respond to THIS PANEL's own width, not the viewport's" reasoning
+          `AiGeneratePanel.tsx`/`StockSearchPanel.tsx`'s own identical rule documents. */}
+      <style>{`
+        .vcut-media-grid-container {
+          container-type: inline-size;
+        }
+        .vcut-media-grid {
+          columns: 1;
+        }
+        @container (min-width: 220px) {
+          .vcut-media-grid {
+            columns: 2;
+          }
+        }
+        @container (min-width: 420px) {
+          .vcut-media-grid {
+            columns: 3;
+          }
+        }
+      `}</style>
+
+      {/* No title header of its own — same "the tab strip already names it" reasoning
+          `StockSearchPanel.tsx`/`AiGeneratePanel.tsx` both document, and previously the one thing that
+          made this panel different from its two siblings: back when the tab strip said "My Media", a
+          second "Media" heading directly under it read as a distinct, useful label; once the tab itself
+          was shortened to "Media" (`MediaPanel.tsx`), this became the exact same word repeated twice in
+          a row with nothing to justify keeping it. Import now shares the search row instead of a
+          separate header row of its own. */}
+      <div className="flex gap-2 border-b border-white/10 px-3 py-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={t("Search")}
+          // 16px below `lg`, not the desktop 12px (`text-xs`) — iOS Safari auto-zooms the whole page
+          // on focusing any text input under 16px, which on a phone means tapping Search yanks the
+          // viewport in every time. text-xs only kicks in at `lg`, where that browser behavior doesn't
+          // apply anyway.
+          className="min-w-0 flex-1 rounded-md bg-white/5 px-2 py-1 text-[16px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60 lg:text-xs"
+        />
+        <Dropdown
+          value={sortKey}
+          onChange={(v) => setSortKey(v)}
+          ariaLabel={t("Sort media")}
+          className="w-20 shrink-0 text-xs"
+          options={[
+            { value: "imported", label: t("Recent") },
+            { value: "name", label: t("Name") },
+            { value: "duration", label: t("Length") },
+          ]}
+        />
+        <div className="relative shrink-0">
           <button
             ref={importButtonRef}
             // Native platforms get a choice (Photos vs Files) since there's a real device photo/video
@@ -309,30 +357,6 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
             void importFiles(files);
           }}
         />
-      </header>
-
-      <div className="flex gap-2 border-b border-white/10 px-3 py-2">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={t("Search")}
-          // 16px below `lg`, not the desktop 12px (`text-xs`) — iOS Safari auto-zooms the whole page
-          // on focusing any text input under 16px, which on a phone means tapping Search yanks the
-          // viewport in every time. text-xs only kicks in at `lg`, where that browser behavior doesn't
-          // apply anyway.
-          className="min-w-0 flex-1 rounded-md bg-white/5 px-2 py-1 text-[16px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60 lg:text-xs"
-        />
-        <Dropdown
-          value={sortKey}
-          onChange={(v) => setSortKey(v)}
-          ariaLabel={t("Sort media")}
-          className="w-24 shrink-0 text-xs"
-          options={[
-            { value: "imported", label: t("Recent") },
-            { value: "name", label: t("Name") },
-            { value: "duration", label: t("Length") },
-          ]}
-        />
       </div>
 
       <div className={`scrollbar-thin min-h-0 flex-1 overflow-y-auto p-2 ${dragOver ? "bg-sky-500/10 outline outline-2 -outline-offset-2 outline-dashed outline-sky-400/60" : ""}`}>
@@ -347,92 +371,140 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
               : t("Drop video, audio, or images here — or use Import.")}
           </p>
         ) : (
-          // Grid on mobile (2 columns, bigger tiles), the existing single-column list back at `lg`+ —
-          // a compact 44×64px thumbnail in a narrow row was hard to tell apart at a glance and left a
-          // lot of the touch target as bare text; a proper grid gives thumbnails room to actually be
-          // useful for recognizing a clip on a phone, matching how every mobile photo/video picker
-          // presents a media library. Desktop's list stays exactly as it was — that column is narrow
-          // enough that a 2-up grid there would make the thumbnails smaller, not bigger.
-          <ul className="grid grid-cols-2 gap-2 lg:flex lg:flex-col lg:gap-1">
-            {assets.map((asset) => (
-              <li key={asset.id}>
-                <div
-                  role="button"
-                  tabIndex={0}
-                  onMouseDown={(e) => beginAssetDrag(e, asset)}
-                  onTouchStart={(e) => beginAssetDrag(e, asset)}
-                  onDoubleClick={() => addAssetAtPlayhead(asset.id)}
-                  // Only wired when `onAssetAdded` is passed — i.e. only in the mobile bottom-sheet
-                  // usage (see VCutApp.tsx), where a plain tap is the ONLY practical way to place a
-                  // clip (the sheet replaces the Timeline entirely while open, so there's nothing to
-                  // drag onto, and touch has no double-tap equivalent to `onDoubleClick` above). Left
-                  // unwired for the desktop persistent column, where a bare click choosing to do
-                  // nothing (only double-click/drag add) is the established, unchanged behavior.
-                  onClick={
-                    onAssetAdded
-                      ? () => {
-                          addAssetAtPlayhead(asset.id);
-                          onAssetAdded();
-                        }
-                      : undefined
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") addAssetAtPlayhead(asset.id);
-                  }}
-                  title={`${asset.name}\n${formatSize(asset.sizeBytes)}\n${t("Double-click to add at the playhead, or drag onto the timeline (press and hold, then drag, on touch)")}`}
-                  className="group flex w-full cursor-grab flex-col gap-1.5 rounded-lg p-1.5 text-left transition hover:bg-white/10 focus:bg-white/10 focus:outline-none active:cursor-grabbing lg:flex-row lg:items-center lg:gap-2.5"
-                >
-                  {/* `max-h-20`: `aspect-video` alone scales UNBOUNDED with the tile's own width, so on
-                      a wide phone/tablet (or a media panel given more room) the thumbnail could grow
-                      well past what's needed just to recognize a clip — this caps it regardless of how
-                      wide the 2-up grid column gets. `AssetThumbnail`'s own `object-cover` already
-                      handles the resulting box not matching a pure 16:9 ratio once the cap kicks in. */}
-                  <div className="relative aspect-video max-h-20 w-full shrink-0 overflow-hidden rounded bg-black lg:h-11 lg:w-16">
-                    <AssetThumbnail asset={asset} projectId={projectId} />
-                    {/* A thumbnail (one static frame, or a short filmstrip strip) is enough to
-                        RECOGNIZE a clip already known, but not enough to hear an audio file or tell
-                        two similarly-thumbnailed takes apart — this opens the real thing
-                        (`MediaPreviewModal`) without placing it on the timeline first. A small centered
-                        button, NOT `inset-0` over the whole thumbnail — the thumbnail is also the
-                        drag-to-timeline surface (`onMouseDown`/`onTouchStart` on the card above), and
-                        covering all of it would swallow that gesture the instant it starts from
-                        anywhere over the picture. Small and off to one side of that surface instead,
-                        the same "a nested interactive element coexists fine inside a draggable card"
-                        precedent the corner remove button already relies on. Always visible (not
-                        hover-only): a genuinely new capability nothing on screen hinted at before now
-                        needs to be discoverable, on touch as much as with a mouse. */}
-                    {isPreviewable(asset.kind) && (
+          // Masonry columns on mobile (title/description overlaid ON the thumbnail, natural aspect
+          // ratio per asset), the existing single-column list back at `lg`+ (small fixed 44×64
+          // thumbnail, name/description beside it) — a compact row was hard to tell apart at a glance
+          // on a phone and left a lot of the touch target as bare text; letting each tile take its own
+          // natural aspect ratio (instead of a fixed 16:9 crop) and packing them into columns is what
+          // actually uses the room a phone screen has, matching how every mobile photo/video picker
+          // presents a library. Desktop's list stays exactly as it was — that column is narrow enough
+          // that a multi-column grid there would make the thumbnails smaller, not bigger.
+          //
+          // `vcut-media-grid-container`/`vcut-media-grid` (defined once, at the end of this file, for
+          // the same reason `AiGeneratePanel.tsx`'s identical rule documents): a container query, not a
+          // viewport media query, so the column count responds to how much room THIS PANEL actually
+          // has rather than the browser window — `lg:flex lg:flex-col lg:gap-1` below still wins at the
+          // real desktop breakpoint regardless (switching to `display: flex` makes the `columns`
+          // property moot, so the two rules never fight over the same element).
+          <div className="vcut-media-grid-container lg:contents">
+            <ul className="vcut-media-grid gap-2 lg:flex lg:flex-col lg:gap-1">
+              {assets.map((asset) => (
+                <li key={asset.id} className="mb-2 break-inside-avoid lg:mb-0">
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onMouseDown={(e) => beginAssetDrag(e, asset)}
+                    onTouchStart={(e) => beginAssetDrag(e, asset)}
+                    onDoubleClick={() => addAssetAtPlayhead(asset.id)}
+                    // Only wired when `onAssetAdded` is passed — i.e. only in the mobile bottom-sheet
+                    // usage (see VCutApp.tsx), where a plain tap is the ONLY practical way to place a
+                    // clip (the sheet replaces the Timeline entirely while open, so there's nothing to
+                    // drag onto, and touch has no double-tap equivalent to `onDoubleClick` above). Left
+                    // unwired for the desktop persistent column, where a bare click choosing to do
+                    // nothing (only double-click/drag add) is the established, unchanged behavior.
+                    onClick={
+                      onAssetAdded
+                        ? () => {
+                            addAssetAtPlayhead(asset.id);
+                            onAssetAdded();
+                          }
+                        : undefined
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") addAssetAtPlayhead(asset.id);
+                    }}
+                    title={`${asset.name}\n${formatSize(asset.sizeBytes)}\n${t("Double-click to add at the playhead, or drag onto the timeline (press and hold, then drag, on touch)")}`}
+                    className="group flex w-full cursor-grab flex-col rounded-lg text-left transition hover:bg-white/10 focus:bg-white/10 focus:outline-none active:cursor-grabbing lg:flex-row lg:items-center lg:gap-2.5 lg:p-1.5"
+                  >
+                    {/* Natural aspect ratio below `lg` (falls back to 16:9 for audio/anything with no
+                        known dimensions) instead of a fixed crop — matches the varied-height masonry
+                        look `AiGeneratePanel.tsx`/`StockSearchPanel.tsx` both already use, and is what
+                        makes packing into columns worthwhile at all (every tile the same shape would
+                        just be a grid with extra steps). `lg:h-11 lg:w-16` still wins at the real
+                        desktop breakpoint — an explicit height AND width leaves `aspect-ratio` nothing
+                        left to compute, so the two never fight over the same box. `max-h-56`: without a
+                        cap a tall portrait asset could tower past what's needed just to recognize it,
+                        same reasoning `AiGeneratePanel.tsx`'s own tile cap gives. */}
+                    <div
+                      className="relative w-full max-h-56 shrink-0 overflow-hidden bg-black lg:h-11 lg:w-16 lg:rounded"
+                      style={{ aspectRatio: asset.width && asset.height ? `${asset.width} / ${asset.height}` : "16 / 9" }}
+                    >
+                      <AssetThumbnail asset={asset} projectId={projectId} />
+                      {/* A thumbnail (one static frame, or a short filmstrip strip) is enough to
+                          RECOGNIZE a clip already known, but not enough to hear an audio file or tell
+                          two similarly-thumbnailed takes apart — this opens the real thing
+                          (`MediaPreviewModal`) without placing it on the timeline first. A small centered
+                          button, NOT `inset-0` over the whole thumbnail — the thumbnail is also the
+                          drag-to-timeline surface (`onMouseDown`/`onTouchStart` on the card above), and
+                          covering all of it would swallow that gesture the instant it starts from
+                          anywhere over the picture. Small and off to one side of that surface instead,
+                          the same "a nested interactive element coexists fine inside a draggable card"
+                          precedent the corner remove button already relies on. Always visible (not
+                          hover-only): a genuinely new capability nothing on screen hinted at before now
+                          needs to be discoverable, on touch as much as with a mouse. */}
+                      {isPreviewable(asset.kind) && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setPreviewAsset(asset);
+                          }}
+                          title={t("Preview {name}", { name: asset.name })}
+                          aria-label={t("Preview {name}", { name: asset.name })}
+                          className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white/80 transition hover:bg-black/80 hover:text-white"
+                        >
+                          <Play size={12} />
+                        </button>
+                      )}
+                      {/* Kind badge — mobile-grid only. Desktop's thumbnail is too small (44×64) for this
+                          to read cleanly there, and its row already spells the kind out via `describe()`
+                          next to the name; the grid has no equivalent text label at a glance, so the icon
+                          carries that job instead. */}
+                      <span className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded bg-black/70 lg:hidden">
+                        {(() => {
+                          const { Icon, className } = KIND_BADGE[asset.kind];
+                          return <Icon size={12} className={className} />;
+                        })()}
+                      </span>
+                      {asset.kind !== "image" && asset.kind !== "text" && (
+                        <span className="absolute right-1 top-1 rounded bg-black/75 px-1 text-[10px] tabular-nums text-white/90 lg:bottom-0 lg:right-0 lg:top-auto lg:rounded-none">
+                          {formatDuration(asset.duration)}
+                        </span>
+                      )}
+                      {/* Mobile-grid remove button — overlaid on the thumbnail (top-right) since a grid
+                          tile has no separate inline slot for it the way the desktop row does. Always
+                          visible (not hover-revealed) for the same reason the desktop button already
+                          makes an exception below `lg`: touch has no `:hover` to reveal it from. Moved
+                          in from the corner slightly (`top-8`, under the duration/kind badges) rather
+                          than sharing their exact corner now that this tile can be much taller than the
+                          old fixed 80px cap — pinning it to the very top edge regardless of tile height
+                          kept it readable, but a genuinely tall tile made it feel disconnected from the
+                          title it's actually removing, which now lives at the BOTTOM. */}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setPreviewAsset(asset);
+                          void removeAsset(asset);
                         }}
-                        title={t("Preview {name}", { name: asset.name })}
-                        aria-label={t("Preview {name}", { name: asset.name })}
-                        className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white/80 transition hover:bg-black/80 hover:text-white"
+                        title={t("Remove from project")}
+                        aria-label={t("Remove {name} from project", { name: asset.name })}
+                        className="absolute right-1 top-8 flex items-center rounded bg-black/70 p-1 text-white/70 transition hover:bg-black/90 hover:text-white lg:hidden"
                       >
-                        <Play size={12} />
+                        <Close size={12} />
                       </button>
-                    )}
-                    {/* Kind badge — mobile-grid only. Desktop's thumbnail is too small (44×64) for this
-                        to read cleanly there, and its row already spells the kind out via `describe()`
-                        next to the name; the grid has no equivalent text label at a glance, so the icon
-                        carries that job instead. */}
-                    <span className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded bg-black/70 lg:hidden">
-                      {(() => {
-                        const { Icon, className } = KIND_BADGE[asset.kind];
-                        return <Icon size={12} className={className} />;
-                      })()}
-                    </span>
-                    {asset.kind !== "image" && asset.kind !== "text" && (
-                      <span className="absolute bottom-0 right-0 bg-black/75 px-1 text-[10px] tabular-nums text-white/90">
-                        {formatDuration(asset.duration)}
-                      </span>
-                    )}
-                    {/* Mobile-grid remove button — overlaid on the thumbnail (top-right) since a grid
-                        tile has no separate inline slot for it the way the desktop row does. Always
-                        visible (not hover-revealed) for the same reason the desktop button already
-                        makes an exception below `lg`: touch has no `:hover` to reveal it from. */}
+                      {/* Title + description overlaid directly on the thumbnail (a bottom gradient
+                          scrim), matching `StockSearchPanel.tsx`'s identical treatment — mobile-grid
+                          only; the desktop row still shows these as plain text BESIDE its own small
+                          fixed thumbnail, where overlaying them would leave no legible room at all. */}
+                      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-1.5 pb-1 pt-4 lg:hidden">
+                        <p className="truncate text-[11px] font-medium text-white/95">{asset.name}</p>
+                        <p className="truncate text-[10px] text-white/70">{describe(asset)}</p>
+                        {asset.offline && <p className="text-[10px] font-medium text-amber-400">{t("Media Offline")}</p>}
+                      </div>
+                    </div>
+                    <div className="hidden min-w-0 lg:block lg:flex-1">
+                      <p className="truncate text-xs font-medium text-white/90">{asset.name}</p>
+                      <p className="truncate text-[11px] text-white/45">{describe(asset)}</p>
+                      {asset.offline && <p className="text-[11px] font-medium text-amber-400">{t("Media Offline")}</p>}
+                    </div>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -440,33 +512,17 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                       }}
                       title={t("Remove from project")}
                       aria-label={t("Remove {name} from project", { name: asset.name })}
-                      className="absolute right-1 top-1 flex items-center rounded bg-black/70 p-1 text-white/70 transition hover:bg-black/90 hover:text-white lg:hidden"
+                      // Desktop-row-only (see the mobile-grid overlay button above) — hover-reveal only
+                      // makes sense where a mouse actually exists.
+                      className="hidden shrink-0 items-center rounded px-1.5 py-1 text-white/30 transition hover:bg-white/10 hover:text-white/80 lg:flex lg:opacity-0 lg:focus:opacity-100 lg:group-hover:opacity-100"
                     >
                       <Close size={12} />
                     </button>
                   </div>
-                  <div className="min-w-0 w-full lg:flex-1">
-                    <p className="truncate text-xs font-medium text-white/90">{asset.name}</p>
-                    <p className="truncate text-[11px] text-white/45">{describe(asset)}</p>
-                    {asset.offline && <p className="text-[11px] font-medium text-amber-400">{t("Media Offline")}</p>}
-                  </div>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void removeAsset(asset);
-                    }}
-                    title={t("Remove from project")}
-                    aria-label={t("Remove {name} from project", { name: asset.name })}
-                    // Desktop-row-only (see the mobile-grid overlay button above) — hover-reveal only
-                    // makes sense where a mouse actually exists.
-                    className="hidden shrink-0 items-center rounded px-1.5 py-1 text-white/30 transition hover:bg-white/10 hover:text-white/80 lg:flex lg:opacity-0 lg:focus:opacity-100 lg:group-hover:opacity-100"
-                  >
-                    <Close size={12} />
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
       </div>
 

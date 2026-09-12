@@ -154,19 +154,25 @@ export async function deleteMedia(projectId: string, asset: Asset): Promise<void
 export interface StockSearchResult {
   id: string;
   kind: "image" | "video";
+  /** The file's own title, namespace prefix and extension both already stripped server-side (see
+   *  `stock/route.ts`'s own comment) — shown under the tile and used to build a friendly filename. */
+  title: string;
   previewUrl: string;
   downloadUrl: string;
   width: number;
   height: number;
   duration?: number;
-  tags: string;
   user: string;
   pageURL: string;
+  /** Short license name (e.g. "CC BY-SA 4.0") — empty string if Commons didn't report one for this
+   *  particular file, never absent, so callers don't need an extra existence check just to hide it. */
+  license: string;
 }
 
-/** Desktop/browser-server-backed only, same as Remove Object/Captions — Pixabay search is proxied
- *  through this app's own server (see `stock/route.ts`'s own doc comment for why: the shared API key
- *  never reaches the browser), which native has none of. */
+/** Desktop/browser-server-backed only, same as Remove Object/Captions — Wikimedia Commons search is
+ *  proxied through this app's own server (see `stock/route.ts`'s own doc comment for why: keeping the
+ *  client thin and the provider swappable mattered even with no key to protect this time), which
+ *  native has none of. */
 export async function searchStock(
   kind: "image" | "video",
   query: string,
@@ -180,14 +186,14 @@ export async function searchStock(
 
 /** Downloads a chosen stock search result server-side and lands it as a real project `Asset` — same
  *  destination shape `importMedia` produces for an uploaded file, just sourced from a URL instead of
- *  a `File`. The name sent is a friendly one built from the result's own tags (Pixabay's asset ids
- *  make poor display names on their own) — but the real EXTENSION always comes from `downloadUrl`
- *  itself, never guessed: the server's own `importMediaBytes` classifies (and rejects) purely by
- *  extension, so a synthetic name with no extension at all would fail to import every single time. */
+ *  a `File`. The name sent is the result's own `title` (a Commons page id alone makes a poor display
+ *  name) — but the real EXTENSION always comes from `downloadUrl` itself, never guessed: the server's
+ *  own `importMediaBytes` classifies (and rejects) purely by extension, so a synthetic name with no
+ *  extension at all would fail to import every single time. */
 export async function importStockResult(projectId: string, result: StockSearchResult): Promise<Asset> {
   const urlExt = result.downloadUrl.split(/[?#]/)[0].split(".").pop();
   const ext = urlExt && urlExt.length <= 5 ? urlExt : result.kind === "video" ? "mp4" : "jpg";
-  const friendly = result.tags.split(",")[0]?.trim().replace(/[^a-zA-Z0-9-]+/g, "-") || "stock";
+  const friendly = result.title.trim().replace(/[^a-zA-Z0-9-]+/g, "-") || "stock";
   const response = await apiFetch(`${BASE}/stock?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

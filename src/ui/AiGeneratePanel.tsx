@@ -125,6 +125,28 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
           -webkit-mask-repeat: no-repeat;
           animation: vcut-ai-generating-sweep 4s ease-in-out infinite;
         }
+        /* container-type: inline-size makes the column count below respond to THIS PANEL's own
+           rendered width, not the viewport's — the same panel renders as a narrow persistent desktop
+           sidebar (as little as ~110px) and as a near-full-width mobile sheet (~380px+), and a plain
+           viewport-width media query can't tell those apart (a wide desktop VIEWPORT with a narrow
+           panel would otherwise still get the wide-panel column count). Three columns only once
+           there's genuinely enough room per column to be worth it; two, then one, below that. */
+        .vcut-ai-grid-container {
+          container-type: inline-size;
+        }
+        .vcut-ai-grid {
+          columns: 1;
+        }
+        @container (min-width: 220px) {
+          .vcut-ai-grid {
+            columns: 2;
+          }
+        }
+        @container (min-width: 420px) {
+          .vcut-ai-grid {
+            columns: 3;
+          }
+        }
       `}</style>
 
       <div className="mb-3 flex shrink-0 overflow-hidden rounded-md border border-white/10">
@@ -218,16 +240,27 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
             {kind === "image" ? (busy ? t("Generating…") : t("Generate image")) : videoBusy ? t("Cancel") : t("Generate video")}
           </button>
 
-          {aiGenerations.length > 0 && (
-            // A CSS multi-column flow, not `grid grid-cols-2` — a fixed-row grid forces every tile to
-            // the SAME height regardless of its own aspect ratio, which is exactly what stopped a 9:16
-            // placeholder/thumbnail from ever looking tall: the grid cell itself capped it back down to
-            // match its 16:9 neighbor. Columns let each tile keep its own natural height instead, so
-            // ratios genuinely differ from one tile to the next and the whole grid packs tightly around
-            // them rather than padding every row out to its tallest member.
-            <div className="mt-3 columns-2 gap-2">
-              {aiGenerations.map((item) => (
-                <div key={item.id} className="mb-2 break-inside-avoid">
+          {(() => {
+            // Filtered to the currently-selected kind — an in-progress VIDEO generation used to sit
+            // right in the middle of the IMAGE grid (and vice versa) with nothing distinguishing the
+            // two, which read as one undifferentiated pile rather than two separate galleries. Switching
+            // the Image/Video toggle above now genuinely switches which history you're looking at.
+            const visible = aiGenerations.filter((g) => g.kind === kind);
+            if (visible.length === 0) return null;
+            return (
+              // A CSS multi-column flow, not `grid grid-cols-*` — a fixed-row grid forces every tile to
+              // the SAME height regardless of its own aspect ratio, which is exactly what stopped a 9:16
+              // placeholder/thumbnail from ever looking tall: the grid cell itself capped it back down to
+              // match its 16:9 neighbor. Columns let each tile keep its own natural height instead, so
+              // ratios genuinely differ from one tile to the next and the whole grid packs tightly around
+              // them rather than padding every row out to its tallest member. Wrapped in
+              // `vcut-ai-grid-container` (a container-query root, not a viewport media query) so the
+              // column count responds to how much room THIS PANEL actually has, not the browser window
+              // — see that class's own comment above for why the two can disagree.
+              <div className="vcut-ai-grid-container mt-3">
+                <div className="vcut-ai-grid gap-2">
+                  {visible.map((item) => (
+                    <div key={item.id} className="mb-2 break-inside-avoid">
                   <div
                     role={item.status === "done" ? "button" : undefined}
                     tabIndex={item.status === "done" ? 0 : undefined}
@@ -319,10 +352,12 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                       )}
                     </div>
                   </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
+              </div>
+            );
+          })()}
         </>
       )}
     </div>
