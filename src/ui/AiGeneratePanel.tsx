@@ -306,7 +306,20 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                         ever affects the tall case. */}
                     <div
                       className="relative w-full max-h-52 overflow-hidden bg-black"
-                      style={{ aspectRatio: cssAspectRatio(item.aspectRatio) }}
+                      style={{
+                        // The REAL dimensions once the asset exists — same "true aspect ratio, not a
+                        // forced crop" treatment `StockSearchPanel.tsx`/`MediaLibrary.tsx` both already
+                        // give their own tiles — falling back to the REQUESTED ratio (`item.aspectRatio`)
+                        // while still generating/failed, when there's no real asset to measure yet. The
+                        // two usually agree, but a provider is free to return something slightly off
+                        // its own requested ratio (rounding, a model-specific default it silently
+                        // preferred instead), and the real file is what actually gets exported either
+                        // way — a tile that quietly disagreed with its own thumbnail would be confusing.
+                        aspectRatio:
+                          item.status === "done" && item.asset?.width && item.asset.height
+                            ? `${item.asset.width} / ${item.asset.height}`
+                            : cssAspectRatio(item.aspectRatio),
+                      }}
                     >
                       {item.status === "done" && item.asset ? (
                         thumbnailUrl(projectId, item.asset) ? (
