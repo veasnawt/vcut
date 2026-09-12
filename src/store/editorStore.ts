@@ -392,6 +392,21 @@ export interface EditorState {
     | null;
   setResolveTimelineDropTarget: (resolver: EditorState["resolveTimelineDropTarget"]) => void;
 
+  /** "Arm an asset, then tap the timeline to choose exactly where it lands" — the alternative to
+   *  immediately dropping a Stock/AI result at the playhead, for the one screen where the playhead
+   *  and the timeline itself aren't both visible at once: the mobile Stock/AI sheet covers the whole
+   *  Timeline, so a user picking a result there has no way to see (let alone aim for) a specific
+   *  point before it's placed. Arming defers that choice — the sheet closes, a "tap the timeline to
+   *  place — Cancel" affordance appears, and `Timeline.tsx`'s own lanes `onClick` handler (which
+   *  already owns `resolveTimelineDropTarget`, the same hit-test `MediaLibrary`'s pointer-drag drop
+   *  uses) places it there instead of deselecting as a plain click normally would. Desktop keeps the
+   *  immediate playhead placement (`addAssetAtPlayhead`) — the Timeline is already visible there, so
+   *  deferring the choice would only add a step. Same "not part of `project`, purely a tool-armed
+   *  session state" category as `removeObjectArmedClipId` right above. */
+  armedAssetId: string | null;
+  armAsset: (assetId: string) => void;
+  cancelArmedAsset: () => void;
+
   /** Resolves to the successfully-imported assets (empty on total failure) — callers that need to do
    *  something with the result (VoiceoverRecorder placing its recording straight on the timeline)
    *  can, while every other caller (plain drag-drop/file-picker import) is free to still ignore it.
@@ -620,6 +635,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     resolveTimelineDropTarget: null,
     removeObjectArmedClipId: null,
     removeObjectRect: null,
+    armedAssetId: null,
 
     dirty: false,
     saving: false,
@@ -951,6 +967,14 @@ export const useEditorStore = create<EditorState>((set, get) => {
 
     clearRemoveObject() {
       set({ removeObjectArmedClipId: null, removeObjectRect: null });
+    },
+
+    armAsset(assetId) {
+      set({ armedAssetId: assetId });
+    },
+
+    cancelArmedAsset() {
+      set({ armedAssetId: null });
     },
 
     async importFiles(files, options) {
@@ -1450,6 +1474,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
     },
   };
 });
+
+// Wires `api/client.ts`'s `unwrap` to this store — see `setSessionExpiredHandler`'s own doc comment
+// for why detection has to live there (every one of the ~25 API calls below funnels through it) while
+// the actual flag lives here. Registered once, at module init, not per-call.
+api.setSessionExpiredHandler(() => useEditorStore.setState({ sessionExpired: true }));
 
 /** Flushes any pending autosave immediately — used when the editor unmounts or the window is about
  *  to close, so the debounce window can't swallow the last edit. */

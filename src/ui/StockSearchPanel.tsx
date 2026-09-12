@@ -23,6 +23,7 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
   const importing = useEditorStore((s) => s.importing);
   const importStockResult = useEditorStore((s) => s.importStockResult);
   const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
+  const armAsset = useEditorStore((s) => s.armAsset);
 
   const [kind, setKind] = useState<"image" | "video">("image");
   const [query, setQuery] = useState("");
@@ -77,18 +78,27 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, query]);
 
-  // Picking a result now lands it straight on the timeline (at the playhead), not just into "My
-  // Media" for a SECOND step to actually use it — a search result is something the user just decided
-  // they want IN the project, so making that take one click instead of two matches how `AiGeneratePanel`
-  // tiles behave too (see its own doc comment on the identical change there).
+  // Picking a result lands it on the timeline in one step rather than just into "My Media" for a
+  // second step to actually use it — a search result is something the user just decided they want IN
+  // the project. On desktop (`onAssetAdded` absent — this instance is the permanent sidebar column,
+  // Timeline already visible right there) that still means straight to the playhead, same as always.
+  // On mobile (`onAssetAdded` present — this instance is the sheet that currently covers the whole
+  // Timeline, per `onAssetAdded`'s own doc comment) it ARMS the asset instead: closes the sheet and
+  // lets the user tap exactly where on the timeline it should land, rather than guessing blind at
+  // wherever the playhead happened to be left — see `armedAssetId`'s own doc comment in
+  // editorStore.ts for the full reasoning, and `AiGeneratePanel.tsx`'s identical branch on its tiles.
   async function handlePick(result: StockSearchResult) {
     if (!projectId || importingId) return;
     setImportingId(result.id);
     const asset = await importStockResult(result);
     setImportingId(null);
     if (asset) {
-      addAssetAtPlayhead(asset.id);
-      onAssetAdded?.();
+      if (onAssetAdded) {
+        armAsset(asset.id);
+        onAssetAdded();
+      } else {
+        addAssetAtPlayhead(asset.id);
+      }
     }
   }
 

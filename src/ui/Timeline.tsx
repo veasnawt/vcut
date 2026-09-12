@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Add } from "@veasnawt/vicons";
-import { AddTrackCommand, ReorderTrackCommand } from "../commands/index.ts";
+import { AddClipCommand, AddTrackCommand, ReorderTrackCommand } from "../commands/index.ts";
 import { OUTRO_DURATION_SECONDS } from "../export/outro.ts";
 import { sequenceDuration } from "../project/createProject.ts";
 import { DEFAULT_TEXT_STYLE, type Track, type TrackKind } from "../project/types.ts";
@@ -153,6 +153,8 @@ export function Timeline() {
   const importFiles = useEditorStore((s) => s.importFiles);
   const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
   const setComposeText = useEditorStore((s) => s.setComposeText);
+  const armedAssetId = useEditorStore((s) => s.armedAssetId);
+  const cancelArmedAsset = useEditorStore((s) => s.cancelArmedAsset);
   /** Which empty track a click on its own `AddClipButton` (below) is importing a file onto — a file
    *  picker has no notion of "which track," so this is set right before `emptyTrackImportInputRef` is
    *  clicked and read back in that input's own `onChange`. One shared hidden `<input>` for every empty
@@ -949,6 +951,36 @@ export function Timeline() {
           <span className="text-white/30">/</span>
           <span className="text-white/45">{formatTimecode(total, project.sequence.fps)}</span>
         </div>
+
+        {/* The "arm an asset, then tap the timeline" affordance — see `armedAssetId`'s own doc comment
+            in editorStore.ts for why this exists at all. Sits BELOW the ruler (`top: RULER_HEIGHT`,
+            not `top-0`) so it never fights the mobile time readout right above for the same corner;
+            centered rather than pinned to an edge since it's telling the user what their NEXT tap
+            anywhere in the lanes below will do, not labeling a specific spot.
+            `pointer-events-none` everywhere EXCEPT the Cancel button itself — confirmed a real, live
+            bug otherwise: on a short mobile timeline this pill sits right on top of the first track
+            row, and a full-pill `pointer-events-auto` (matching every OTHER overlay in this file)
+            silently ate any tap meant for the timeline UNDER it, since the browser hit-tests whatever
+            element is topmost at that point rather than letting the click fall through to lanesRef's
+            own handler. Making only Cancel itself clickable means tapping the label text (or the pill's
+            own background) still reaches the timeline underneath and places the clip right there,
+            exactly as the label promises — only Cancel needs its own dedicated hit target. */}
+        {armedAssetId && (
+          <div
+            style={{ top: RULER_HEIGHT + 8 }}
+            className="pointer-events-none absolute inset-x-0 z-40 flex justify-center px-2"
+          >
+            <div className="flex items-center gap-2 rounded-full border border-sky-400/40 bg-sky-500 px-3 py-1.5 text-[11px] font-medium text-white shadow-lg">
+              {t("Tap the timeline to place it")}
+              <button
+                onClick={() => cancelArmedAsset()}
+                className="pointer-events-auto rounded-full bg-black/20 px-2 py-0.5 text-[11px] font-semibold transition hover:bg-black/30"
+              >
+                {t("Cancel")}
+              </button>
+            </div>
+          </div>
+        )}
         {/* Track headers sit outside the horizontal scroll so they stay visible while scrubbing far
             along a long edit — desktop only. On mobile they scroll WITH the clips instead, as inline
             per-row chips inside the lanes themselves (see that render below); there's no separate
@@ -1083,6 +1115,32 @@ export function Timeline() {
 
             <div
               ref={lanesRef}
+              // CAPTURE phase, not bubble — a real timeline already has clips filling most of it, so
+              // most taps while armed land ON an existing clip, not empty track space. `TimelineClip`'s
+              // own click handler (selection) runs on the bubble phase same as any plain `onClick`
+              // would, which fires AFTER this one; without `stopPropagation()` here, an armed tap on
+              // top of a clip would both place the new asset AND select the one underneath it —
+              // confirmed a real bug, not theoretical: it's what "select this clip" actually looked
+              // like the first time this was tested against a timeline with existing content. Placing
+              // is the ONLY thing a tap should do while armed, so this intercepts before any clip
+              // itself gets a chance to react at all.
+              onClickCapture={(e) => {
+                if (!armedAssetId) return;
+                e.stopPropagation();
+                // An armed asset (see `armedAssetId`'s own doc comment in editorStore.ts) turns this
+                // click into a placement instead of a deselect — same hit-test `MediaLibrary`'s own
+                // pointer-drag drop already uses, registered by this component just above. A tap that
+                // doesn't land on a track (or the "add track" row) leaves it armed rather than
+                // silently dropping the pick, since the affordance shown while armed promises the
+                // NEXT tap places it, not this failed attempt.
+                const target = useEditorStore.getState().resolveTimelineDropTarget?.(e.clientX, e.clientY, armedAssetId);
+                if (target) {
+                  run(new AddClipCommand(target.trackId, armedAssetId, target.time));
+                  cancelArmedAsset();
+                } else {
+                  setStatus(t("Tap on a track to place it"), "error");
+                }
+              }}
               onClick={() => {
                 // See `justMarqueedRef`'s own comment — swallow exactly the one native click the
                 // browser fires right after a real marquee drag's mouseup, then let every click after
@@ -1093,7 +1151,10 @@ export function Timeline() {
                 }
                 select([]);
               }}
-              onMouseDown={beginMarquee}
+              onMouseDown={(e) => {
+                if (armedAssetId) return;
+                beginMarquee(e);
+              }}
             >
               {project.sequence.tracks.map((track) => (
                 <div

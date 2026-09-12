@@ -1322,6 +1322,15 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   const setMobileSheet = useEditorStore((s) => s.setMobileSheet);
   const isMobile = useIsMobile();
 
+  // Media/Stock/AI is a pure pick-then-place flow (see `armedAssetId`'s own doc comment in
+  // editorStore.ts) — nothing in it needs a live view of the current frame the way adjusting a filter
+  // or text style in Properties does, so unlike the Properties sheet, collapsing Preview entirely
+  // while THIS one is open trades nothing a user actually needs there for meaningfully more room to
+  // browse/search/generate in — real room, confirmed a real problem: the sheet was previously capped
+  // at whatever `timelineHeight` happened to be (as little as ~224px by default), the same fixed row
+  // Timeline itself uses, on top of the space Preview and its own transport bar took above it.
+  const hidePreviewForMediaSheet = isMobile && mobileSheet === "media";
+
   // Independent of `mobileSheet` above — that one is deliberately the mobile-only "borrow the bottom
   // row because there's no side column to put this in" concept (see its own comment). This decides
   // what the SAME row shows at every breakpoint whenever `mobileSheet` isn't itself active: "timeline"
@@ -1838,13 +1847,17 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         // below `lg` ever references them.
         style={
           {
-            gridTemplateRows: `minmax(0,1fr) ${timelineHeight}px`,
+            // Row 1 (Preview) collapses to 0 and row 2 takes 100% of what's left, ignoring
+            // `timelineHeight` entirely — see `hidePreviewForMediaSheet`'s own doc comment above for
+            // why the Media sheet specifically gets the whole area instead of the same fixed row
+            // Timeline/every other sheet shares.
+            gridTemplateRows: hidePreviewForMediaSheet ? "0px minmax(0,1fr)" : `minmax(0,1fr) ${timelineHeight}px`,
             "--vs-media-w": `${mediaWidth}px`,
             "--vs-props-w": `${propertiesWidth}px`,
           } as React.CSSProperties
         }
       >
-        <div className="row-start-1 min-h-0 min-w-0 lg:order-2 lg:col-start-2 lg:row-start-1">
+        <div className="row-start-1 min-h-0 min-w-0 lg:order-2 lg:col-start-2 lg:row-start-1" hidden={hidePreviewForMediaSheet}>
           <Preview onResizeStart={beginTimelineResize} />
         </div>
 
@@ -1891,12 +1904,16 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
             a real grid row/track) so it never needs its own `row-start`/row-count bookkeeping
             alongside every other item's explicit placement above; `bottom` lands it exactly on the row
             boundary since that row is fixed to this same height. */}
+        {/* Hidden along with Preview itself while the Media sheet has collapsed row 1 to 0 — there's
+            no boundary left to drag (row 2 already fills everything), and `bottom: timelineHeight`
+            would otherwise sit stranded mid-content instead of on a real row edge. */}
         <div
           onMouseDown={beginTimelineResize}
           onTouchStart={beginTimelineResize}
           role="separator"
           aria-orientation="horizontal"
           aria-label={t("Resize timeline")}
+          hidden={hidePreviewForMediaSheet}
           className="absolute inset-x-0 z-20 h-2.5 -translate-y-1/2 cursor-row-resize touch-none"
           style={{ bottom: timelineHeight }}
         />

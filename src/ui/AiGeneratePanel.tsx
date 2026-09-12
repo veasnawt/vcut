@@ -64,6 +64,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   const startAiVideoGeneration = useEditorStore((s) => s.startAiVideoGeneration);
   const cancelAiVideoGeneration = useEditorStore((s) => s.cancelAiVideoGeneration);
   const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
+  const armAsset = useEditorStore((s) => s.armAsset);
   const { hosted, credits } = useHostedCreditsGate();
   const outOfCredits = hosted && credits !== null && credits.creditsRemaining <= 0;
 
@@ -83,6 +84,19 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   // the shared history rather than a flag of its own, so it stays correct regardless of which
   // component instance (desktop column vs. mobile sheet) actually started the job.
   const videoBusy = aiGenerations.some((g) => g.kind === "video" && g.status === "generating");
+
+  // Same desktop-vs-mobile branch `StockSearchPanel.tsx`'s own `handlePick` makes, and for the
+  // identical reason — see `armedAssetId`'s own doc comment in editorStore.ts. `onAssetAdded` is only
+  // ever passed by the mobile sheet's own instance of this panel (see `MediaPanel.tsx`), never the
+  // permanent desktop column, so its presence alone is what distinguishes the two here.
+  function pickGeneration(assetId: string) {
+    if (onAssetAdded) {
+      armAsset(assetId);
+      onAssetAdded();
+    } else {
+      addAssetAtPlayhead(assetId);
+    }
+  }
 
   function handleGenerate() {
     const trimmed = prompt.trim();
@@ -269,31 +283,25 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                   <div
                     role={item.status === "done" ? "button" : undefined}
                     tabIndex={item.status === "done" ? 0 : undefined}
-                    // A single click lands the result straight on the timeline (at the playhead), not
-                    // just into the (hidden, per `generateAiImage`'s own comment) library for a second
-                    // step to actually use it — a generation the user is looking at right after it
-                    // finished is something they've already decided they want IN the project, so this
-                    // is the same "one click, not two" change `StockSearchPanel.tsx`'s own `handlePick`
-                    // makes for the identical reason. Used to be double-click-only on desktop (a plain
-                    // click did nothing there at all) — that extra step no longer buys anything now
-                    // that this is the ONLY place a generation is visible to click on in the first
-                    // place (see `aiGenerations`'s own doc comment).
-                    onClick={
-                      item.status === "done" && item.asset
-                        ? () => {
-                            addAssetAtPlayhead(item.asset!.id);
-                            onAssetAdded?.();
-                          }
-                        : undefined
-                    }
+                    // A single click picks the result — one step, not two, same reasoning
+                    // `StockSearchPanel.tsx`'s own `handlePick` documents, via the same desktop-vs-
+                    // mobile `pickGeneration` branch defined above. Used to be double-click-only on
+                    // desktop (a plain click did nothing there at all) — that extra step no longer
+                    // buys anything now that this is the ONLY place a generation is visible to click
+                    // on in the first place (see `aiGenerations`'s own doc comment).
+                    onClick={item.status === "done" && item.asset ? () => pickGeneration(item.asset!.id) : undefined}
                     onKeyDown={
                       item.status === "done" && item.asset
                         ? (e) => {
-                            if (e.key === "Enter") addAssetAtPlayhead(item.asset!.id);
+                            if (e.key === "Enter") pickGeneration(item.asset!.id);
                           }
                         : undefined
                     }
-                    title={item.status === "done" ? `${item.prompt}\n${t("Click to add at the playhead")}` : item.prompt}
+                    title={
+                      item.status === "done"
+                        ? `${item.prompt}\n${onAssetAdded ? t("Tap to place on the timeline") : t("Click to add at the playhead")}`
+                        : item.prompt
+                    }
                     className={`flex w-full flex-col overflow-hidden rounded-lg bg-black/40 text-left ${
                       item.status === "done" ? "cursor-pointer transition hover:ring-1 hover:ring-sky-400/60" : ""
                     }`}

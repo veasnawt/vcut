@@ -65,6 +65,22 @@ export class ApiRequestError extends Error {
   }
 }
 
+/** Set once, by `editorStore.ts` at module init, to `() => set({ sessionExpired: true })` — this file
+ *  can't import the store directly (the store already imports THIS file as `api.*`, so the reverse
+ *  import would be circular), so a plain settable callback is the shared seam instead. Exists because
+ *  `unwrap`'s own 401 used to just become whatever error text the ~25 individual call sites below
+ *  happened to show it as ("Sign in required" verbatim, in Stock's case) — a real, reported bug: only
+ *  `editorStore.save()`'s own catch block knew to treat a 401 as "the session died, offer sign-in"
+ *  rather than an ordinary failure, so a stale token surfacing through any OTHER call (a stock search,
+ *  an AI generation, an import) left the user stuck reading a raw, non-actionable error with no
+ *  recovery path, even while the header's own sign-in-recovery banner existed right there for exactly
+ *  this. Centralizing the DETECTION here means every one of those call sites gets the same recovery
+ *  banner for free, with no need to teach each one individually what a 401 means. */
+let sessionExpiredHandler: (() => void) | null = null;
+export function setSessionExpiredHandler(handler: (() => void) | null): void {
+  sessionExpiredHandler = handler;
+}
+
 export async function unwrap<T>(response: Response): Promise<T> {
   if (response.ok) return (await response.json()) as T;
   // Routes report failures as JSON `{ error, code }`; anything else (a crash, a proxy error page)
@@ -78,6 +94,7 @@ export async function unwrap<T>(response: Response): Promise<T> {
   } catch {
     /* keep the status-based message */
   }
+  if (response.status === 401) sessionExpiredHandler?.();
   throw new ApiRequestError(message, response.status, code);
 }
 
