@@ -124,9 +124,6 @@ preview, and export all work without a server round-trip.
 
 Stated plainly, because a polished UI hiding missing features is worse than an honest gap:
 
-- **Caption import/export** — no SRT/VTT import or export. Auto-transcription IS implemented (the
-  toolbar's Captions button, Whisper-based) and lands real, editable text clips; SRT/VTT specifically
-  is the gap.
 - **Per-field keyframe tracks** — keyframing animates a whole property group at once (all of Transform,
   or all of Text Crop, etc.), not independent tracks per individual field.
 - **On-canvas crop handles** — crop (both the video/image Transform crop and the text Crop) is
