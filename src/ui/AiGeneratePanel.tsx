@@ -298,14 +298,16 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                         provider response) could inflate its own box past the ratio-implied height
                         instead of being clipped by this parent's own `overflow-hidden`. Anchoring
                         directly to the parent's edges has no such ambiguity. */}
-                    {/* `max-h-52`: `aspect-ratio` alone lets a tall ratio (9:16) grow height-unbounded
-                        off whatever width its column happens to get, which could tower well past what's
-                        needed just to recognize the result — same "cap it regardless of the ratio-
-                        implied height" reasoning `MediaLibrary.tsx`'s own mobile-grid thumbnail cap
-                        gives. A short ratio (1:1, 16:9) never reaches this cap on its own, so it only
-                        ever affects the tall case. */}
+                    {/* No `max-h-*` cap here (there used to be one) — VCut is a vertical-video editor
+                        first, so 9:16 is the COMMON case, not the outlier: at this grid's typical
+                        column widths a 9:16 box needs 350-450px of height, comfortably past any cap
+                        that once seemed generous. `aspect-ratio` alone can't win a fight against
+                        `max-height` (the box just gets clipped short instead, silently re-cropping the
+                        exact thing this tile is trying to show honestly), so capping height at all
+                        defeats the "real aspect ratio" requirement for the majority of results. The
+                        masonry grid these tiles sit in is built to carry uneven column heights. */}
                     <div
-                      className="relative w-full max-h-52 overflow-hidden bg-black"
+                      className="relative w-full overflow-hidden bg-black"
                       style={{
                         // The REAL dimensions once the asset exists — same "true aspect ratio, not a
                         // forced crop" treatment `StockSearchPanel.tsx`/`MediaLibrary.tsx` both already

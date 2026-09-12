@@ -422,11 +422,13 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                         makes packing into columns worthwhile at all (every tile the same shape would
                         just be a grid with extra steps). `lg:h-11 lg:w-16` still wins at the real
                         desktop breakpoint — an explicit height AND width leaves `aspect-ratio` nothing
-                        left to compute, so the two never fight over the same box. `max-h-56`: without a
-                        cap a tall portrait asset could tower past what's needed just to recognize it,
-                        same reasoning `AiGeneratePanel.tsx`'s own tile cap gives. */}
+                        left to compute, so the two never fight over the same box. No `max-h-*` cap below
+                        `lg` (there used to be one) — same "9:16 is VCut's common case, not an outlier
+                        worth clipping" reasoning `AiGeneratePanel.tsx`/`StockSearchPanel.tsx`'s own
+                        identical fix documents; `max-height` overriding `aspect-ratio` was silently
+                        re-cropping most portrait assets in this exact grid. */}
                     <div
-                      className="relative w-full max-h-56 shrink-0 overflow-hidden bg-black lg:h-11 lg:w-16 lg:rounded"
+                      className="relative w-full shrink-0 overflow-hidden bg-black lg:h-11 lg:w-16 lg:rounded"
                       style={{ aspectRatio: asset.width && asset.height ? `${asset.width} / ${asset.height}` : "16 / 9" }}
                     >
                       <AssetThumbnail asset={asset} projectId={projectId} />

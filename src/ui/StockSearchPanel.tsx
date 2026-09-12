@@ -166,10 +166,14 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
                       {/* Natural aspect ratio, not a fixed 16:9 crop — Commons results span everything
                           from tall portrait photos to wide landscape video, and forcing all of them into
                           one shape either crops the interesting part out or leaves large letterboxed
-                          bars. `max-h-64` caps a very tall/narrow result the same way `AiGeneratePanel`'s
-                          own tiles cap a 9:16 generation — see its identical comment for why. */}
+                          bars. No `max-h-*` cap (there used to be one, same as `AiGeneratePanel`'s own
+                          tiles) — `max-height` wins over `aspect-ratio` when the two conflict, silently
+                          re-cropping the exact thing this box exists to show honestly, and a cap sized
+                          for an "unusual tall result" was actually clipping the ordinary 9:16 case at
+                          this grid's typical column widths. The masonry grid these tiles sit in is built
+                          to carry uneven column heights. */}
                       <div
-                        className="relative max-h-64 w-full overflow-hidden bg-black"
+                        className="relative w-full overflow-hidden bg-black"
                         style={{ aspectRatio: `${result.width} / ${result.height}` }}
                       >
                         {/* Always an `<img>`, never `<video>` — unlike Pixabay's own tiny preview
