@@ -382,7 +382,12 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                   title={`${asset.name}\n${formatSize(asset.sizeBytes)}\n${t("Double-click to add at the playhead, or drag onto the timeline (press and hold, then drag, on touch)")}`}
                   className="group flex w-full cursor-grab flex-col gap-1.5 rounded-lg p-1.5 text-left transition hover:bg-white/10 focus:bg-white/10 focus:outline-none active:cursor-grabbing lg:flex-row lg:items-center lg:gap-2.5"
                 >
-                  <div className="relative aspect-video w-full shrink-0 overflow-hidden rounded bg-black lg:h-11 lg:w-16">
+                  {/* `max-h-20`: `aspect-video` alone scales UNBOUNDED with the tile's own width, so on
+                      a wide phone/tablet (or a media panel given more room) the thumbnail could grow
+                      well past what's needed just to recognize a clip — this caps it regardless of how
+                      wide the 2-up grid column gets. `AssetThumbnail`'s own `object-cover` already
+                      handles the resulting box not matching a pure 16:9 ratio once the cap kicks in. */}
+                  <div className="relative aspect-video max-h-20 w-full shrink-0 overflow-hidden rounded bg-black lg:h-11 lg:w-16">
                     <AssetThumbnail asset={asset} projectId={projectId} />
                     {/* A thumbnail (one static frame, or a short filmstrip strip) is enough to
                         RECOGNIZE a clip already known, but not enough to hear an audio file or tell
