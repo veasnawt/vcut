@@ -17,12 +17,20 @@ import { TransformHandles } from "./TransformHandles.tsx";
 import { TextTransformHandles } from "./TextTransformHandles.tsx";
 import { RemoveObjectOverlay } from "./RemoveObjectOverlay.tsx";
 
+/** How long a press has to hold before `holdRepeat` starts auto-repeating, and how fast it repeats
+ *  once it does — a real video player's own frame-step feel: an initial pause long enough that a quick
+ *  tap never accidentally fires twice, then fast enough that holding it down genuinely scrubs through
+ *  frames instead of taking dozens of presses. */
+const HOLD_REPEAT_INITIAL_DELAY_MS = 400;
+const HOLD_REPEAT_INTERVAL_MS = 90;
+
 function ControlButton({
   onClick,
   label,
   children,
   disabled,
   primary,
+  holdRepeat,
 }: {
   onClick: () => void;
   label: string;
@@ -32,10 +40,49 @@ function ControlButton({
   // gets a bigger hit target and a filled background to read as the primary control at a glance,
   // the same way every real video player treats play/pause as visually distinct from skip/step.
   primary?: boolean;
+  /** Previous/Next frame specifically — holding either down keeps stepping instead of requiring a
+   *  press per frame, the same way a real video player's own step buttons behave. Every other button
+   *  here (play/pause, undo/redo, go to start/end) is a one-shot action with no "hold to repeat"
+   *  reading, so this stays opt-in rather than every `ControlButton` gaining it. */
+  holdRepeat?: boolean;
 }) {
+  const repeatTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set for the exact duration of one held press — lets the plain `onClick` handler below tell "the
+  // browser's own synthetic click after this pointer's release" apart from "a real, separate tap",
+  // since `startRepeat` already fires the action once immediately on press and `onClick` would
+  // otherwise fire it a second time for the very same press.
+  const firedViaHoldRef = useRef(false);
+
+  function clearHoldRepeat() {
+    if (repeatTimerRef.current) {
+      clearTimeout(repeatTimerRef.current);
+      repeatTimerRef.current = null;
+    }
+  }
+  useEffect(() => clearHoldRepeat, []);
+
+  function startHoldRepeat() {
+    firedViaHoldRef.current = true;
+    onClick();
+    repeatTimerRef.current = setTimeout(function repeat() {
+      onClick();
+      repeatTimerRef.current = setTimeout(repeat, HOLD_REPEAT_INTERVAL_MS);
+    }, HOLD_REPEAT_INITIAL_DELAY_MS);
+  }
+
   return (
     <button
-      onClick={onClick}
+      onClick={() => {
+        if (firedViaHoldRef.current) {
+          firedViaHoldRef.current = false;
+          return;
+        }
+        onClick();
+      }}
+      onPointerDown={holdRepeat ? startHoldRepeat : undefined}
+      onPointerUp={holdRepeat ? clearHoldRepeat : undefined}
+      onPointerLeave={holdRepeat ? clearHoldRepeat : undefined}
+      onPointerCancel={holdRepeat ? clearHoldRepeat : undefined}
       disabled={disabled}
       title={label}
       aria-label={label}
@@ -431,13 +478,13 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
           <ControlButton onClick={() => setPlayhead(0)} label={t("Go to start")} disabled={empty}>
             <SkipBack size={16} />
           </ControlButton>
-          <ControlButton onClick={() => stepFrames(-1)} label={t("Previous frame")} disabled={empty}>
+          <ControlButton onClick={() => stepFrames(-1)} label={t("Previous frame")} disabled={empty} holdRepeat>
             <StepBack size={16} />
           </ControlButton>
           <ControlButton onClick={togglePlay} label={playing ? t("Pause (Space)") : t("Play (Space)")} disabled={empty} primary>
             {playing ? <Pause size={22} /> : <Play size={22} />}
           </ControlButton>
-          <ControlButton onClick={() => stepFrames(1)} label={t("Next frame")} disabled={empty}>
+          <ControlButton onClick={() => stepFrames(1)} label={t("Next frame")} disabled={empty} holdRepeat>
             <StepForward size={16} />
           </ControlButton>
           <ControlButton onClick={() => setPlayhead(total)} label={t("Go to end")} disabled={empty}>
