@@ -97,7 +97,13 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
       {/* Container-query grid: same "respond to THIS PANEL's own width, not the viewport's" reasoning
           `AiGeneratePanel.tsx`'s own identical rule documents — a persistent desktop sidebar and a
           near-full-width mobile sheet render the SAME markup at very different real widths, which a
-          plain viewport media query can't tell apart. */}
+          plain viewport media query can't tell apart. `:has(> div:nth-child(N))` gates each column
+          bump on actually having enough results to fill it — same "few, uneven-height items in too
+          many columns leaves one looking mostly empty" fix `MediaLibrary.tsx`'s identical rule
+          documents; a handful of stock results (a couple of short landscape photos next to a couple
+          of tall portrait ones) can hit the exact same imbalance. Thresholds (5, 9) deliberately more
+          generous than "one more than the column count" — see `MediaLibrary.tsx`'s own comment on why
+          a tighter bar still reproduced the bug live. */}
       <style>{`
         .vcut-stock-grid-container {
           container-type: inline-size;
@@ -106,12 +112,12 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
           columns: 1;
         }
         @container (min-width: 220px) {
-          .vcut-stock-grid {
+          .vcut-stock-grid:has(> div:nth-child(5)) {
             columns: 2;
           }
         }
         @container (min-width: 420px) {
-          .vcut-stock-grid {
+          .vcut-stock-grid:has(> div:nth-child(9)) {
             columns: 3;
           }
         }

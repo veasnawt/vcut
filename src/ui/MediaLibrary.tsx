@@ -275,7 +275,20 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
       }}
     >
       {/* Container-query grid: same "respond to THIS PANEL's own width, not the viewport's" reasoning
-          `AiGeneratePanel.tsx`/`StockSearchPanel.tsx`'s own identical rule documents. */}
+          `AiGeneratePanel.tsx`/`StockSearchPanel.tsx`'s own identical rule documents.
+          `:has(li:nth-child(N))` gates each column-count bump on actually having enough items to fill
+          it — confirmed a real, reported bug otherwise: a small library (the Import tile plus a
+          handful of assets) split into 3 columns with CSS multi-column's native `balance` algorithm
+          can land two short items (a color-matte "clip" has no thumbnail, just a compact text row)
+          together in one column while tall photo/video tiles fill the other two, leaving that whole
+          column looking mostly empty below its own short content — `balance` only tries to equalize
+          TOTAL HEIGHT per column, not account for a column ending up visually shorter because its few
+          items just happen to be short ones. The thresholds below (5 for 2 columns, 9 for 3) are
+          deliberately generous, not just "one more than the column count" — 6 items into 3 columns
+          (2 each) turned out to still reproduce the exact same imbalance, confirmed live, since two
+          same-kind short items can easily land together even at that ratio. More items per column
+          gives the balance algorithm more room to actually average out a height difference instead of
+          concentrating it. */}
       <style>{`
         .vcut-media-grid-container {
           container-type: inline-size;
@@ -284,12 +297,12 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
           columns: 1;
         }
         @container (min-width: 220px) {
-          .vcut-media-grid {
+          .vcut-media-grid:has(li:nth-child(5)) {
             columns: 2;
           }
         }
         @container (min-width: 420px) {
-          .vcut-media-grid {
+          .vcut-media-grid:has(li:nth-child(9)) {
             columns: 3;
           }
         }
@@ -384,16 +397,21 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                 >
                   {/* Square (1:1), not matched to any real asset's own ratio the way the tiles below
                       are — there's no real media behind this one to derive a shape from, and a plain
-                      square reads clearly as "a slot to fill" among the varied shapes surrounding it. */}
+                      square reads clearly as "a slot to fill" among the varied shapes surrounding it.
+                      Icon and label stacked together as ONE centered group (not the icon centered with
+                      the label pinned to the bottom edge separately, tried first) — asked for directly:
+                      the two read as a single "add" glyph this way, the way an icon-plus-caption button
+                      normally does, rather than looking like two unrelated pieces of content sharing a
+                      box. */}
                   <div
-                    className="relative flex w-full shrink-0 items-center justify-center overflow-hidden rounded-lg border border-dashed border-white/25 bg-white/5 transition group-hover:border-sky-400/50 group-hover:bg-white/10 lg:h-11 lg:w-16 lg:rounded"
+                    className="flex w-full shrink-0 flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border border-dashed border-white/25 bg-white/5 p-1 transition group-hover:border-sky-400/50 group-hover:bg-white/10 lg:h-11 lg:w-16 lg:rounded"
                     style={{ aspectRatio: "1 / 1" }}
                   >
                     <Add size={22} className="text-white/50 transition group-hover:text-white/80" />
+                    <p className="truncate text-center text-[11px] font-medium text-white/70 transition group-hover:text-white/90 lg:hidden">
+                      {importing ? t("Importing…") : t("Import")}
+                    </p>
                   </div>
-                  <p className="mt-1 truncate text-center text-[11px] font-medium text-white/70 lg:hidden">
-                    {importing ? t("Importing…") : t("Import")}
-                  </p>
                   <div className="hidden min-w-0 lg:block lg:flex-1">
                     <p className="truncate text-xs font-medium text-white/90">{importing ? t("Importing…") : t("Import")}</p>
                     <p className="truncate text-[11px] text-white/45">{t("Video, audio, or image")}</p>

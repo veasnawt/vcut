@@ -401,6 +401,14 @@ function TimelineClipComponent({
       excludeClipIds: groupIds,
       playhead: isTouch ? undefined : useEditorStore.getState().playhead,
     });
+    // Mirrors `operations.ts`'s own `trimClip` EXACTLY — real media can't trim its out-point past
+    // however much source footage actually exists; images/text/color have no such limit. Needed here
+    // (not just in the command) so a trim-out preview can clamp against it too — see the trim-out
+    // branch's own comment below for why that clamp missing was a real, reported bug.
+    const sourceLimit =
+      asset && asset.kind !== "image" && asset.kind !== "text" && asset.kind !== "color"
+        ? asset.duration
+        : Number.POSITIVE_INFINITY;
 
     function onMove(moveEvent: MouseEvent | TouchEvent) {
       const drag = dragRef.current;
@@ -489,9 +497,15 @@ function TimelineClipComponent({
       } else if (drag.mode === "trim-in") {
         const unsnappedEdge = origin.timelineStart + deltaSeconds;
         const snappedEdge = snapTime(unsnappedEdge, points, snapWindow);
-        // Clamped here only for the visual preview; the authoritative clamping (against the source's
-        // real extent and the one-frame minimum) happens in trimClip when the command runs.
-        const edge = Math.min(Math.max(0, snappedEdge), origin.timelineStart + originDuration - 1 / project.sequence.fps);
+        // Mirrors trimClip's own authoritative clamps EXACTLY now (timeline can't go negative,
+        // sourceIn can't go negative either, and can't trim past one frame before the out-point) —
+        // this used to defer the sourceIn-can't-go-negative clamp entirely to the command, which
+        // meant a snap point past the source media's own start showed the amber "snapped" highlight
+        // during the drag and then landed somewhere else on release: a real, reported bug ("snap
+        // highlight appears but doesn't stick").
+        const lowerBound = Math.max(0, origin.timelineStart - origin.sourceIn);
+        const upperBound = origin.timelineStart + originDuration - 1 / project.sequence.fps;
+        const edge = Math.min(Math.max(snappedEdge, lowerBound), upperBound);
         // Mirrors trimClip's own in-edge math: sourceIn shifts by exactly how far timelineStart moved.
         const newSourceIn = origin.sourceIn + (edge - origin.timelineStart);
         updatePreview({
@@ -499,19 +513,30 @@ function TimelineClipComponent({
           duration: origin.timelineStart + originDuration - edge,
           sourceIn: newSourceIn,
           sourceOut: origin.sourceOut,
-          snapped: snappedEdge !== unsnappedEdge,
+          // Only "snapped" if a clamp above didn't pull the edge away from the snap point it landed
+          // on — showing the highlight for a position that's about to be overridden on release is
+          // exactly the bug this whole fix addresses.
+          snapped: edge === snappedEdge && snappedEdge !== unsnappedEdge,
         });
       } else {
         const unsnappedEdge = origin.timelineStart + originDuration + deltaSeconds;
         const snappedEdge = snapTime(unsnappedEdge, points, snapWindow);
-        const edge = Math.max(snappedEdge, origin.timelineStart + 1 / project.sequence.fps);
+        // `upperBound` was missing entirely before this fix — trimClip's own command has always
+        // capped a trim-out at the source media's real remaining footage (`sourceLimit`), but this
+        // preview didn't, so snapping this clip's out-edge to a LATER clip's start (further away than
+        // the underlying file actually has left) showed the amber highlight the whole drag and then
+        // landed short of it on release the instant the command's own clamp kicked in — the single
+        // most likely real-world cause of "resize snap doesn't stick," confirmed a real, reported bug.
+        const lowerBound = origin.timelineStart + 1 / project.sequence.fps;
+        const upperBound = origin.timelineStart + (sourceLimit - origin.sourceIn);
+        const edge = Math.min(Math.max(snappedEdge, lowerBound), upperBound);
         const newDuration = edge - origin.timelineStart;
         updatePreview({
           start: origin.timelineStart,
           duration: newDuration,
           sourceIn: origin.sourceIn,
           sourceOut: origin.sourceIn + newDuration,
-          snapped: snappedEdge !== unsnappedEdge,
+          snapped: edge === snappedEdge && snappedEdge !== unsnappedEdge,
         });
       }
     }

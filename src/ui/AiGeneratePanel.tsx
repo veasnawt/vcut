@@ -137,7 +137,16 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
            sidebar (as little as ~110px) and as a near-full-width mobile sheet (~380px+), and a plain
            viewport-width media query can't tell those apart (a wide desktop VIEWPORT with a narrow
            panel would otherwise still get the wide-panel column count). Three columns only once
-           there's genuinely enough room per column to be worth it; two, then one, below that. */
+           there's genuinely enough room per column to be worth it; two, then one, below that.
+           The :has(> div:nth-child(N)) clauses below additionally gate each bump on actually having
+           enough generations to fill it — same "few, uneven-height items in too many columns leaves
+           one looking mostly empty" fix MediaLibrary.tsx's identical rule documents; a couple of tall
+           9:16 generations next to a couple of short 16:9 ones can hit the exact same imbalance.
+           Thresholds (5, 9) deliberately more generous than "one more than the column count" — see
+           MediaLibrary.tsx's own comment on why a tighter bar still reproduced the bug live. No
+           backticks in this comment block on purpose — it lives INSIDE the template literal below,
+           and a literal backtick here would terminate that string early (confirmed the hard way,
+           earlier this same file). */
         .vcut-ai-grid-container {
           container-type: inline-size;
         }
@@ -145,12 +154,12 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
           columns: 1;
         }
         @container (min-width: 220px) {
-          .vcut-ai-grid {
+          .vcut-ai-grid:has(> div:nth-child(5)) {
             columns: 2;
           }
         }
         @container (min-width: 420px) {
-          .vcut-ai-grid {
+          .vcut-ai-grid:has(> div:nth-child(9)) {
             columns: 3;
           }
         }

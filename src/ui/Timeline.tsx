@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Add } from "@veasnawt/vicons";
+import { thumbnailUrl } from "../api/client.ts";
 import { AddTrackCommand, ReorderTrackCommand } from "../commands/index.ts";
 import { OUTRO_DURATION_SECONDS } from "../export/outro.ts";
 import { sequenceDuration } from "../project/createProject.ts";
@@ -945,6 +946,20 @@ export function Timeline() {
           can never cover the playhead marker or the scroll area no matter how it's laid out. */}
       {armedAssetId && (
         <div className="flex shrink-0 items-center gap-2 border-b border-white/10 bg-sky-500/10 px-3 py-2 lg:hidden">
+          {/* Confirms WHICH asset is armed, not just that one is — a real gap otherwise: arming
+              closes the sheet immediately, so by the time this bar is showing, the tile that was
+              just tapped is already gone from view, with nothing else on screen naming it. The text
+              stays alongside it (not replaced by it) — the thumbnail answers "what," the text still
+              answers "what to do," and neither makes the other redundant. */}
+          {(() => {
+            const armedAsset = project.assets.find((a) => a.id === armedAssetId);
+            const url = armedAsset && projectId ? thumbnailUrl(projectId, armedAsset) : null;
+            return url ? (
+              <img src={url} alt="" className="h-8 w-8 shrink-0 rounded object-cover" draggable={false} />
+            ) : (
+              <div className="h-8 w-8 shrink-0 rounded bg-white/10" />
+            );
+          })()}
           <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-sky-200">
             {t("Move the playhead, then place it")}
           </span>
