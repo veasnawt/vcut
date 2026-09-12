@@ -1057,8 +1057,11 @@ function SaveStatus() {
   const dirty = useEditorStore((s) => s.dirty);
   const saving = useEditorStore((s) => s.saving);
   const lastSavedAt = useEditorStore((s) => s.lastSavedAt);
+  const sessionExpired = useEditorStore((s) => s.sessionExpired);
+  const save = useEditorStore((s) => s.save);
   const t = useTranslation();
   const [showSaved, setShowSaved] = useState(false);
+  const [showSignIn, setShowSignIn] = useState(false);
 
   // "All changes saved" is a confirmation, not an ongoing state the way "Saving…"/"Unsaved changes"
   // are — worth a moment's glance, not worth permanently occupying header space forever after. Same
@@ -1072,6 +1075,32 @@ function SaveStatus() {
     const timer = setTimeout(() => setShowSaved(false), 3000);
     return () => clearTimeout(timer);
   }, [lastSavedAt, dirty, saving]);
+
+  // Checked before `saving`/`dirty`/`showSaved` below and never auto-clears on its own (unlike
+  // "All changes saved"'s 3s timer) — a session that died needs the user to actually notice and act,
+  // not a message that politely disappears while every subsequent autosave keeps failing the same way.
+  // Only `save()` succeeding again (right after sign-in, or any edit afterward) turns this off, by
+  // setting `sessionExpired: false` itself.
+  if (sessionExpired) {
+    return (
+      <>
+        <button
+          onClick={() => setShowSignIn(true)}
+          className="shrink-0 truncate rounded bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-medium text-amber-300 transition hover:bg-amber-500/25"
+        >
+          {t("Session expired — Sign in")}
+        </button>
+        {showSignIn && (
+          <MobileSignInDialog
+            onClose={() => {
+              setShowSignIn(false);
+              void save();
+            }}
+          />
+        )}
+      </>
+    );
+  }
 
   const text = saving ? t("Saving…") : dirty ? t("Unsaved changes") : showSaved ? t("All changes saved") : "";
   if (!text) return null;

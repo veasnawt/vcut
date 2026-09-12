@@ -180,6 +180,15 @@ export interface EditorState {
   dirty: boolean;
   saving: boolean;
   lastSavedAt: number | null;
+  /** Set when `save()` fails specifically because the session itself is gone (a 401, not a network
+   *  blip) — distinct from `dirty`/`lastSavedAt` because THIS is what actually needs a visible,
+   *  persistent warning: `save()`'s own catch used to report every failure identically (a dismissible
+   *  toast easy to miss mid-edit), so a user whose refresh token had quietly died overnight could keep
+   *  editing for a long time with every autosave silently failing, only discovering the loss much
+   *  later. `VCutApp.tsx` shows a banner (not a toast) whenever this is true, offering sign-in without
+   *  navigating away from — or losing — the project still held in memory; a successful save (the
+   *  retry `VCutApp.tsx` fires right after sign-in, or any edit after that) clears it back to false. */
+  sessionExpired: boolean;
 
   canUndo: boolean;
   canRedo: boolean;
@@ -615,6 +624,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     dirty: false,
     saving: false,
     lastSavedAt: null,
+    sessionExpired: false,
 
     canUndo: false,
     canRedo: false,
@@ -723,16 +733,27 @@ export const useEditorStore = create<EditorState>((set, get) => {
       try {
         await api.saveProject(projectId, project);
         // Only clears `dirty` if nothing changed while the save was in flight — otherwise an edit
-        // made mid-save would be silently marked as saved when it wasn't.
+        // made mid-save would be silently marked as saved when it wasn't. Also clears `sessionExpired`
+        // — this is exactly how a retry right after signing back in (`VCutApp.tsx`'s own banner) is
+        // confirmed to have actually worked.
         set((state) => ({
           saving: false,
           lastSavedAt: Date.now(),
           dirty: state.project !== project,
+          sessionExpired: false,
         }));
       } catch (err) {
-        set({ saving: false });
-        const message = err instanceof Error ? err.message : "Could not save the project";
-        get().setStatus(translateText(get().language, message), "error");
+        // A 401 specifically means the session itself is gone, not a flaky request — see
+        // `sessionExpired`'s own doc comment for why this used to be indistinguishable from a plain
+        // network blip and what that silently cost. Every OTHER failure keeps the existing transient
+        // toast; a dead session gets `VCutApp.tsx`'s persistent banner instead, and doesn't ALSO spam
+        // that same toast on every autosave attempt after the first while it's already showing.
+        const isSessionExpired = err instanceof ApiRequestError && err.status === 401;
+        set({ saving: false, sessionExpired: isSessionExpired });
+        if (!isSessionExpired) {
+          const message = err instanceof Error ? err.message : "Could not save the project";
+          get().setStatus(translateText(get().language, message), "error");
+        }
       }
     },
 
