@@ -192,7 +192,16 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                         provider response) could inflate its own box past the ratio-implied height
                         instead of being clipped by this parent's own `overflow-hidden`. Anchoring
                         directly to the parent's edges has no such ambiguity. */}
-                    <div className="relative w-full overflow-hidden bg-black" style={{ aspectRatio: cssAspectRatio(item.aspectRatio) }}>
+                    {/* `max-h-52`: `aspect-ratio` alone lets a tall ratio (9:16) grow height-unbounded
+                        off whatever width its column happens to get, which could tower well past what's
+                        needed just to recognize the result — same "cap it regardless of the ratio-
+                        implied height" reasoning `MediaLibrary.tsx`'s own mobile-grid thumbnail cap
+                        gives. A short ratio (1:1, 16:9) never reaches this cap on its own, so it only
+                        ever affects the tall case. */}
+                    <div
+                      className="relative w-full max-h-52 overflow-hidden bg-black"
+                      style={{ aspectRatio: cssAspectRatio(item.aspectRatio) }}
+                    >
                       {item.status === "done" && item.asset ? (
                         <img
                           src={thumbnailUrl(projectId, item.asset) ?? ""}
