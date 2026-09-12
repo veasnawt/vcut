@@ -185,13 +185,20 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
         </>
       ) : (
         <>
+          {/* `shrink-0` on this and every other control below (dropdown, aspect-ratio row, Generate
+              button) — without it, a flex-column parent whose content runs taller than the sheet
+              shrinks EVERY child proportionally to fit rather than overflowing into the `overflow-y-
+              auto` scroll it already has, `rows={3}`'s own intrinsic height included: a textarea's
+              min-content height can go well below "3 visible lines," so it was the child that
+              visibly squashed first. Pinning these to their natural size means the results grid below
+              is what gives way instead — pushed down and scrolled to, never these controls. */}
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             placeholder={kind === "image" ? t("Describe the image you want…") : t("Describe the video you want…")}
             rows={3}
             disabled={busy}
-            className="w-full resize-none rounded-md bg-white/5 px-2 py-1.5 text-[13px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60 disabled:opacity-60"
+            className="w-full shrink-0 resize-none rounded-md bg-white/5 px-2 py-1.5 text-[13px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60 disabled:opacity-60"
           />
 
           {/* Image only — video generation (`ai-video/route.ts`) has exactly one model, so there's
@@ -207,7 +214,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
               onChange={setModel}
               disabled={busy}
               ariaLabel={t("Model")}
-              className="mt-2 w-full text-[11px]"
+              className="mt-2 w-full shrink-0 text-[11px]"
               options={AI_IMAGE_MODELS.map((m) => ({
                 value: m,
                 label: `${MODEL_LABELS[m]} · ${m === "flare" ? t("Default") : m === "sunburst" ? t("Premium") : t("Alternative")}`,
@@ -215,7 +222,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
             />
           )}
 
-          <div className="mt-2 flex gap-1.5">
+          <div className="mt-2 flex shrink-0 gap-1.5">
             {AI_ASPECT_RATIOS.map((ratio) => (
               <button
                 key={ratio}
@@ -233,7 +240,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
           <button
             onClick={() => (kind === "video" && videoBusy ? cancelAiVideoGeneration() : handleGenerate())}
             disabled={!prompt.trim() && !(kind === "video" && videoBusy)}
-            className="mt-3 w-full rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400 disabled:cursor-default disabled:opacity-50"
+            className="mt-3 w-full shrink-0 rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400 disabled:cursor-default disabled:opacity-50"
           >
             {kind === "image" ? (busy ? t("Generating…") : t("Generate image")) : videoBusy ? t("Cancel") : t("Generate video")}
           </button>
