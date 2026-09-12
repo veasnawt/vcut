@@ -1811,21 +1811,6 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
               {t("Sign in")}
             </button>
           )}
-          {/* Hosted-web only (no local/desktop "Pro" concept) — clicking it either opens the naming
-              dialog (already Pro) or hands off to checkout (still free), the same "show it, prompt
-              upgrade on click" pattern Auto Captions/Remove Object already use elsewhere, rather than
-              hiding the feature entirely from anyone who hasn't upgraded yet. Text-only and this far
-              down the header's priority order on purpose — saving a template is a rare, deliberate
-              action next to Export's every-session one, not worth matching its visual weight. */}
-          {hosted && (
-            <button
-              onClick={() => (credits?.plan === "pro" ? setShowSaveAsTemplate(true) : handleUpgradeClick())}
-              title={t("Save the current project's structure as a reusable template")}
-              className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/60 transition hover:bg-white/10 hover:text-white"
-            >
-              {t("Save as template")}
-            </button>
-          )}
           <button
             onClick={() => setLanguage(language === "en" ? "km" : "en")}
             title={t("Switch language")}
@@ -1834,6 +1819,28 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           >
             {language === "en" ? "ខ្មែរ" : "EN"}
           </button>
+          {/* Grouped directly against Export (not sandwiched between it and the language toggle,
+              confirmed a real, reported ordering bug from the first version of this) — the two read
+              as one "project-level actions" cluster this way, language being the odd one out visually
+              sitting between two UNRELATED actions instead. Hosted-web only (no local/desktop "Pro"
+              concept) — clicking it either opens the naming dialog (already Pro) or hands off to
+              checkout (still free), the same "show it, prompt upgrade on click" pattern Auto Captions/
+              Remove Object already use elsewhere, rather than hiding the feature entirely from anyone
+              who hasn't upgraded yet. `hidden lg:inline-flex`: confirmed too tight below `lg` — the
+              header's own footer/toolbar already crams a lot into a phone-width row (see StatusBar's
+              own comments on that), and saving a template is enough of a rare, deliberate,
+              desktop-leaning action (reusing a whole project's STRUCTURE) that it isn't worth the
+              squeeze there; a template someone else made is still fully usable from the New Project
+              dialog on any device either way. */}
+          {hosted && (
+            <button
+              onClick={() => (credits?.plan === "pro" ? setShowSaveAsTemplate(true) : handleUpgradeClick())}
+              title={t("Save the current project's structure as a reusable template")}
+              className="hidden shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/60 transition hover:bg-white/10 hover:text-white lg:inline-flex"
+            >
+              {t("Save as template")}
+            </button>
+          )}
           <button
             onClick={() => setExportOpen(true)}
             className="shrink-0 rounded-md bg-sky-500 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-sky-400"
