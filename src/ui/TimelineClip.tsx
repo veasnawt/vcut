@@ -401,14 +401,17 @@ function TimelineClipComponent({
       excludeClipIds: groupIds,
       playhead: isTouch ? undefined : useEditorStore.getState().playhead,
     });
-    // Mirrors `operations.ts`'s own `trimClip` EXACTLY — real media can't trim its out-point past
-    // however much source footage actually exists; images/text/color have no such limit. Needed here
-    // (not just in the command) so a trim-out preview can clamp against it too — see the trim-out
-    // branch's own comment below for why that clamp missing was a real, reported bug.
-    const sourceLimit =
-      asset && asset.kind !== "image" && asset.kind !== "text" && asset.kind !== "color"
-        ? asset.duration
-        : Number.POSITIVE_INFINITY;
+    // Mirrors `operations.ts`'s own `trimClip` EXACTLY — real media can't trim past however much
+    // source footage actually exists (in either direction: can't show frames before 0:00 on the in
+    // edge, can't extend past the file's own end on the out edge); images/text/color have no such
+    // limit on EITHER edge — there's no real file position their `sourceIn`/`sourceOut` indexes into,
+    // just a bookkeeping window whose WIDTH is what matters, so it's free to slide arbitrarily
+    // (including negative) without breaking anything downstream (confirmed: export never uses
+    // `sourceIn` as a real ffmpeg seek offset for any of these three kinds). Needed here (not just in
+    // the command) so both trim previews can clamp against it too — see each branch's own comment
+    // below for the two different real, reported bugs this fixes (one per direction).
+    const hasFixedSourceLength = Boolean(asset) && asset!.kind !== "image" && asset!.kind !== "text" && asset!.kind !== "color";
+    const sourceLimit = hasFixedSourceLength ? asset!.duration : Number.POSITIVE_INFINITY;
 
     function onMove(moveEvent: MouseEvent | TouchEvent) {
       const drag = dragRef.current;
@@ -497,13 +500,16 @@ function TimelineClipComponent({
       } else if (drag.mode === "trim-in") {
         const unsnappedEdge = origin.timelineStart + deltaSeconds;
         const snappedEdge = snapTime(unsnappedEdge, points, snapWindow);
-        // Mirrors trimClip's own authoritative clamps EXACTLY now (timeline can't go negative,
-        // sourceIn can't go negative either, and can't trim past one frame before the out-point) —
-        // this used to defer the sourceIn-can't-go-negative clamp entirely to the command, which
-        // meant a snap point past the source media's own start showed the amber "snapped" highlight
-        // during the drag and then landed somewhere else on release: a real, reported bug ("snap
-        // highlight appears but doesn't stick").
-        const lowerBound = Math.max(0, origin.timelineStart - origin.sourceIn);
+        // Mirrors trimClip's own authoritative clamps EXACTLY now (timeline can't go negative;
+        // real-media sourceIn can't go negative either, but image/text/color have no such floor —
+        // see `hasFixedSourceLength`'s own comment; and can't trim past one frame before the
+        // out-point). The sourceIn floor used to apply unconditionally (deferred entirely to the
+        // command, which back then made the SAME unconditional mistake) — two real, reported bugs
+        // from that one gap: a real-media snap point past the source's own start showed the amber
+        // "snapped" highlight and then landed somewhere else on release, while an image/text/color
+        // clip's in-edge couldn't extend past its own creation point AT ALL, snap or no snap, since
+        // its `sourceIn` starts at exactly 0 and the floor treated 0 as a hard wall for every kind.
+        const lowerBound = Math.max(0, hasFixedSourceLength ? origin.timelineStart - origin.sourceIn : Number.NEGATIVE_INFINITY);
         const upperBound = origin.timelineStart + originDuration - 1 / project.sequence.fps;
         const edge = Math.min(Math.max(snappedEdge, lowerBound), upperBound);
         // Mirrors trimClip's own in-edge math: sourceIn shifts by exactly how far timelineStart moved.

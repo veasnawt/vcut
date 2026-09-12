@@ -450,6 +450,51 @@ describe("track kind enforcement", () => {
 
     assert.ok(closeTo(clipDuration(trimmed), 60), `expected the color-matte clip to trim out to 60s, got ${clipDuration(trimmed)}`);
   });
+
+  // Confirmed a real, reported bug: the in-edge branch had no equivalent kind-based exemption to the
+  // one the out-edge branch (the test just above) already had — every newly-created clip starts with
+  // sourceIn 0 regardless of kind, and the in-edge's `minDelta = -clip.sourceIn` floor applied
+  // unconditionally meant an image/color/text clip's own start could never move EARLIER than wherever
+  // it was first placed, snap or no snap, even though these three kinds have no real file position for
+  // sourceIn to actually be indexing into in the first place (see the out-edge test's own "same as an
+  // image" framing — the two edges should behave symmetrically for these kinds, and didn't).
+  it("lets a color-matte clip's in-point extend earlier than its own creation point, same as its out-point can extend later", () => {
+    const base = emptyProject([colorAsset()]);
+    let project = addClip(base, videoTrackId(base), "color1", 10);
+    const [clip] = clipsOf(project, videoTrackId(project));
+
+    project = trimClip(project, clip.id, "in", 4);
+    const [trimmed] = clipsOf(project, videoTrackId(project));
+
+    assert.ok(closeTo(trimmed.timelineStart, 4), `expected timelineStart 4, got ${trimmed.timelineStart}`);
+    assert.ok(trimmed.sourceIn < 0, `expected sourceIn to go negative (no real file position to floor it at), got ${trimmed.sourceIn}`);
+  });
+
+  it("lets an image clip's in-point extend earlier than its own creation point too", () => {
+    const base = emptyProject([imageAsset()]);
+    let project = addClip(base, videoTrackId(base), "img1", 10);
+    const [clip] = clipsOf(project, videoTrackId(project));
+
+    project = trimClip(project, clip.id, "in", 4);
+    const [trimmed] = clipsOf(project, videoTrackId(project));
+
+    assert.ok(closeTo(trimmed.timelineStart, 4), `expected timelineStart 4, got ${trimmed.timelineStart}`);
+    assert.ok(trimmed.sourceIn < 0, `expected sourceIn to go negative, got ${trimmed.sourceIn}`);
+  });
+
+  it("still floors a real video clip's in-point at its own source start (sourceIn can't go negative)", () => {
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 10);
+    const [clip] = clipsOf(project, videoTrackId(project));
+
+    // Attempting to pull the in-point 4s earlier than the source media's own frame 0 — should clamp
+    // at exactly sourceIn 0 instead, unlike the synthetic-kind tests just above.
+    project = trimClip(project, clip.id, "in", 6);
+    const [trimmed] = clipsOf(project, videoTrackId(project));
+
+    assert.ok(closeTo(trimmed.sourceIn, 0), `expected sourceIn clamped to 0, got ${trimmed.sourceIn}`);
+    assert.ok(closeTo(trimmed.timelineStart, 10), `expected timelineStart unchanged at 10, got ${trimmed.timelineStart}`);
+  });
 });
 
 describe("moving a clip between tracks", () => {

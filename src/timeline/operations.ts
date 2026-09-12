@@ -262,19 +262,24 @@ export function trimClip(project: Project, clipId: string, edge: "in" | "out", t
     const fps = draft.sequence.fps;
     const min = frameDuration(fps);
     const asset = findAsset(draft, clip.assetId);
-    // Images, color-matte backgrounds, and text have no fixed source length, so their out-point can
-    // extend freely; real media is capped at its actual duration.
-    const sourceLimit =
-      asset && asset.kind !== "image" && asset.kind !== "text" && asset.kind !== "color"
-        ? asset.duration
-        : Number.POSITIVE_INFINITY;
+    // Images, color-matte backgrounds, and text have no fixed source length — there's no real file
+    // position their sourceIn/sourceOut is actually indexing into, just a bookkeeping window whose
+    // WIDTH is the only thing that matters, so neither edge has a genuine "ran out of source" limit
+    // the way real media does.
+    const hasFixedSourceLength = Boolean(asset) && asset!.kind !== "image" && asset!.kind !== "text" && asset!.kind !== "color";
+    const sourceLimit = hasFixedSourceLength ? asset!.duration : Number.POSITIVE_INFINITY;
     const target = snapToFrame(toTime, fps);
 
     if (edge === "in") {
       const delta = target - clip.timelineStart;
       // Can't pull the in-point earlier than the start of the source media, nor later than one frame
-      // before the out-point.
-      const minDelta = -clip.sourceIn;
+      // before the out-point — the sourceIn floor only applies to real media (see
+      // `hasFixedSourceLength`'s own comment just above); confirmed a real, reported bug otherwise:
+      // an image/color/text clip's in-edge was silently unable to extend earlier than wherever it
+      // happened to start, since `sourceIn` starts at exactly 0 for every newly-created clip and this
+      // floor used to apply unconditionally, the one place in this function that DIDN'T already have
+      // the same kind-based exemption `sourceLimit` above gives the out-edge.
+      const minDelta = hasFixedSourceLength ? -clip.sourceIn : Number.NEGATIVE_INFINITY;
       const maxDelta = clipDuration(clip) - min;
       const applied = Math.min(Math.max(delta, minDelta), maxDelta);
       const newStart = clip.timelineStart + applied;
