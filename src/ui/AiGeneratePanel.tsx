@@ -299,7 +299,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                     }
                     title={
                       item.status === "done"
-                        ? `${item.prompt}\n${onAssetAdded ? t("Tap to place on the timeline") : t("Click to add at the playhead")}`
+                        ? `${item.prompt}\n${onAssetAdded ? t("Tap to pick, then place it at the playhead") : t("Click to add at the playhead")}`
                         : item.prompt
                     }
                     className={`flex w-full flex-col overflow-hidden rounded-lg bg-black/40 text-left ${

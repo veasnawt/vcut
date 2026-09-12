@@ -392,14 +392,23 @@ export interface EditorState {
     | null;
   setResolveTimelineDropTarget: (resolver: EditorState["resolveTimelineDropTarget"]) => void;
 
-  /** "Arm an asset, then tap the timeline to choose exactly where it lands" — the alternative to
-   *  immediately dropping a Stock/AI result at the playhead, for the one screen where the playhead
-   *  and the timeline itself aren't both visible at once: the mobile Stock/AI sheet covers the whole
-   *  Timeline, so a user picking a result there has no way to see (let alone aim for) a specific
-   *  point before it's placed. Arming defers that choice — the sheet closes, a "tap the timeline to
-   *  place — Cancel" affordance appears, and `Timeline.tsx`'s own lanes `onClick` handler (which
-   *  already owns `resolveTimelineDropTarget`, the same hit-test `MediaLibrary`'s pointer-drag drop
-   *  uses) places it there instead of deselecting as a plain click normally would. Desktop keeps the
+  /** "Arm an asset, then place it at the playhead" — the alternative to immediately dropping a
+   *  Stock/AI result at wherever the playhead already happened to be, for the one screen where the
+   *  playhead and the Timeline itself aren't both visible at once: the mobile Stock/AI sheet covers
+   *  the whole Timeline, so a user picking a result there has no way to see, let alone aim, a
+   *  specific point before it's placed. Arming defers that choice — the sheet closes, `Timeline.tsx`
+   *  shows a "move the playhead, then place it — Cancel" bar, and scrubbing the playhead (already the
+   *  app's most precise, well-practiced positioning gesture — drag, or the frame-step buttons) picks
+   *  the exact spot before a "Place at playhead" button actually calls `addAssetAtPlayhead`.
+   *
+   *  An earlier version of this had the NEXT TAP anywhere in the Timeline's own lanes place it
+   *  directly (reusing `resolveTimelineDropTarget`, the same hit-test `MediaLibrary`'s pointer-drag
+   *  drop uses) — reverted: a real timeline already has clips filling most of it, so most taps landed
+   *  ON an existing clip and had to be forcibly intercepted (a capture-phase `stopPropagation()`) to
+   *  stop that clip's own selection from ALSO firing, and the floating "tap to place" banner itself
+   *  had to carefully split which of its own pixels were clickable so it didn't silently eat a tap
+   *  meant for the timeline underneath — real, confirmed fragility for a fat-finger-prone gesture on a
+   *  short mobile timeline, replaced by a gesture the user already fully controls. Desktop keeps the
    *  immediate playhead placement (`addAssetAtPlayhead`) — the Timeline is already visible there, so
    *  deferring the choice would only add a step. Same "not part of `project`, purely a tool-armed
    *  session state" category as `removeObjectArmedClipId` right above. */

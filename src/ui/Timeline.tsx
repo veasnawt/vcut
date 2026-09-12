@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Add } from "@veasnawt/vicons";
-import { AddClipCommand, AddTrackCommand, ReorderTrackCommand } from "../commands/index.ts";
+import { AddTrackCommand, ReorderTrackCommand } from "../commands/index.ts";
 import { OUTRO_DURATION_SECONDS } from "../export/outro.ts";
 import { sequenceDuration } from "../project/createProject.ts";
 import { DEFAULT_TEXT_STYLE, type Track, type TrackKind } from "../project/types.ts";
@@ -931,6 +931,41 @@ export function Timeline() {
         </div>
       </header>
 
+      {/* The "arm an asset, then place it" affordance — see `armedAssetId`'s own doc comment in
+          editorStore.ts for why this exists at all. A real row (`shrink-0`), not a floating overlay
+          on top of the ruler/lanes below — a floating banner was the FIRST approach here, and it had
+          to intercept and re-route every tap on the timeline underneath it (including guarding
+          against covering the playhead scrub area and the horizontal scrollbar), which was real,
+          confirmed fragility: a tap landing on an EXISTING clip needed a capture-phase intercept to
+          stop that clip's own selection from also firing, and the banner pill itself had to carefully
+          split which of its own pixels were clickable so it didn't silently eat a tap meant for the
+          timeline underneath. Placing the asset at the PLAYHEAD instead — the same precise, already
+          practiced scrub/frame-step gesture used for everything else here — needs none of that: this
+          row sits in normal flow, pushing the ruler/lanes down rather than overlapping either, so it
+          can never cover the playhead marker or the scroll area no matter how it's laid out. */}
+      {armedAssetId && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-white/10 bg-sky-500/10 px-3 py-2 lg:hidden">
+          <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-sky-200">
+            {t("Move the playhead, then place it")}
+          </span>
+          <button
+            onClick={() => cancelArmedAsset()}
+            className="shrink-0 rounded-md px-2.5 py-1.5 text-[11px] font-medium text-white/60 transition hover:bg-white/10 hover:text-white"
+          >
+            {t("Cancel")}
+          </button>
+          <button
+            onClick={() => {
+              addAssetAtPlayhead(armedAssetId);
+              cancelArmedAsset();
+            }}
+            className="shrink-0 rounded-md bg-sky-500 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-sky-400"
+          >
+            {t("Place at playhead")}
+          </button>
+        </div>
+      )}
+
       <div className="relative flex min-h-0 flex-1">
         {/* Mobile's merged stand-in for the header's own (now `lg`-only, see above) live
             position/duration readout — same live value (the exact same isolated `CurrentTime`, so
@@ -952,35 +987,6 @@ export function Timeline() {
           <span className="text-white/45">{formatTimecode(total, project.sequence.fps)}</span>
         </div>
 
-        {/* The "arm an asset, then tap the timeline" affordance — see `armedAssetId`'s own doc comment
-            in editorStore.ts for why this exists at all. Sits BELOW the ruler (`top: RULER_HEIGHT`,
-            not `top-0`) so it never fights the mobile time readout right above for the same corner;
-            centered rather than pinned to an edge since it's telling the user what their NEXT tap
-            anywhere in the lanes below will do, not labeling a specific spot.
-            `pointer-events-none` everywhere EXCEPT the Cancel button itself — confirmed a real, live
-            bug otherwise: on a short mobile timeline this pill sits right on top of the first track
-            row, and a full-pill `pointer-events-auto` (matching every OTHER overlay in this file)
-            silently ate any tap meant for the timeline UNDER it, since the browser hit-tests whatever
-            element is topmost at that point rather than letting the click fall through to lanesRef's
-            own handler. Making only Cancel itself clickable means tapping the label text (or the pill's
-            own background) still reaches the timeline underneath and places the clip right there,
-            exactly as the label promises — only Cancel needs its own dedicated hit target. */}
-        {armedAssetId && (
-          <div
-            style={{ top: RULER_HEIGHT + 8 }}
-            className="pointer-events-none absolute inset-x-0 z-40 flex justify-center px-2"
-          >
-            <div className="flex items-center gap-2 rounded-full border border-sky-400/40 bg-sky-500 px-3 py-1.5 text-[11px] font-medium text-white shadow-lg">
-              {t("Tap the timeline to place it")}
-              <button
-                onClick={() => cancelArmedAsset()}
-                className="pointer-events-auto rounded-full bg-black/20 px-2 py-0.5 text-[11px] font-semibold transition hover:bg-black/30"
-              >
-                {t("Cancel")}
-              </button>
-            </div>
-          </div>
-        )}
         {/* Track headers sit outside the horizontal scroll so they stay visible while scrubbing far
             along a long edit — desktop only. On mobile they scroll WITH the clips instead, as inline
             per-row chips inside the lanes themselves (see that render below); there's no separate
@@ -1115,32 +1121,6 @@ export function Timeline() {
 
             <div
               ref={lanesRef}
-              // CAPTURE phase, not bubble — a real timeline already has clips filling most of it, so
-              // most taps while armed land ON an existing clip, not empty track space. `TimelineClip`'s
-              // own click handler (selection) runs on the bubble phase same as any plain `onClick`
-              // would, which fires AFTER this one; without `stopPropagation()` here, an armed tap on
-              // top of a clip would both place the new asset AND select the one underneath it —
-              // confirmed a real bug, not theoretical: it's what "select this clip" actually looked
-              // like the first time this was tested against a timeline with existing content. Placing
-              // is the ONLY thing a tap should do while armed, so this intercepts before any clip
-              // itself gets a chance to react at all.
-              onClickCapture={(e) => {
-                if (!armedAssetId) return;
-                e.stopPropagation();
-                // An armed asset (see `armedAssetId`'s own doc comment in editorStore.ts) turns this
-                // click into a placement instead of a deselect — same hit-test `MediaLibrary`'s own
-                // pointer-drag drop already uses, registered by this component just above. A tap that
-                // doesn't land on a track (or the "add track" row) leaves it armed rather than
-                // silently dropping the pick, since the affordance shown while armed promises the
-                // NEXT tap places it, not this failed attempt.
-                const target = useEditorStore.getState().resolveTimelineDropTarget?.(e.clientX, e.clientY, armedAssetId);
-                if (target) {
-                  run(new AddClipCommand(target.trackId, armedAssetId, target.time));
-                  cancelArmedAsset();
-                } else {
-                  setStatus(t("Tap on a track to place it"), "error");
-                }
-              }}
               onClick={() => {
                 // See `justMarqueedRef`'s own comment — swallow exactly the one native click the
                 // browser fires right after a real marquee drag's mouseup, then let every click after
@@ -1151,10 +1131,7 @@ export function Timeline() {
                 }
                 select([]);
               }}
-              onMouseDown={(e) => {
-                if (armedAssetId) return;
-                beginMarquee(e);
-              }}
+              onMouseDown={beginMarquee}
             >
               {project.sequence.tracks.map((track) => (
                 <div
