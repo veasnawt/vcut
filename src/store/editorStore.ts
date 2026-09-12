@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import * as api from "../api/client.ts";
 import { ApiRequestError } from "../api/client.ts";
-import type { CaptionSegment, SourceRect } from "../api/client.ts";
+import type { AiImageAspectRatio, CaptionSegment, SourceRect, StockSearchResult } from "../api/client.ts";
 import type { Command } from "../commands/index.ts";
 import {
   AddCaptionsCommand,
@@ -362,6 +362,24 @@ export interface EditorState {
    *  `hiddenFromLibrary`: stamped onto every asset from this call (see `Asset.hiddenFromLibrary`'s own
    *  comment) — used by `VoiceoverRecorder` so a quick take doesn't clutter the Media Library. */
   importFiles: (files: File[], options?: { hiddenFromLibrary?: boolean }) => Promise<Asset[]>;
+  /** Downloads one chosen Pixabay stock search result server-side and lands it in `project.assets` —
+   *  same "not undo-able, an import is more like an asset creation than a timeline edit" reasoning
+   *  `importFiles` itself follows. Singular (one result at a time), matching a user clicking exactly
+   *  one search tile — `StockSearchPanel.tsx` is this action's only caller. Returns `null` on failure
+   *  (surfaced via `setStatus`, same convention every other import path here uses) rather than
+   *  throwing, so a caller never needs its own try/catch just to keep the UI responsive after one bad
+   *  download. */
+  importStockResult: (result: StockSearchResult) => Promise<Asset | null>;
+  /** Generates one image from a prompt (`ai-image/route.ts`, Replicate's Flux Schnell) and lands it in
+   *  `project.assets` — same "not undo-able, an import is more like an asset creation than a timeline
+   *  edit" reasoning `importStockResult` itself follows, just sourced from a generation instead of a
+   *  download. Returns `null` on failure (surfaced via `setStatus`), same convention. */
+  generateAiImage: (prompt: string, aspectRatio: AiImageAspectRatio) => Promise<Asset | null>;
+  /** Appends one already-generated `Asset` to `project.assets` — the "landing" half of AI video
+   *  generation, kept separate from the "starting" half (`startAiVideo`/`watchAiVideo`, called directly
+   *  from the dialog UI, same as Remove Object's own job lives in `Inspector.tsx` rather than the
+   *  store) because a job's progress isn't state this store needs to own, only its eventual result is. */
+  addGeneratedAsset: (asset: Asset) => void;
   removeAsset: (asset: Asset) => Promise<void>;
   /** Imports one file into the project's own reusable "My Sounds" library (`project.customSfx`) —
    *  same "not undo-able, an import is more like an asset creation than a timeline edit" reasoning
@@ -889,6 +907,49 @@ export const useEditorStore = create<EditorState>((set, get) => {
         get().setStatus(translateText(language, "Imported {n} file(s)", { n: imported.length }));
       }
       return imported;
+    },
+
+    async importStockResult(result) {
+      const { projectId, project } = get();
+      if (!projectId || !project) return null;
+      set({ importing: true });
+      try {
+        const asset = await api.importStockResult(projectId, result);
+        const current = get().project;
+        if (current) applyProject({ ...current, assets: [...current.assets, asset] });
+        get().setStatus(translateText(get().language, "Imported {name}", { name: asset.name }));
+        return asset;
+      } catch (err) {
+        get().setStatus(err instanceof Error ? err.message : String(err), "error");
+        return null;
+      } finally {
+        set({ importing: false });
+      }
+    },
+
+    async generateAiImage(prompt, aspectRatio) {
+      const { projectId, project } = get();
+      if (!projectId || !project) return null;
+      set({ importing: true });
+      try {
+        const asset = await api.generateAiImage(projectId, prompt, aspectRatio);
+        const current = get().project;
+        if (current) applyProject({ ...current, assets: [...current.assets, asset] });
+        get().setStatus(translateText(get().language, "Imported {name}", { name: asset.name }));
+        return asset;
+      } catch (err) {
+        get().setStatus(err instanceof Error ? err.message : String(err), "error");
+        return null;
+      } finally {
+        set({ importing: false });
+      }
+    },
+
+    addGeneratedAsset(asset) {
+      const current = get().project;
+      if (!current) return;
+      applyProject({ ...current, assets: [...current.assets, asset] });
+      get().setStatus(translateText(get().language, "Imported {name}", { name: asset.name }));
     },
 
     addTextAsset(style, content = "") {

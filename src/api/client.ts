@@ -151,6 +151,162 @@ export async function deleteMedia(projectId: string, asset: Asset): Promise<void
   await unwrap<{ ok: boolean }>(await apiFetch(`${BASE}/media?${params}`, { method: "DELETE" }));
 }
 
+export interface StockSearchResult {
+  id: string;
+  kind: "image" | "video";
+  previewUrl: string;
+  downloadUrl: string;
+  width: number;
+  height: number;
+  duration?: number;
+  tags: string;
+  user: string;
+  pageURL: string;
+}
+
+/** Desktop/browser-server-backed only, same as Remove Object/Captions — Pixabay search is proxied
+ *  through this app's own server (see `stock/route.ts`'s own doc comment for why: the shared API key
+ *  never reaches the browser), which native has none of. */
+export async function searchStock(
+  kind: "image" | "video",
+  query: string,
+  page = 1
+): Promise<{ results: StockSearchResult[]; hasMore: boolean }> {
+  if (isNative) return { results: [], hasMore: false };
+  const params = new URLSearchParams({ type: kind, q: query, page: String(page) });
+  const response = await apiFetch(`${BASE}/stock?${params}`);
+  return unwrap<{ results: StockSearchResult[]; hasMore: boolean }>(response);
+}
+
+/** Downloads a chosen stock search result server-side and lands it as a real project `Asset` — same
+ *  destination shape `importMedia` produces for an uploaded file, just sourced from a URL instead of
+ *  a `File`. The name sent is a friendly one built from the result's own tags (Pixabay's asset ids
+ *  make poor display names on their own) — but the real EXTENSION always comes from `downloadUrl`
+ *  itself, never guessed: the server's own `importMediaBytes` classifies (and rejects) purely by
+ *  extension, so a synthetic name with no extension at all would fail to import every single time. */
+export async function importStockResult(projectId: string, result: StockSearchResult): Promise<Asset> {
+  const urlExt = result.downloadUrl.split(/[?#]/)[0].split(".").pop();
+  const ext = urlExt && urlExt.length <= 5 ? urlExt : result.kind === "video" ? "mp4" : "jpg";
+  const friendly = result.tags.split(",")[0]?.trim().replace(/[^a-zA-Z0-9-]+/g, "-") || "stock";
+  const response = await apiFetch(`${BASE}/stock?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url: result.downloadUrl, name: `${friendly}-${result.id}.${ext}` }),
+  });
+  const body = await unwrap<{ asset: Asset }>(response);
+  return body.asset;
+}
+
+/** Every aspect ratio the server (`ai-image/route.ts`) accepts — kept here too so the UI can build its
+ *  picker off one shared list rather than a second hand-copied one that could drift out of sync. */
+export const AI_IMAGE_ASPECT_RATIOS = ["9:16", "16:9", "1:1"] as const;
+export type AiImageAspectRatio = (typeof AI_IMAGE_ASPECT_RATIOS)[number];
+
+/** Generates one image from a text prompt via the server's Replicate-backed Flux Schnell route and
+ *  lands it as a real project `Asset` — a plain request/response, not a job+SSE watch, because the
+ *  route itself is synchronous (see `ai-image/route.ts`'s own comment on why generation is fast enough
+ *  not to need one). Desktop/browser-server-backed only, same as Remove Object/stock search/Captions. */
+export async function generateAiImage(projectId: string, prompt: string, aspectRatio: AiImageAspectRatio): Promise<Asset> {
+  if (isNative) throw new ApiRequestError("AI image generation isn't available on this device yet.", 501, "ai-image-unavailable");
+  const response = await apiFetch(`${BASE}/ai-image?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, aspectRatio }),
+  });
+  const body = await unwrap<{ asset: Asset }>(response);
+  return body.asset;
+}
+
+/** Whether AI image generation is usable right now (a Replicate token is configured server-side). */
+export async function aiImageAvailable(): Promise<boolean> {
+  if (isNative) return false;
+  try {
+    const response = await apiFetch(`${BASE}/ai-image`, { method: "HEAD" });
+    return response.status === 204;
+  } catch {
+    return false;
+  }
+}
+
+export interface AiVideoStarted {
+  jobId: string;
+}
+
+export interface AiVideoProgress {
+  status: "running" | "done" | "failed" | "cancelled";
+  stage: "predicting" | "downloading" | "importing";
+  progress: number;
+  error?: string;
+  /** Present once `status === "done"` — same "land it directly, no second round-trip" shape
+   *  `InpaintProgress.asset` already uses. */
+  asset?: Asset;
+}
+
+/** Starts an AI video generation job from a text prompt (`ai-video/route.ts`, Replicate's
+ *  `minimax/video-01`) — a real job+SSE flow, unlike AI image gen, because a single generation takes
+ *  minutes rather than seconds. Desktop/browser-server-backed only, same as Remove Object/export. */
+export async function startAiVideo(projectId: string, prompt: string): Promise<AiVideoStarted> {
+  if (isNative) throw new ApiRequestError("AI video generation isn't available on this device yet.", 501, "ai-video-unavailable");
+  const response = await apiFetch(`${BASE}/ai-video?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  return unwrap<AiVideoStarted>(response);
+}
+
+export async function cancelAiVideo(jobId: string): Promise<void> {
+  if (isNative) return;
+  // A cancel racing the job's own completion is normal, not an error worth surfacing — same
+  // reasoning as `cancelInpaint`/`cancelExport`.
+  await apiFetch(`${BASE}/ai-video?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
+}
+
+/** Subscribes to an AI video generation job's progress. Identical shape to `watchInpaint` — see its
+ *  own comment for why `EventSource` over polling. */
+export function watchAiVideo(
+  jobId: string,
+  onUpdate: (progress: AiVideoProgress) => void,
+  onError: (message: string) => void
+): () => void {
+  if (isNative) {
+    onError("AI video generation isn't available on this device yet.");
+    return () => {};
+  }
+  const source = new EventSource(sseUrl(`${BASE}/ai-video?jobId=${encodeURIComponent(jobId)}`));
+
+  source.onmessage = (event) => {
+    try {
+      const payload = JSON.parse(event.data) as AiVideoProgress;
+      onUpdate(payload);
+      if (payload.status !== "running") source.close();
+    } catch {
+      /* a malformed frame is not worth tearing the stream down over */
+    }
+  };
+
+  source.onerror = () => {
+    // See `watchInpaint`'s own comment on this exact check — `CONNECTING` means EventSource is
+    // already retrying a dropped connection on its own; only `CLOSED` means the browser gave up.
+    if (source.readyState === EventSource.CLOSED) {
+      onError("Lost contact with the job. It may still be running.");
+    }
+  };
+
+  return () => source.close();
+}
+
+/** Whether AI video generation is usable right now (a Replicate token is configured server-side). */
+export async function aiVideoAvailable(): Promise<boolean> {
+  if (isNative) return false;
+  try {
+    const response = await apiFetch(`${BASE}/ai-video`, { method: "HEAD" });
+    return response.status === 204;
+  } catch {
+    return false;
+  }
+}
+
 /** URL for the actual media bytes — what a `<video>`/`<audio>` element's `src` points at. The route
  *  behind it supports HTTP Range, which is what makes seeking possible (native uses
  *  `Capacitor.convertFileSrc`, whose local scheme handler supports Range natively too).

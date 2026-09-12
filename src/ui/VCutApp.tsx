@@ -50,7 +50,7 @@ import { ErrorBoundary } from "./ErrorBoundary.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
 import { TextToClipsDialog } from "./TextToClipsDialog.tsx";
 import { Inspector } from "./Inspector.tsx";
-import { MediaLibrary } from "./MediaLibrary.tsx";
+import { MediaPanel } from "./MediaPanel.tsx";
 import { FloatablePanel, type FloatRect } from "./FloatablePanel.tsx";
 import { MixerPanel } from "./MixerPanel.tsx";
 import { MobileSignInDialog } from "./MobileSignInDialog.tsx";
@@ -1822,7 +1822,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
             survive being unmounted). Reached on mobile via the toolbar's Media/Properties buttons
             instead, which swap the Timeline row's content below. */}
         <div className="hidden min-h-0 min-w-0 lg:col-start-1 lg:row-start-1 lg:block">
-          <MediaLibrary />
+          <MediaPanel />
         </div>
         <div className="hidden min-h-0 min-w-0 lg:col-start-3 lg:row-start-1 lg:block">
           <Inspector />
@@ -1835,7 +1835,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
             `mobileSheet`. */}
         <div className="row-start-2 min-h-0 min-w-0 lg:col-span-3 lg:row-start-2">
           {mobileSheet === "media" ? (
-            <MediaLibrary onAssetAdded={() => setMobileSheet(null)} />
+            <MediaPanel onAssetAdded={() => setMobileSheet(null)} />
           ) : mobileSheet === "inspector" ? (
             <Inspector />
           ) : bottomPanel === "mixer" ? (
