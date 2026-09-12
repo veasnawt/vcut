@@ -81,29 +81,6 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto p-3">
-      {/* Custom keyframes: Tailwind's own animation utilities cover spin/pulse/bounce/ping, not an
-          arbitrary shifting gradient — declared once here rather than in a host app's global CSS
-          because this package ships as source into THREE separate apps (web, mobile, desktop), each
-          with its own stylesheet; a self-contained rule is the only way every one of them gets it. */}
-      <style>{`
-        @keyframes vcut-ai-generating-sweep {
-          0%, 100% { background-position: 0% 50%; }
-          50% { background-position: 100% 50%; }
-        }
-        @keyframes vcut-ai-generating-pulse {
-          0%, 100% { transform: scale(1); opacity: 0.75; }
-          50% { transform: scale(1.18); opacity: 1; }
-        }
-        .vcut-ai-generating-bg {
-          background-image: linear-gradient(120deg, #1e2a4a, #5b21b6, #9d2a6b, #1e2a4a);
-          background-size: 300% 300%;
-          animation: vcut-ai-generating-sweep 3.2s ease-in-out infinite;
-        }
-        .vcut-ai-generating-icon {
-          animation: vcut-ai-generating-pulse 1.7s ease-in-out infinite;
-        }
-      `}</style>
-
       <div className="mb-3 flex shrink-0 overflow-hidden rounded-md border border-white/10">
         {(["image", "video"] as const).map((k) => (
           <button
@@ -228,17 +205,14 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                           <span className="line-clamp-5 text-[10px] leading-snug text-rose-300">{item.error}</span>
                         </div>
                       ) : (
-                        <div className="vcut-ai-generating-bg absolute inset-0 flex flex-col items-center justify-center gap-2 p-2">
-                          <svg viewBox="0 0 24 24" fill="currentColor" className="vcut-ai-generating-icon h-6 w-6 text-white/90">
-                            <path d="M12 3c.5 5 2 7.5 5.5 8.5-3.5 1-5 3.5-5.5 8.5-.5-5-2-7.5-5.5-8.5C10 10.5 11.5 8 12 3z" />
-                          </svg>
-                          <span className="text-center text-[10px] font-medium leading-snug text-white/85">
+                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black p-2">
+                          <span className="animate-pulse text-center text-[10px] font-medium leading-snug text-white/70">
                             {item.kind === "video" ? item.stage || t("Starting…") : t("Generating…")}
                           </span>
                           {item.kind === "video" && (
-                            <div className="h-1 w-3/4 overflow-hidden rounded-full bg-black/30">
+                            <div className="h-1 w-3/4 overflow-hidden rounded-full bg-white/10">
                               <div
-                                className="h-full rounded-full bg-white/85 transition-all"
+                                className="h-full rounded-full bg-white/60 transition-all"
                                 style={{ width: `${Math.round((item.progress ?? 0) * 100)}%` }}
                               />
                             </div>
