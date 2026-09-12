@@ -81,6 +81,33 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto p-3">
+      {/* Custom keyframes: Tailwind's own animation utilities cover spin/pulse/bounce/ping, not an
+          arbitrary moving mask — declared once here rather than in a host app's global CSS because
+          this package ships as source into THREE separate apps (web, mobile, desktop), each with its
+          own stylesheet; a self-contained rule is the only way every one of them gets it.
+          `.vcut-ai-generating-dots`: a dim dot grid is always visible (the plain `background-image`
+          below), and a SECOND, brighter copy of the exact same pattern sweeps a soft circular
+          "spotlight" of visibility across it — `mask-position` (not `background-position`, and not a
+          separately-positioned element) is what moves, so the bright dots always land exactly on top
+          of the dim ones with no alignment drift to manage. */}
+      <style>{`
+        @keyframes vcut-ai-generating-sweep {
+          0%, 100% { mask-position: -60% -60%; -webkit-mask-position: -60% -60%; }
+          50% { mask-position: 160% 160%; -webkit-mask-position: 160% 160%; }
+        }
+        .vcut-ai-generating-dots {
+          background-image: radial-gradient(circle, rgba(96, 165, 250, 0.9) 1px, transparent 1.5px);
+          background-size: 14px 14px;
+          mask-image: radial-gradient(circle, black 0%, black 25%, transparent 60%);
+          -webkit-mask-image: radial-gradient(circle, black 0%, black 25%, transparent 60%);
+          mask-size: 220% 220%;
+          -webkit-mask-size: 220% 220%;
+          mask-repeat: no-repeat;
+          -webkit-mask-repeat: no-repeat;
+          animation: vcut-ai-generating-sweep 4s ease-in-out infinite;
+        }
+      `}</style>
+
       <div className="mb-3 flex shrink-0 overflow-hidden rounded-md border border-white/10">
         {(["image", "video"] as const).map((k) => (
           <button
@@ -214,17 +241,25 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                           <span className="line-clamp-5 text-[10px] leading-snug text-rose-300">{item.error}</span>
                         </div>
                       ) : (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black p-2">
-                          <span className="animate-pulse text-center text-[10px] font-medium leading-snug text-white/70">
-                            {item.kind === "video" ? item.stage || t("Starting…") : t("Generating…")}
+                        <div className="absolute inset-0 bg-black">
+                          {/* Dim base layer: the same dot pattern the sweep below animates over, always
+                              fully visible so the grid reads immediately, not just wherever the sweep
+                              currently is. */}
+                          <div
+                            className="absolute inset-0"
+                            style={{
+                              backgroundImage: "radial-gradient(circle, rgba(96, 165, 250, 0.25) 1px, transparent 1.5px)",
+                              backgroundSize: "14px 14px",
+                            }}
+                          />
+                          <div className="vcut-ai-generating-dots absolute inset-0" />
+                          <span className="absolute left-2 top-2 text-[13px] font-semibold text-white">
+                            {item.kind === "video" ? t("Creating video") : t("Creating image")}
                           </span>
                           {item.kind === "video" && (
-                            <div className="h-1 w-3/4 overflow-hidden rounded-full bg-white/10">
-                              <div
-                                className="h-full rounded-full bg-white/60 transition-all"
-                                style={{ width: `${Math.round((item.progress ?? 0) * 100)}%` }}
-                              />
-                            </div>
+                            <span className="absolute bottom-2 right-2 rounded-full border border-white/10 bg-black/70 px-2 py-0.5 text-[11px] font-semibold text-sky-300">
+                              {Math.round((item.progress ?? 0) * 100)}%
+                            </span>
                           )}
                         </div>
                       )}
