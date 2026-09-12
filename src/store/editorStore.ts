@@ -932,10 +932,14 @@ export const useEditorStore = create<EditorState>((set, get) => {
       if (!projectId || !project) return null;
       set({ importing: true });
       try {
-        const asset = await api.generateAiImage(projectId, prompt, aspectRatio);
+        const generated = await api.generateAiImage(projectId, prompt, aspectRatio);
+        // `hiddenFromLibrary`, same marker `VoiceoverRecorder`'s own takes use: a generation belongs
+        // in the AI tab's own history (`AiGeneratePanel`'s own `history` state already shows it there),
+        // not duplicated into "My Media" too — `addAssetAtPlayhead` is still how it reaches the
+        // timeline, exactly like a hidden voiceover take does.
+        const asset = { ...generated, hiddenFromLibrary: true };
         const current = get().project;
         if (current) applyProject({ ...current, assets: [...current.assets, asset] });
-        get().setStatus(translateText(get().language, "Imported {name}", { name: asset.name }));
         return asset;
       } catch (err) {
         get().setStatus(err instanceof Error ? err.message : String(err), "error");
@@ -945,11 +949,13 @@ export const useEditorStore = create<EditorState>((set, get) => {
       }
     },
 
-    addGeneratedAsset(asset) {
+    addGeneratedAsset(generated) {
       const current = get().project;
       if (!current) return;
+      // See `generateAiImage`'s own identical comment — same reasoning, just for the job-based (video)
+      // generation path.
+      const asset = { ...generated, hiddenFromLibrary: true };
       applyProject({ ...current, assets: [...current.assets, asset] });
-      get().setStatus(translateText(get().language, "Imported {name}", { name: asset.name }));
     },
 
     addTextAsset(style, content = "") {

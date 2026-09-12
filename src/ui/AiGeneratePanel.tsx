@@ -30,10 +30,14 @@ function handleUpgradeClick() {
 type VideoPhase = "idle" | "running" | "done" | "failed" | "cancelled";
 
 /** One generation this session, oldest last — deliberately NOT a persisted server-side history (there's
- *  no route for it), just enough to answer "wait, did that actually work?" without hunting through "My
- *  Media": the entry appears the instant a generation STARTS (`status: "generating"`, so there's always
- *  a visible preview of the in-flight request, not just a spinner floating over an empty panel) and
- *  flips to its real thumbnail or an inline error once the request settles. */
+ *  no route for it). This is now the ONLY place a generation is visible: the store marks every
+ *  generated asset `hiddenFromLibrary` (see `generateAiImage`'s own comment in `editorStore.ts`), so it
+ *  never shows in "My Media" — the entry here appears the instant a generation STARTS
+ *  (`status: "generating"`, so there's always a visible preview of the in-flight request, not just a
+ *  spinner floating over an empty panel), flips to its real thumbnail or an inline error once the
+ *  request settles, and — since nothing else surfaces it once done — is also the only way to actually
+ *  use the result: double-click (or tap, in the mobile bottom sheet) adds it to the timeline, same as a
+ *  `MediaLibrary` tile. */
 interface HistoryItem {
   id: string;
   kind: "image" | "video";
@@ -63,6 +67,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   const importing = useEditorStore((s) => s.importing);
   const generateAiImage = useEditorStore((s) => s.generateAiImage);
   const addGeneratedAsset = useEditorStore((s) => s.addGeneratedAsset);
+  const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
   const { hosted, credits } = useHostedCreditsGate();
   const outOfCredits = hosted && credits !== null && credits.creditsRemaining <= 0;
 
@@ -100,7 +105,6 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
     if (asset) {
       patchHistory(id, { status: "done", asset });
       setPrompt("");
-      onAssetAdded?.();
     } else {
       patchHistory(id, { status: "failed", error: t("Generation failed") });
     }
@@ -131,7 +135,6 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
           if (update.status === "done" && update.asset) {
             addGeneratedAsset(update.asset);
             setPrompt("");
-            onAssetAdded?.();
           }
           if (update.status === "failed" && update.error) setError(update.error);
         },
@@ -235,7 +238,33 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
             <ul className="mt-3 grid grid-cols-2 gap-2">
               {history.map((item) => (
                 <li key={item.id}>
-                  <div className="flex w-full flex-col overflow-hidden rounded-lg bg-black/40 text-left">
+                  <div
+                    role={item.status === "done" ? "button" : undefined}
+                    tabIndex={item.status === "done" ? 0 : undefined}
+                    onDoubleClick={item.status === "done" && item.asset ? () => addAssetAtPlayhead(item.asset!.id) : undefined}
+                    // Same "plain tap is the only practical way to place a clip" reasoning
+                    // `MediaLibrary.tsx`'s own identical `onClick` documents — only wired when
+                    // `onAssetAdded` is passed (the mobile bottom-sheet usage).
+                    onClick={
+                      item.status === "done" && item.asset && onAssetAdded
+                        ? () => {
+                            addAssetAtPlayhead(item.asset!.id);
+                            onAssetAdded();
+                          }
+                        : undefined
+                    }
+                    onKeyDown={
+                      item.status === "done" && item.asset
+                        ? (e) => {
+                            if (e.key === "Enter") addAssetAtPlayhead(item.asset!.id);
+                          }
+                        : undefined
+                    }
+                    title={item.status === "done" ? t("Double-click to add at the playhead") : undefined}
+                    className={`flex w-full flex-col overflow-hidden rounded-lg bg-black/40 text-left ${
+                      item.status === "done" ? "cursor-pointer transition hover:ring-1 hover:ring-sky-400/60" : ""
+                    }`}
+                  >
                     <div className="relative aspect-video w-full overflow-hidden bg-black">
                       {item.status === "done" && item.asset ? (
                         <img
