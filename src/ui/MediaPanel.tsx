@@ -41,14 +41,22 @@ export function MediaPanel({ onAssetAdded }: { onAssetAdded?: () => void } = {})
           </button>
         ))}
       </div>
+      {/* All three stay mounted, toggled via `hidden` rather than conditionally rendered — an AI video
+          job can run for minutes, and `AiGeneratePanel`'s own `watchAiVideo` SSE subscription would
+          otherwise be torn down by its unmount the moment a user glanced at another tab mid-generation,
+          silently orphaning a job that was still running server-side with no way left to learn how it
+          finished. Keeping all three alive also means `StockSearchPanel`'s query and `AiGeneratePanel`'s
+          own generation history survive a tab switch instead of resetting. */}
       <div className="min-h-0 flex-1">
-        {mode === "library" ? (
+        <div hidden={mode !== "library"} className="h-full min-h-0">
           <MediaLibrary onAssetAdded={onAssetAdded} />
-        ) : mode === "stock" ? (
+        </div>
+        <div hidden={mode !== "stock"} className="h-full min-h-0">
           <StockSearchPanel onAssetAdded={onAssetAdded} />
-        ) : (
+        </div>
+        <div hidden={mode !== "generate"} className="h-full min-h-0">
           <AiGeneratePanel onAssetAdded={onAssetAdded} />
-        )}
+        </div>
       </div>
     </section>
   );

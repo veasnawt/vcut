@@ -197,16 +197,18 @@ export async function importStockResult(projectId: string, result: StockSearchRe
   return body.asset;
 }
 
-/** Every aspect ratio the server (`ai-image/route.ts`) accepts — kept here too so the UI can build its
- *  picker off one shared list rather than a second hand-copied one that could drift out of sync. */
-export const AI_IMAGE_ASPECT_RATIOS = ["9:16", "16:9", "1:1"] as const;
-export type AiImageAspectRatio = (typeof AI_IMAGE_ASPECT_RATIOS)[number];
+/** Every aspect ratio both AI generation routes accept (`ai-image/route.ts`'s Flux Schnell and
+ *  `ai-video/route.ts`'s Seedance 2.0 both happen to support exactly the same three) — kept here so
+ *  the UI can build its pickers off one shared list rather than two hand-copied ones that could drift
+ *  out of sync. */
+export const AI_ASPECT_RATIOS = ["9:16", "16:9", "1:1"] as const;
+export type AiAspectRatio = (typeof AI_ASPECT_RATIOS)[number];
 
 /** Generates one image from a text prompt via the server's Replicate-backed Flux Schnell route and
  *  lands it as a real project `Asset` — a plain request/response, not a job+SSE watch, because the
  *  route itself is synchronous (see `ai-image/route.ts`'s own comment on why generation is fast enough
  *  not to need one). Desktop/browser-server-backed only, same as Remove Object/stock search/Captions. */
-export async function generateAiImage(projectId: string, prompt: string, aspectRatio: AiImageAspectRatio): Promise<Asset> {
+export async function generateAiImage(projectId: string, prompt: string, aspectRatio: AiAspectRatio): Promise<Asset> {
   if (isNative) throw new ApiRequestError("AI image generation isn't available on this device yet.", 501, "ai-image-unavailable");
   const response = await apiFetch(`${BASE}/ai-image?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
@@ -243,14 +245,14 @@ export interface AiVideoProgress {
 }
 
 /** Starts an AI video generation job from a text prompt (`ai-video/route.ts`, Replicate's
- *  `minimax/video-01`) — a real job+SSE flow, unlike AI image gen, because a single generation takes
- *  minutes rather than seconds. Desktop/browser-server-backed only, same as Remove Object/export. */
-export async function startAiVideo(projectId: string, prompt: string): Promise<AiVideoStarted> {
+ *  `bytedance/seedance-2.0`) — a real job+SSE flow, unlike AI image gen, because a single generation
+ *  takes minutes rather than seconds. Desktop/browser-server-backed only, same as Remove Object/export. */
+export async function startAiVideo(projectId: string, prompt: string, aspectRatio: AiAspectRatio): Promise<AiVideoStarted> {
   if (isNative) throw new ApiRequestError("AI video generation isn't available on this device yet.", 501, "ai-video-unavailable");
   const response = await apiFetch(`${BASE}/ai-video?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, aspectRatio }),
   });
   return unwrap<AiVideoStarted>(response);
 }

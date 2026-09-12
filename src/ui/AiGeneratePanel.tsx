@@ -1,9 +1,20 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AI_IMAGE_ASPECT_RATIOS, aiImageAvailable, aiVideoAvailable, cancelAiVideo, startAiVideo, watchAiVideo, type AiImageAspectRatio, type AiVideoProgress } from "../api/client.ts";
+import {
+  AI_ASPECT_RATIOS,
+  aiImageAvailable,
+  aiVideoAvailable,
+  cancelAiVideo,
+  startAiVideo,
+  thumbnailUrl,
+  watchAiVideo,
+  type AiAspectRatio,
+  type AiVideoProgress,
+} from "../api/client.ts";
 import { startCheckout } from "../api/billing.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
+import type { Asset } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 
@@ -18,12 +29,34 @@ function handleUpgradeClick() {
 
 type VideoPhase = "idle" | "running" | "done" | "failed" | "cancelled";
 
+/** One generation this session, oldest last — deliberately NOT a persisted server-side history (there's
+ *  no route for it), just enough to answer "wait, did that actually work?" without hunting through "My
+ *  Media": the entry appears the instant a generation STARTS (`status: "generating"`, so there's always
+ *  a visible preview of the in-flight request, not just a spinner floating over an empty panel) and
+ *  flips to its real thumbnail or an inline error once the request settles. */
+interface HistoryItem {
+  id: string;
+  kind: "image" | "video";
+  prompt: string;
+  status: "generating" | "done" | "failed";
+  asset?: Asset;
+  error?: string;
+  /** Video only — image generation is a single request/response with no partial progress to show. */
+  progress?: number;
+  stage?: string;
+}
+
 /** AI image/video generation from a text prompt (`ai-image/route.ts` and `ai-video/route.ts`, both
  *  Replicate-backed) — a third `MediaPanel.tsx` tab alongside "My Media" and "Stock", same "self-
  *  contained panel, not woven into `MediaLibrary.tsx`'s own intricate logic" reasoning
  *  `StockSearchPanel.tsx` already follows. Hosted-only, credit-gated (see `useHostedCreditsGate`'s own
  *  doc comment) — there is no local/desktop self-serve provider-key UI for this, unlike Remove Object's
- *  `RemoveObjectSection`, matching Captions'/Kiri's own minimal hosted-only pattern instead. */
+ *  `RemoveObjectSection`, matching Captions'/Kiri's own minimal hosted-only pattern instead.
+ *
+ *  `MediaPanel.tsx` keeps this mounted (hidden, not unmounted) while another tab is active — a video
+ *  job's `watchAiVideo` subscription would otherwise be torn down by this component's own unmount the
+ *  moment a user glanced at "My Media" mid-generation, silently orphaning a job that was still running
+ *  server-side with no way left to learn how it finished. */
 export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } = {}) {
   const t = useTranslation();
   const projectId = useEditorStore((s) => s.projectId);
@@ -35,19 +68,15 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
 
   const [kind, setKind] = useState<"image" | "video">("image");
   const [prompt, setPrompt] = useState("");
-  const [aspectRatio, setAspectRatio] = useState<AiImageAspectRatio>("9:16");
+  const [aspectRatio, setAspectRatio] = useState<AiAspectRatio>("9:16");
   const [imageAvailable, setImageAvailable] = useState<boolean | null>(null);
   const [videoAvailable, setVideoAvailable] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
-  // Video-only job state — image generation is a plain request/response handled entirely by the
-  // store's own `importing` flag, same as `StockSearchPanel`'s single `importing` state; video needs
-  // its own richer state because a job takes minutes and reports real progress (see `ai-video/route.ts`'s
-  // own comment on why it's job+SSE while image gen is synchronous).
   const [videoPhase, setVideoPhase] = useState<VideoPhase>("idle");
-  const [videoStage, setVideoStage] = useState<string>("");
-  const [videoProgress, setVideoProgress] = useState(0);
   const jobIdRef = useRef<string | null>(null);
+  const videoItemIdRef = useRef<string | null>(null);
   const unwatchRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -57,14 +86,23 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
 
   useEffect(() => () => unwatchRef.current?.(), []);
 
+  function patchHistory(id: string, patch: Partial<HistoryItem>) {
+    setHistory((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }
+
   async function handleGenerateImage() {
     const trimmed = prompt.trim();
     if (!trimmed || !projectId) return;
     setError(null);
+    const id = crypto.randomUUID();
+    setHistory((prev) => [{ id, kind: "image", prompt: trimmed, status: "generating" }, ...prev]);
     const asset = await generateAiImage(trimmed, aspectRatio);
     if (asset) {
+      patchHistory(id, { status: "done", asset });
       setPrompt("");
       onAssetAdded?.();
+    } else {
+      patchHistory(id, { status: "failed", error: t("Generation failed") });
     }
   }
 
@@ -72,18 +110,24 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
     const trimmed = prompt.trim();
     if (!trimmed || !projectId) return;
     setError(null);
-    setVideoProgress(0);
-    setVideoStage("");
+    const id = crypto.randomUUID();
+    videoItemIdRef.current = id;
+    setHistory((prev) => [{ id, kind: "video", prompt: trimmed, status: "generating", progress: 0, stage: "" }, ...prev]);
     setVideoPhase("running");
     try {
-      const started = await startAiVideo(projectId, trimmed);
+      const started = await startAiVideo(projectId, trimmed, aspectRatio);
       jobIdRef.current = started.jobId;
       unwatchRef.current = watchAiVideo(
         started.jobId,
         (update: AiVideoProgress) => {
-          setVideoStage(update.stage);
-          setVideoProgress(update.progress);
           setVideoPhase(update.status);
+          patchHistory(id, {
+            progress: update.progress,
+            stage: update.stage,
+            ...(update.status === "done" && update.asset ? { status: "done", asset: update.asset } : null),
+            ...(update.status === "failed" ? { status: "failed", error: update.error ?? t("Generation failed") } : null),
+            ...(update.status === "cancelled" ? { status: "failed", error: t("Cancelled") } : null),
+          });
           if (update.status === "done" && update.asset) {
             addGeneratedAsset(update.asset);
             setPrompt("");
@@ -95,13 +139,16 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
       );
     } catch (err) {
       setVideoPhase("failed");
-      setError(err instanceof Error ? err.message : t("Could not start the job"));
+      const message = err instanceof Error ? err.message : t("Could not start the job");
+      setError(message);
+      patchHistory(id, { status: "failed", error: message });
     }
   }
 
   function stopVideo() {
     if (jobIdRef.current) void cancelAiVideo(jobIdRef.current);
     setVideoPhase("cancelled");
+    if (videoItemIdRef.current) patchHistory(videoItemIdRef.current, { status: "failed", error: t("Cancelled") });
   }
 
   if (!projectId) return null;
@@ -159,32 +206,20 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
             className="w-full resize-none rounded-md bg-white/5 px-2 py-1.5 text-[13px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60 disabled:opacity-60"
           />
 
-          {kind === "image" && (
-            <div className="mt-2 flex gap-1.5">
-              {AI_IMAGE_ASPECT_RATIOS.map((ratio) => (
-                <button
-                  key={ratio}
-                  onClick={() => setAspectRatio(ratio)}
-                  disabled={busy}
-                  className={`flex-1 rounded py-1 text-[11px] font-medium transition disabled:cursor-default disabled:opacity-60 ${
-                    aspectRatio === ratio ? "bg-sky-500 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"
-                  }`}
-                >
-                  {ratio}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {kind === "video" && videoBusy && (
-            <div className="mt-2 space-y-1.5">
-              <p className="text-[11px] text-white/50 capitalize">{videoStage || t("Starting…")}</p>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                <div className="h-full rounded-full bg-sky-400 transition-all" style={{ width: `${Math.round(videoProgress * 100)}%` }} />
-              </div>
-              <p className="text-[11px] text-white/35">{t("This can take a few minutes.")}</p>
-            </div>
-          )}
+          <div className="mt-2 flex gap-1.5">
+            {AI_ASPECT_RATIOS.map((ratio) => (
+              <button
+                key={ratio}
+                onClick={() => setAspectRatio(ratio)}
+                disabled={busy}
+                className={`flex-1 rounded py-1 text-[11px] font-medium transition disabled:cursor-default disabled:opacity-60 ${
+                  aspectRatio === ratio ? "bg-sky-500 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"
+                }`}
+              >
+                {ratio}
+              </button>
+            ))}
+          </div>
 
           {error && <p className="mt-2 text-[11px] leading-relaxed text-rose-300">{error}</p>}
 
@@ -195,6 +230,49 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
           >
             {kind === "image" ? (busy ? t("Generating…") : t("Generate image")) : videoBusy ? t("Cancel") : t("Generate video")}
           </button>
+
+          {history.length > 0 && (
+            <ul className="mt-3 grid grid-cols-2 gap-2">
+              {history.map((item) => (
+                <li key={item.id}>
+                  <div className="flex w-full flex-col overflow-hidden rounded-lg bg-black/40 text-left">
+                    <div className="relative aspect-video w-full overflow-hidden bg-black">
+                      {item.status === "done" && item.asset ? (
+                        <img
+                          src={thumbnailUrl(projectId, item.asset) ?? ""}
+                          alt=""
+                          className="h-full w-full object-cover"
+                          draggable={false}
+                        />
+                      ) : item.status === "failed" ? (
+                        <div className="flex h-full w-full items-center justify-center bg-rose-950/30 p-2 text-center text-[10px] leading-snug text-rose-300">
+                          {item.error}
+                        </div>
+                      ) : (
+                        <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-white/5 p-2">
+                          <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/20 border-t-white/60" />
+                          <span className="text-center text-[10px] leading-snug text-white/50">
+                            {item.kind === "video" ? item.stage || t("Starting…") : t("Generating…")}
+                          </span>
+                          {item.kind === "video" && (
+                            <div className="h-1 w-3/4 overflow-hidden rounded-full bg-white/10">
+                              <div
+                                className="h-full rounded-full bg-sky-400 transition-all"
+                                style={{ width: `${Math.round((item.progress ?? 0) * 100)}%` }}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    <p className="truncate px-1.5 py-1 text-[10px] text-white/40" title={item.prompt}>
+                      {item.prompt}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </>
       )}
     </div>

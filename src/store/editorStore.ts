@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import * as api from "../api/client.ts";
 import { ApiRequestError } from "../api/client.ts";
-import type { AiImageAspectRatio, CaptionSegment, SourceRect, StockSearchResult } from "../api/client.ts";
+import type { AiAspectRatio, CaptionSegment, SourceRect, StockSearchResult } from "../api/client.ts";
 import type { Command } from "../commands/index.ts";
 import {
   AddCaptionsCommand,
@@ -374,7 +374,7 @@ export interface EditorState {
    *  `project.assets` — same "not undo-able, an import is more like an asset creation than a timeline
    *  edit" reasoning `importStockResult` itself follows, just sourced from a generation instead of a
    *  download. Returns `null` on failure (surfaced via `setStatus`), same convention. */
-  generateAiImage: (prompt: string, aspectRatio: AiImageAspectRatio) => Promise<Asset | null>;
+  generateAiImage: (prompt: string, aspectRatio: AiAspectRatio) => Promise<Asset | null>;
   /** Appends one already-generated `Asset` to `project.assets` — the "landing" half of AI video
    *  generation, kept separate from the "starting" half (`startAiVideo`/`watchAiVideo`, called directly
    *  from the dialog UI, same as Remove Object's own job lives in `Inspector.tsx` rather than the
