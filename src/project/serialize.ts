@@ -96,13 +96,11 @@ function parseTextStyle(raw: unknown): TextStyle {
  *  other optional field in `parseAsset` below is guarded — a malformed or missing value just means this
  *  particular asset's AI-generation history tile won't be rebuilt on load (see `editorStore.ts`'s own
  *  `load()`), never a reason to reject the whole project. */
-function isAiGeneration(value: unknown): value is { prompt: string; aspectRatio: string } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as Record<string, unknown>).prompt === "string" &&
-    typeof (value as Record<string, unknown>).aspectRatio === "string"
-  );
+function parseAiGeneration(value: unknown): { prompt: string; aspectRatio: string; model?: string } | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const r = value as Record<string, unknown>;
+  if (typeof r.prompt !== "string" || typeof r.aspectRatio !== "string") return undefined;
+  return { prompt: r.prompt, aspectRatio: r.aspectRatio, ...(typeof r.model === "string" ? { model: r.model } : null) };
 }
 
 function parseAsset(raw: Record<string, unknown>): Asset {
@@ -110,6 +108,7 @@ function parseAsset(raw: Record<string, unknown>): Asset {
   if (kind !== "video" && kind !== "audio" && kind !== "image" && kind !== "text" && kind !== "color") {
     throw new ProjectFormatError(`Project file has an unknown asset kind: ${kind}`);
   }
+  const aiGeneration = parseAiGeneration(raw.aiGeneration);
   // Optional fields are spread in only when actually present, never written as an explicit
   // `undefined`. `JSON.stringify` omits undefined values entirely, so setting them unconditionally
   // would make a restored project structurally differ from the one that was saved — the round trip
@@ -132,7 +131,7 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     importedAt: num(raw.importedAt, "asset import time", 0),
     ...(typeof raw.offline === "boolean" ? { offline: raw.offline } : null),
     ...(typeof raw.hiddenFromLibrary === "boolean" ? { hiddenFromLibrary: raw.hiddenFromLibrary } : null),
-    ...(isAiGeneration(raw.aiGeneration) ? { aiGeneration: raw.aiGeneration } : null),
+    ...(aiGeneration ? { aiGeneration } : null),
     ...(kind === "text" ? { textContent: str(raw.textContent, "text content", ""), textStyle: parseTextStyle(raw.textStyle) } : null),
     // Same "additive presentation data, not something that defines what the asset fundamentally IS"
     // spirit as `textContent`/`textStyle` above — a missing/malformed color falls back to black rather

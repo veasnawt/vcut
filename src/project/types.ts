@@ -69,7 +69,7 @@ export interface Asset {
    *  every past generation's tile vanish even though the real asset it produced was never lost — it
    *  was sitting right there in `project.assets`, just with nothing left connecting it back to "this
    *  came from a generation, here's the prompt that made it." */
-  aiGeneration?: { prompt: string; aspectRatio: string };
+  aiGeneration?: { prompt: string; aspectRatio: string; model?: string };
   /** Present only when `kind === "text"`. A text asset has no backing file — `relPath` is an empty
    *  string and `hasAudio` is always false — its "content" is this string, authored directly rather
    *  than imported. Lives on the ASSET (not the clip) for the same reason a video's pixels do: it's

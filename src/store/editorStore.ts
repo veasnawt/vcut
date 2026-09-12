@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import * as api from "../api/client.ts";
 import { ApiRequestError } from "../api/client.ts";
-import type { AiAspectRatio, AiVideoProgress, CaptionSegment, SourceRect, StockSearchResult } from "../api/client.ts";
+import type { AiAspectRatio, AiImageModel, AiVideoProgress, CaptionSegment, SourceRect, StockSearchResult } from "../api/client.ts";
 import type { Command } from "../commands/index.ts";
 import {
   AddCaptionsCommand,
@@ -72,6 +72,8 @@ export interface AiGenerationItem {
   error?: string;
   progress?: number;
   stage?: string;
+  /** Image only — which of `AI_IMAGE_MODELS` made (or is making) this one. */
+  model?: AiImageModel;
 }
 
 export interface EditorState {
@@ -395,14 +397,14 @@ export interface EditorState {
    *  throwing, so a caller never needs its own try/catch just to keep the UI responsive after one bad
    *  download. */
   importStockResult: (result: StockSearchResult) => Promise<Asset | null>;
-  /** Generates one image from a prompt (`ai-image/route.ts`, Replicate's Flux Schnell), tracking it as a
-   *  new `aiGenerations` entry throughout (see that field's own doc comment) and landing the result in
-   *  `project.assets` (`hiddenFromLibrary`, same reasoning `importFiles`'s own comment gives — a
-   *  generation belongs in the AI tab's own history, not duplicated into "My Media" too) once it
+  /** Generates one image from a prompt via one of `AI_IMAGE_MODELS` (`ai-image/route.ts`), tracking it
+   *  as a new `aiGenerations` entry throughout (see that field's own doc comment) and landing the
+   *  result in `project.assets` (`hiddenFromLibrary`, same reasoning `importFiles`'s own comment gives
+   *  — a generation belongs in the AI tab's own history, not duplicated into "My Media" too) once it
    *  succeeds. Failures patch that same entry to `status: "failed"` rather than throwing or returning
    *  anything — `AiGeneratePanel.tsx` reads the outcome back off `aiGenerations`, same as it does while
    *  the request is still running. */
-  generateAiImage: (prompt: string, aspectRatio: AiAspectRatio) => Promise<void>;
+  generateAiImage: (prompt: string, aspectRatio: AiAspectRatio, model: AiImageModel) => Promise<void>;
   /** Starts an AI video generation job (`ai-video/route.ts`, Replicate's Seedance 2.0) as a new
    *  `aiGenerations` entry, watches it via SSE, and patches that entry's progress/result as it comes in
    *  — the video equivalent of `generateAiImage` above, just job-based instead of a single request/
@@ -661,6 +663,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
               aspectRatio: a.aiGeneration.aspectRatio as AiAspectRatio,
               status: "done",
               asset: a,
+              ...(a.aiGeneration.model ? { model: a.aiGeneration.model as AiImageModel } : null),
             })),
         });
         syncUndoState();
@@ -988,21 +991,21 @@ export const useEditorStore = create<EditorState>((set, get) => {
       }
     },
 
-    async generateAiImage(prompt, aspectRatio) {
+    async generateAiImage(prompt, aspectRatio, model) {
       const { projectId, project } = get();
       if (!projectId || !project) return;
       const id = crypto.randomUUID();
-      set((state) => ({ aiGenerations: [{ id, kind: "image", prompt, aspectRatio, status: "generating" }, ...state.aiGenerations] }));
+      set((state) => ({ aiGenerations: [{ id, kind: "image", prompt, aspectRatio, model, status: "generating" }, ...state.aiGenerations] }));
       set({ importing: true });
       try {
-        const generated = await api.generateAiImage(projectId, prompt, aspectRatio);
+        const generated = await api.generateAiImage(projectId, prompt, aspectRatio, model);
         // `hiddenFromLibrary`, same marker `VoiceoverRecorder`'s own takes use: a generation belongs
         // in the AI tab's own `aiGenerations` history, not duplicated into "My Media" too —
         // `addAssetAtPlayhead` is still how it reaches the timeline, exactly like a hidden voiceover
         // take does. `aiGeneration`: see its own doc comment on `Asset` — without it, `load()` below
         // has no way to tell this asset apart from a hidden voiceover take once the page reloads and
         // this in-memory `aiGenerations` list itself is gone.
-        const asset = { ...generated, hiddenFromLibrary: true, aiGeneration: { prompt, aspectRatio } };
+        const asset = { ...generated, hiddenFromLibrary: true, aiGeneration: { prompt, aspectRatio, model } };
         const current = get().project;
         if (current) applyProject({ ...current, assets: [...current.assets, asset] });
         patchAiGeneration(id, { status: "done", asset });

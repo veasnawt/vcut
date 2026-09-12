@@ -204,16 +204,27 @@ export async function importStockResult(projectId: string, result: StockSearchRe
 export const AI_ASPECT_RATIOS = ["9:16", "16:9", "1:1"] as const;
 export type AiAspectRatio = (typeof AI_ASPECT_RATIOS)[number];
 
-/** Generates one image from a text prompt via the server's Replicate-backed Flux Schnell route and
- *  lands it as a real project `Asset` — a plain request/response, not a job+SSE watch, because the
- *  route itself is synchronous (see `ai-image/route.ts`'s own comment on why generation is fast enough
- *  not to need one). Desktop/browser-server-backed only, same as Remove Object/stock search/Captions. */
-export async function generateAiImage(projectId: string, prompt: string, aspectRatio: AiAspectRatio): Promise<Asset> {
+/** The three image-generation models `ai-image/route.ts` offers — kept here (rather than each caller
+ *  hand-copying its own list) for the same "one shared source, can't drift" reason `AI_ASPECT_RATIOS`
+ *  already is. Order matches the route's own MODELS record: default, premium, alternative. */
+export const AI_IMAGE_MODELS = ["flare", "sunburst", "nano-banana-2"] as const;
+export type AiImageModel = (typeof AI_IMAGE_MODELS)[number];
+
+/** Generates one image from a text prompt via the server's Replicate-backed route and lands it as a
+ *  real project `Asset` — a plain request/response, not a job+SSE watch, because every model the route
+ *  offers is fast enough not to need one (see `ai-image/route.ts`'s own comment). Desktop/browser-
+ *  server-backed only, same as Remove Object/stock search/Captions. */
+export async function generateAiImage(
+  projectId: string,
+  prompt: string,
+  aspectRatio: AiAspectRatio,
+  model: AiImageModel
+): Promise<Asset> {
   if (isNative) throw new ApiRequestError("AI image generation isn't available on this device yet.", 501, "ai-image-unavailable");
   const response = await apiFetch(`${BASE}/ai-image?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt, aspectRatio }),
+    body: JSON.stringify({ prompt, aspectRatio, model }),
   });
   const body = await unwrap<{ asset: Asset }>(response);
   return body.asset;

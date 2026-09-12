@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AI_ASPECT_RATIOS, aiImageAvailable, aiVideoAvailable, thumbnailUrl, type AiAspectRatio } from "../api/client.ts";
+import {
+  AI_ASPECT_RATIOS,
+  AI_IMAGE_MODELS,
+  aiImageAvailable,
+  aiVideoAvailable,
+  thumbnailUrl,
+  type AiAspectRatio,
+  type AiImageModel,
+} from "../api/client.ts";
 import { startCheckout } from "../api/billing.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
@@ -24,6 +32,16 @@ function handleUpgradeClick() {
 function cssAspectRatio(ratio: AiAspectRatio): string {
   return ratio.replace(":", " / ");
 }
+
+/** Display name for each of `AI_IMAGE_MODELS` — the model ids themselves (`ai-image/route.ts`'s own
+ *  `ModelId`) are already reasonable display strings for two of the three, but "flare"/"sunburst" alone
+ *  read as generic adjectives with no product identity; capitalized here rather than in the route,
+ *  which has no reason to care how its own ids are displayed. */
+const MODEL_LABELS: Record<AiImageModel, string> = {
+  flare: "Flare",
+  sunburst: "Sunburst",
+  "nano-banana-2": "Nano Banana 2",
+};
 
 /** AI image/video generation from a text prompt (`ai-image/route.ts` and `ai-video/route.ts`, both
  *  Replicate-backed) — a third `MediaPanel.tsx` tab alongside "My Media" and "Stock", same "self-
@@ -51,6 +69,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   const [kind, setKind] = useState<"image" | "video">("image");
   const [prompt, setPrompt] = useState("");
   const [aspectRatio, setAspectRatio] = useState<AiAspectRatio>("9:16");
+  const [model, setModel] = useState<AiImageModel>("flare");
   const [imageAvailable, setImageAvailable] = useState<boolean | null>(null);
   const [videoAvailable, setVideoAvailable] = useState<boolean | null>(null);
 
@@ -70,7 +89,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
     // Cleared immediately on submit, not on completion — same "send, then the input is yours again"
     // feel a chat input has, and it means a slow generation never leaves stale text sitting there.
     setPrompt("");
-    if (kind === "image") void generateAiImage(trimmed, aspectRatio);
+    if (kind === "image") void generateAiImage(trimmed, aspectRatio, model);
     else void startAiVideoGeneration(trimmed, aspectRatio);
   }
 
@@ -151,6 +170,30 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
             disabled={busy}
             className="w-full resize-none rounded-md bg-white/5 px-2 py-1.5 text-[13px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60 disabled:opacity-60"
           />
+
+          {/* Image only — video generation (`ai-video/route.ts`) has exactly one model, so there's
+              nothing to pick there. A vertical list, not a row like the aspect-ratio picker below:
+              "Nano Banana 2" doesn't fit legibly next to two others in this panel's own narrow width,
+              and a full-width row leaves room to show each model's ROLE alongside its name too. */}
+          {kind === "image" && (
+            <div className="mt-2 space-y-1">
+              {AI_IMAGE_MODELS.map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setModel(m)}
+                  disabled={busy}
+                  className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-[11px] font-medium transition disabled:cursor-default disabled:opacity-60 ${
+                    model === m ? "bg-sky-500 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"
+                  }`}
+                >
+                  <span>{MODEL_LABELS[m]}</span>
+                  <span className="text-[10px] font-normal opacity-70">
+                    {m === "flare" ? t("Default") : m === "sunburst" ? t("Premium") : t("Alternative")}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="mt-2 flex gap-1.5">
             {AI_ASPECT_RATIOS.map((ratio) => (
