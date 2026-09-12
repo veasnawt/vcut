@@ -14,6 +14,7 @@ import { startCheckout } from "../api/billing.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { Dropdown } from "./Dropdown.tsx";
+import { pickAssetForPlacement } from "./pickPlacement.ts";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 
 /** Same "single fire-and-navigate action, no special busy/error state" reasoning `Inspector.tsx`'s own
@@ -63,8 +64,6 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   const generateAiImage = useEditorStore((s) => s.generateAiImage);
   const startAiVideoGeneration = useEditorStore((s) => s.startAiVideoGeneration);
   const cancelAiVideoGeneration = useEditorStore((s) => s.cancelAiVideoGeneration);
-  const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
-  const armAsset = useEditorStore((s) => s.armAsset);
   const { hosted, credits } = useHostedCreditsGate();
   const outOfCredits = hosted && credits !== null && credits.creditsRemaining <= 0;
 
@@ -85,17 +84,10 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   // component instance (desktop column vs. mobile sheet) actually started the job.
   const videoBusy = aiGenerations.some((g) => g.kind === "video" && g.status === "generating");
 
-  // Same desktop-vs-mobile branch `StockSearchPanel.tsx`'s own `handlePick` makes, and for the
-  // identical reason — see `armedAssetId`'s own doc comment in editorStore.ts. `onAssetAdded` is only
-  // ever passed by the mobile sheet's own instance of this panel (see `MediaPanel.tsx`), never the
-  // permanent desktop column, so its presence alone is what distinguishes the two here.
+  // Same desktop-vs-mobile, empty-vs-non-empty-track branch `StockSearchPanel.tsx`'s own `handlePick`
+  // makes, via the shared `pickAssetForPlacement` — see its own doc comment.
   function pickGeneration(assetId: string) {
-    if (onAssetAdded) {
-      armAsset(assetId);
-      onAssetAdded();
-    } else {
-      addAssetAtPlayhead(assetId);
-    }
+    pickAssetForPlacement(assetId, onAssetAdded);
   }
 
   function handleGenerate() {

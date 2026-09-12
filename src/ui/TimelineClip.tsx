@@ -21,8 +21,10 @@ const TOUCH_DRAG_THRESHOLD = 8;
 /** How close (in pixels, so it feels the same at any zoom) an edge must come to a snap point.
  *  Widened from an earlier, tighter 8px — two same-kind clips (see `snapPoints`'s own `trackKind`
  *  filter) butting up against each other with zero gap is a very common, deliberate thing to want,
- *  and 8px asked for more precision than that gesture should realistically need. */
-const SNAP_PIXELS = 12;
+ *  and 8px asked for more precision than that gesture should realistically need. Widened AGAIN here,
+ *  from 12 — asked for directly ("make it stick easier"); mouse has no documented regression at any
+ *  width tried so far, unlike touch just below. */
+const SNAP_PIXELS = 16;
 /** Wider snap window for touch specifically — a fingertip is nowhere near as precise as a mouse
  *  cursor, so the same window that feels reliable with a mouse is easy to miss entirely with a
  *  finger. Originally widened all the way to 22px after dragging felt "imprecise" on touch — but
@@ -30,10 +32,14 @@ const SNAP_PIXELS = 12;
  *  clip on a real phone) — the window was wide enough that the clip would "stick" to a nearby snap
  *  point across a real range of continued finger movement, releasing only once the finger moved
  *  noticeably past it, so a clip regularly landed measurably away from wherever it visually looked
- *  like it was dropped ("wrong position" reported directly). 16px keeps meaningfully more tolerance
- *  than the mouse window (`SNAP_PIXELS`, 12px) for the same "fingertip, not a cursor" reason, without
- *  the sticky deadzone 22px produced. */
-const TOUCH_SNAP_PIXELS = 16;
+ *  like it was dropped ("wrong position" reported directly). Settled at 16 after that.
+ *
+ *  Nudged up again here, to 19 — a second, later "make it stick easier" request, deliberately kept
+ *  well short of the confirmed-bad 22 rather than jumping straight back to it. If this reintroduces
+ *  any of that same "let go somewhere I didn't expect" feeling on a real device, that's this constant
+ *  to bring back down, not a sign snapping itself needs different logic — the 22px episode above
+ *  suggests the ceiling for touch sits somewhere between 19 and 22, not higher. */
+const TOUCH_SNAP_PIXELS = 19;
 /** How long a touch has to hold still on a clip before it counts as "add/remove this from the
  *  selection" AND arms a move-drag (see `gateBehindLongPress` below) — touch has no Ctrl/Cmd key to
  *  hold for an additive click, so a deliberate long-press is what stands in for it. Deliberately

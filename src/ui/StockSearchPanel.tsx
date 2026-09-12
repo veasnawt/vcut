@@ -5,6 +5,7 @@ import { Play } from "@veasnawt/vicons";
 import { searchStock, type StockSearchResult } from "../api/client.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
+import { pickAssetForPlacement } from "./pickPlacement.ts";
 
 /** How long to wait after the user stops typing before actually searching — Wikimedia asks (its own API
  *  etiquette, not a hard-enforced key/quota the way Pixabay's own key was) for reasonable request rates,
@@ -22,8 +23,6 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
   const projectId = useEditorStore((s) => s.projectId);
   const importing = useEditorStore((s) => s.importing);
   const importStockResult = useEditorStore((s) => s.importStockResult);
-  const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
-  const armAsset = useEditorStore((s) => s.armAsset);
 
   const [kind, setKind] = useState<"image" | "video">("image");
   const [query, setQuery] = useState("");
@@ -80,26 +79,15 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
 
   // Picking a result lands it on the timeline in one step rather than just into "My Media" for a
   // second step to actually use it — a search result is something the user just decided they want IN
-  // the project. On desktop (`onAssetAdded` absent — this instance is the permanent sidebar column,
-  // Timeline already visible right there) that still means straight to the playhead, same as always.
-  // On mobile (`onAssetAdded` present — this instance is the sheet that currently covers the whole
-  // Timeline, per `onAssetAdded`'s own doc comment) it ARMS the asset instead: closes the sheet and
-  // lets the user tap exactly where on the timeline it should land, rather than guessing blind at
-  // wherever the playhead happened to be left — see `armedAssetId`'s own doc comment in
-  // editorStore.ts for the full reasoning, and `AiGeneratePanel.tsx`'s identical branch on its tiles.
+  // the project. `pickAssetForPlacement` (see its own doc comment) is what decides immediate-at-
+  // playhead vs. arm-for-later between desktop and mobile, and — on mobile — between an empty and a
+  // non-empty target track.
   async function handlePick(result: StockSearchResult) {
     if (!projectId || importingId) return;
     setImportingId(result.id);
     const asset = await importStockResult(result);
     setImportingId(null);
-    if (asset) {
-      if (onAssetAdded) {
-        armAsset(asset.id);
-        onAssetAdded();
-      } else {
-        addAssetAtPlayhead(asset.id);
-      }
-    }
+    if (asset) pickAssetForPlacement(asset.id, onAssetAdded);
   }
 
   if (!projectId) return null;

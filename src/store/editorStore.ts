@@ -494,6 +494,17 @@ export interface EditorState {
    *  was actually added — no such asset, no unlocked track of the right kind); every caller besides
    *  `commitComposedText` ignores the return value, unaffected by it existing. */
   addAssetAtPlayhead: (assetId: string, trackId?: string, options?: { avoidOverlap?: boolean }) => string | null;
+  /** Whether `assetId` would land on a track that ALREADY has at least one clip on it, using the exact
+   *  same track-resolution `addAssetAtPlayhead` itself does (falling back to the first unlocked track
+   *  of the matching kind when there's no compatible `activeTrackId`) — kept in sync with that
+   *  function deliberately, not just coincidentally similar, since `MediaLibrary.tsx`/
+   *  `StockSearchPanel.tsx`/`AiGeneratePanel.tsx`'s own `pickAssetForPlacement` (`ui/pickPlacement.ts`)
+   *  uses this to decide whether a mobile pick should arm for placement or land immediately: an EMPTY
+   *  track has nothing to aim relative to or risk overlapping, so arming would only add a step for no
+   *  benefit there. `false` (not an error) when the asset/track can't be resolved at all — the same
+   *  "nothing to arm against" conclusion either way; `addAssetAtPlayhead` itself is still what surfaces
+   *  a real "no unlocked track" failure when the caller actually tries to place. */
+  hasClipsOnTargetTrack: (assetId: string) => boolean;
   /** Duplicates every currently-selected clip (see `DuplicateClipsCommand`'s own doc comment for
    *  exactly where each copy lands and why) as one undo-able step, then selects the fresh copies —
    *  the same "the thing you just created is what's now selected" behavior `commitComposedText` and a
@@ -1325,6 +1336,20 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const command = new AddClipCommand(target, assetId, start);
       get().run(command);
       return command.clipId;
+    },
+
+    hasClipsOnTargetTrack(assetId) {
+      const { project, activeTrackId } = get();
+      if (!project) return false;
+      const asset = project.assets.find((a) => a.id === assetId);
+      if (!asset) return false;
+      const wantedKind = trackKindForAsset(asset);
+      const target =
+        activeTrackId && project.sequence.tracks.find((t) => t.id === activeTrackId)?.kind === wantedKind
+          ? activeTrackId
+          : project.sequence.tracks.find((t) => t.kind === wantedKind && !t.locked)?.id;
+      const track = target ? project.sequence.tracks.find((t) => t.id === target) : undefined;
+      return Boolean(track && track.clips.length > 0);
     },
 
     duplicateSelectedClips() {

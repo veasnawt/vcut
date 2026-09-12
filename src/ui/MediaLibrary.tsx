@@ -2,7 +2,7 @@
 
 import React, { useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Art, Close, Image as ImageIcon, Music, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
+import { Add, Art, Close, Image as ImageIcon, Music, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
 import { thumbnailUrl } from "../api/client.ts";
 import { AddClipCommand } from "../commands/index.ts";
 import { translateText } from "../i18n/translations.ts";
@@ -14,6 +14,7 @@ import { formatDuration } from "../timeline/time.ts";
 import { Dropdown } from "./Dropdown.tsx";
 import { ImportSourceMenu } from "./ImportSourceMenu.tsx";
 import { MediaPreviewModal } from "./MediaPreviewModal.tsx";
+import { pickAssetForPlacement } from "./pickPlacement.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 
 /** Which asset kinds `MediaPreviewModal` actually has real media to show — text/color have no backing
@@ -299,8 +300,9 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
           made this panel different from its two siblings: back when the tab strip said "My Media", a
           second "Media" heading directly under it read as a distinct, useful label; once the tab itself
           was shortened to "Media" (`MediaPanel.tsx`), this became the exact same word repeated twice in
-          a row with nothing to justify keeping it. Import now shares the search row instead of a
-          separate header row of its own. */}
+          a row with nothing to justify keeping it. Import used to share this row as its own labeled
+          button — now the FIRST tile in the list below instead (see its own comment), so this row is
+          just search + sort. */}
       <div className="flex gap-2 border-b border-white/10 px-3 py-2">
         <input
           value={query}
@@ -323,27 +325,6 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
             { value: "duration", label: t("Length") },
           ]}
         />
-        <div className="relative shrink-0">
-          <button
-            ref={importButtonRef}
-            // Native platforms get a choice (Photos vs Files) since there's a real device photo/video
-            // library to offer alongside the file browser; web/desktop only ever had "Files" to begin
-            // with, so the button there keeps going straight to the file input, unchanged.
-            onClick={() => (IS_NATIVE ? setShowImportMenu((v) => !v) : inputRef.current?.click())}
-            disabled={importing}
-            className="rounded-md bg-white/10 px-2.5 py-1 text-xs font-medium text-white transition hover:bg-white/20 disabled:cursor-default disabled:opacity-50"
-          >
-            {importing ? t("Importing…") : t("Import")}
-          </button>
-          {showImportMenu && (
-            <ImportSourceMenu
-              anchorRef={importButtonRef}
-              onClose={() => setShowImportMenu(false)}
-              onPickPhotos={() => void pickFromPhotos()}
-              onPickFiles={() => inputRef.current?.click()}
-            />
-          )}
-        </div>
         <input
           ref={inputRef}
           type="file"
@@ -360,35 +341,76 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
       </div>
 
       <div className={`scrollbar-thin min-h-0 flex-1 overflow-y-auto p-2 ${dragOver ? "bg-sky-500/10 outline outline-2 -outline-offset-2 outline-dashed outline-sky-400/60" : ""}`}>
-        {assets.length === 0 ? (
-          <p className="px-2 py-8 text-center text-xs leading-relaxed text-white/40">
-            {/* Checked against VISIBLE assets (query aside), not `project.assets.length` directly —
-                otherwise a project holding only hidden voiceover takes or text clips (see the `assets`
-                memo's own filter above) would misreport "Nothing matches that search" with no search
-                query even active. */}
-            {project?.assets.some((a) => !a.hiddenFromLibrary && a.kind !== "text")
-              ? t("Nothing matches that search.")
-              : t("Drop video, audio, or images here — or use Import.")}
-          </p>
-        ) : (
-          // Masonry columns on mobile (title/description overlaid ON the thumbnail, natural aspect
-          // ratio per asset), the existing single-column list back at `lg`+ (small fixed 44×64
-          // thumbnail, name/description beside it) — a compact row was hard to tell apart at a glance
-          // on a phone and left a lot of the touch target as bare text; letting each tile take its own
-          // natural aspect ratio (instead of a fixed 16:9 crop) and packing them into columns is what
-          // actually uses the room a phone screen has, matching how every mobile photo/video picker
-          // presents a library. Desktop's list stays exactly as it was — that column is narrow enough
-          // that a multi-column grid there would make the thumbnails smaller, not bigger.
-          //
-          // `vcut-media-grid-container`/`vcut-media-grid` (defined once, at the end of this file, for
-          // the same reason `AiGeneratePanel.tsx`'s identical rule documents): a container query, not a
-          // viewport media query, so the column count responds to how much room THIS PANEL actually
-          // has rather than the browser window — `lg:flex lg:flex-col lg:gap-1` below still wins at the
-          // real desktop breakpoint regardless (switching to `display: flex` makes the `columns`
-          // property moot, so the two rules never fight over the same element).
-          <div className="vcut-media-grid-container lg:contents">
-            <ul className="vcut-media-grid gap-2 lg:flex lg:flex-col lg:gap-1">
-              {assets.map((asset) => (
+        {/* Masonry columns on mobile (title/description overlaid ON the thumbnail, natural aspect
+            ratio per asset), the existing single-column list back at `lg`+ (small fixed 44×64
+            thumbnail, name/description beside it) — a compact row was hard to tell apart at a glance
+            on a phone and left a lot of the touch target as bare text; letting each tile take its own
+            natural aspect ratio (instead of a fixed 16:9 crop) and packing them into columns is what
+            actually uses the room a phone screen has, matching how every mobile photo/video picker
+            presents a library. Desktop's list stays exactly as it was — that column is narrow enough
+            that a multi-column grid there would make the thumbnails smaller, not bigger.
+            //
+            `vcut-media-grid-container`/`vcut-media-grid` (defined once, at the end of this file, for
+            the same reason `AiGeneratePanel.tsx`'s identical rule documents): a container query, not a
+            viewport media query, so the column count responds to how much room THIS PANEL actually
+            has rather than the browser window — `lg:flex lg:flex-col lg:gap-1` below still wins at the
+            real desktop breakpoint regardless (switching to `display: flex` makes the `columns`
+            property moot, so the two rules never fight over the same element).
+            //
+            The list ALWAYS renders now, even with zero real assets — the Import tile below is its own
+            first item, not a separate button that used to live in the header row above, so there has
+            to be a list for it to be the first item OF. */}
+        <div className="vcut-media-grid-container lg:contents">
+          <ul className="vcut-media-grid gap-2 lg:flex lg:flex-col lg:gap-1">
+            {/* Import, as a tile matching every OTHER item's own shape instead of a separate labeled
+                button in the header row above — asked for directly: it reads as "one more thing in
+                this list" the same way a photo library's own "+" tile does, rather than a competing
+                control fighting Search/Sort for room in an already-tight header, especially on mobile.
+                A plain `<button>` (not `role="button"` on a `<div>` like the asset tiles below) since
+                this one has no separate drag/preview/remove sub-controls to coexist with — the whole
+                tile is one single action, so a real button covers it with no extra ARIA needed. */}
+            <li className="mb-2 break-inside-avoid lg:mb-0">
+              <div className="relative">
+                <button
+                  ref={importButtonRef}
+                  // Native platforms get a choice (Photos vs Files) since there's a real device photo/
+                  // video library to offer alongside the file browser; web/desktop only ever had
+                  // "Files" to begin with, so the button there keeps going straight to the file input,
+                  // unchanged.
+                  onClick={() => (IS_NATIVE ? setShowImportMenu((v) => !v) : inputRef.current?.click())}
+                  disabled={importing}
+                  title={t("Import video, audio, or images")}
+                  className="group flex w-full flex-col rounded-lg text-left transition hover:bg-white/10 focus:bg-white/10 focus:outline-none disabled:cursor-default disabled:opacity-50 lg:flex-row lg:items-center lg:gap-2.5 lg:p-1.5"
+                >
+                  {/* Square (1:1), not matched to any real asset's own ratio the way the tiles below
+                      are — there's no real media behind this one to derive a shape from, and a plain
+                      square reads clearly as "a slot to fill" among the varied shapes surrounding it. */}
+                  <div
+                    className="relative flex w-full shrink-0 items-center justify-center overflow-hidden rounded-lg border border-dashed border-white/25 bg-white/5 transition group-hover:border-sky-400/50 group-hover:bg-white/10 lg:h-11 lg:w-16 lg:rounded"
+                    style={{ aspectRatio: "1 / 1" }}
+                  >
+                    <Add size={22} className="text-white/50 transition group-hover:text-white/80" />
+                  </div>
+                  <p className="mt-1 truncate text-center text-[11px] font-medium text-white/70 lg:hidden">
+                    {importing ? t("Importing…") : t("Import")}
+                  </p>
+                  <div className="hidden min-w-0 lg:block lg:flex-1">
+                    <p className="truncate text-xs font-medium text-white/90">{importing ? t("Importing…") : t("Import")}</p>
+                    <p className="truncate text-[11px] text-white/45">{t("Video, audio, or image")}</p>
+                  </div>
+                </button>
+                {showImportMenu && (
+                  <ImportSourceMenu
+                    anchorRef={importButtonRef}
+                    onClose={() => setShowImportMenu(false)}
+                    onPickPhotos={() => void pickFromPhotos()}
+                    onPickFiles={() => inputRef.current?.click()}
+                  />
+                )}
+              </div>
+            </li>
+
+            {assets.map((asset) => (
                 <li key={asset.id} className="mb-2 break-inside-avoid lg:mb-0">
                   <div
                     role="button"
@@ -402,14 +424,9 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                     // drag onto, and touch has no double-tap equivalent to `onDoubleClick` above). Left
                     // unwired for the desktop persistent column, where a bare click choosing to do
                     // nothing (only double-click/drag add) is the established, unchanged behavior.
-                    onClick={
-                      onAssetAdded
-                        ? () => {
-                            addAssetAtPlayhead(asset.id);
-                            onAssetAdded();
-                          }
-                        : undefined
-                    }
+                    // `pickAssetForPlacement` (see its own doc comment) decides immediate-at-playhead
+                    // vs. arm-for-later depending on whether the target track already has clips.
+                    onClick={onAssetAdded ? () => pickAssetForPlacement(asset.id, onAssetAdded) : undefined}
                     onKeyDown={(e) => {
                       if (e.key === "Enter") addAssetAtPlayhead(asset.id);
                     }}
@@ -523,9 +540,22 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                   </div>
                 </li>
               ))}
-            </ul>
-          </div>
-        )}
+          </ul>
+
+          {/* Checked against VISIBLE assets (query aside), not `project.assets.length` directly —
+              otherwise a project holding only hidden voiceover takes or text clips (see the `assets`
+              memo's own filter above) would misreport "Nothing matches that search" with no search
+              query even active. Sits BELOW the list (the Import tile is still there, always) rather
+              than replacing it the way this used to — there's now always at least one real item (the
+              Import tile itself) to show regardless of how many real assets exist. */}
+          {assets.length === 0 && (
+            <p className="px-2 py-4 text-center text-xs leading-relaxed text-white/40">
+              {project?.assets.some((a) => !a.hiddenFromLibrary && a.kind !== "text")
+                ? t("Nothing matches that search.")
+                : t("Drop video, audio, or images here, or tap + to import.")}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Follows the pointer during an in-progress asset drag — the visual feedback native drag-and-
