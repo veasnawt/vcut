@@ -1772,6 +1772,13 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
             <UserMenu
               anchorRef={userMenuButtonRef}
               email={user?.email ?? null}
+              // `null` outside hosted mode (or before the check resolves) — same "nothing to show
+              // yet" treatment the header's own Pro-ring badge already gives `credits`. NOT a plain
+              // header readout (see this trigger button's own comment on why that was already tried
+              // and reverted) — this is one click deeper, inside the menu the email itself already
+              // lives in, asked for directly as a way to actually SEE the balance without bringing
+              // that earlier clutter back to the always-visible row.
+              credits={hosted ? credits : null}
               onOpenAccount={() => (window.location.href = "/account")}
               onSignOut={() => void signOut().then(() => (window.location.href = "/login"))}
               onClose={() => setShowUserMenu(false)}

@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Logout, Profile } from "@veasnawt/vicons";
+import type { BillingStatus } from "../api/billing.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 
 /** Same "compute from a rect, clamp to viewport, open below the anchor" shape as `ImportSourceMenu`'s
@@ -22,12 +23,17 @@ function popupPosition(anchor: DOMRect): { top: number; right: number } {
 export function UserMenu({
   anchorRef,
   email,
+  credits,
   onOpenAccount,
   onSignOut,
   onClose,
 }: {
   anchorRef: React.RefObject<HTMLElement | null>;
   email: string | null;
+  /** `null` outside hosted mode, or before the check resolves — see the header's own trigger button
+   *  for why the NUMBER lives here (one click deep) rather than back in the always-visible header a
+   *  plain readout was already tried and removed from. */
+  credits?: BillingStatus | null;
   onOpenAccount: () => void;
   onSignOut: () => void;
   onClose: () => void;
@@ -65,7 +71,16 @@ export function UserMenu({
       style={{ position: "fixed", top, right, width: 200 }}
       className="z-50 overflow-hidden rounded-lg border border-white/10 bg-[#181b22] py-1 shadow-2xl"
     >
-      {email && <p className="truncate border-b border-white/10 px-3 py-2 text-[11px] text-white/40">{email}</p>}
+      {(email || credits) && (
+        <div className="border-b border-white/10 px-3 py-2">
+          {email && <p className="truncate text-[11px] text-white/40">{email}</p>}
+          {credits && (
+            <p className="mt-0.5 text-[11px] text-white/60">
+              {t("{plan} · {n} credits left", { plan: credits.plan === "pro" ? t("Pro") : t("Free"), n: credits.creditsRemaining })}
+            </p>
+          )}
+        </div>
+      )}
       <button
         role="menuitem"
         onClick={() => {

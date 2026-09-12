@@ -36,6 +36,30 @@ export interface BillingStatus {
   creditsResetAt: string;
 }
 
+/** Real per-operation credit costs — MUST exactly match the server's own constants (each named in its
+ *  own comment below) or this becomes a UI that lies about what an action actually costs. Duplicated
+ *  here rather than fetched: these are fixed pricing facts, not per-user data, the same "change both
+ *  together" tradeoff `studios/vcut/app/api/vcut/_lib/credits.ts`'s own doc comment already accepts
+ *  for `spend_credits`'s Postgres-function duplicate of `FREE_CREDITS_PER_MONTH`/
+ *  `PRO_CREDITS_PER_MONTH`. Added because the cost of every credit-gated action was previously
+ *  invisible until either the balance visibly dropped or hit zero — asked for directly, so a user can
+ *  see what they're about to spend before spending it, not just be told afterward. */
+export const AI_IMAGE_CREDITS: Record<"flare" | "sunburst" | "nano-banana-2", number> = {
+  // Matches ai-image/route.ts's own MODELS[...].credits exactly.
+  flare: 4,
+  sunburst: 16,
+  "nano-banana-2": 21,
+};
+/** Matches ai-video/route.ts's own AI_VIDEO_CREDITS_PER_GENERATION. */
+export const AI_VIDEO_CREDITS_PER_GENERATION = 154;
+/** Matches inpaint/route.ts's own REMOVE_OBJECT_CREDITS_PER_SECOND — a per-second rate, not a flat
+ *  cost (see that constant's own comment: billed by however many seconds of the clip are processed,
+ *  with a one-second minimum). */
+export const REMOVE_OBJECT_CREDITS_PER_SECOND = 16;
+/** Matches captions/route.ts's own CAPTIONS_CREDITS_PER_MINUTE — a per-minute rate with a one-minute
+ *  minimum, same shape as Remove Object's own per-second rate above. */
+export const CAPTIONS_CREDITS_PER_MINUTE = 4;
+
 /** Answers "is the signed-in user currently Pro, and how many credits do they have left?" — the one
  *  call every platform makes to decide whether to show a premium feature, an "upgrade to Pro"
  *  prompt, or a "not enough credits, wait for your refill" message. A signed-out user (no Supabase

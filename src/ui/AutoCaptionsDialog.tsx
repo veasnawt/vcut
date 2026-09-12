@@ -14,8 +14,9 @@ import {
   type CaptionsProgress,
 } from "../api/client.ts";
 import type { Clip } from "../project/types.ts";
+import { clipDuration, findAsset, findClip, sequenceDuration } from "../project/createProject.ts";
 import type { TextStylePreset } from "../project/textStylePresets.ts";
-import { startCheckout } from "../api/billing.ts";
+import { CAPTIONS_CREDITS_PER_MINUTE, startCheckout } from "../api/billing.ts";
 import { extractCaptionCues, parseCaptionFile, serializeSrt, serializeVtt } from "../captions/captionFormats.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
@@ -68,6 +69,22 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
   // EVERY text track's clips (see `extractCaptionCues`'s own doc comment), not just auto-generated
   // ones — a hand-authored caption track is just as real a thing to export.
   const exportableCueCount = useEditorStore((s) => (!hasClipSelection && s.project ? extractCaptionCues(s.project).length : 0));
+  // Mirrors captions/route.ts's own real range computation EXACTLY (clip selection → sum of just the
+  // audio-having clips' own durations; whole-sequence → the full timeline length, not just its
+  // audio-having portions), so the estimate below never disagrees with what actually gets billed.
+  const estimatedSeconds = useEditorStore((s) => {
+    if (!s.project) return 0;
+    if (hasClipSelection && clipIds) {
+      return clipIds.reduce((sum, id) => {
+        const found = findClip(s.project!, id);
+        if (!found) return sum;
+        const asset = findAsset(s.project!, found.clip.assetId);
+        if (!asset?.hasAudio) return sum;
+        return sum + clipDuration(found.clip);
+      }, 0);
+    }
+    return sequenceDuration(s.project);
+  });
   const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const [available, setAvailable] = useState<boolean | null>(null);
@@ -459,6 +476,14 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
         </div>
 
         <div className="mt-5 flex shrink-0 items-center justify-end gap-2">
+          {/* mr-auto pushes this to the LEFT edge of the row, away from the two action buttons — a
+              cost estimate reads as context for the decision, not a third button competing for the
+              same visual slot. */}
+          {hosted && phase !== "running" && (
+            <span className="mr-auto text-[11px] text-white/35">
+              {t("~{n} credits", { n: Math.max(1, Math.ceil(estimatedSeconds / 60)) * CAPTIONS_CREDITS_PER_MINUTE })}
+            </span>
+          )}
           <button
             onClick={phase === "running" ? stop : onClose}
             className="rounded-md px-3 py-1.5 text-xs font-medium text-white/60 transition hover:bg-white/10 hover:text-white"

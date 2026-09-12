@@ -21,7 +21,7 @@ import {
   watchLocalSetup,
 } from "../api/client.ts";
 import type { CaptionsProgress, InpaintKeyStatus, InpaintProgress, InpaintProvider, LocalSetupProgress } from "../api/client.ts";
-import { startCheckout } from "../api/billing.ts";
+import { CAPTIONS_CREDITS_PER_MINUTE, REMOVE_OBJECT_CREDITS_PER_SECOND, startCheckout } from "../api/billing.ts";
 import {
   SetClipChromaKeyCommand,
   SetClipColorGradingCommand,
@@ -204,7 +204,15 @@ type CaptionsPhase = "idle" | "running" | "failed" | "cancelled";
  *  "configured or not." No separate "done" phase either, unlike Remove Object: there's no draw-a-new-
  *  region follow-up action to offer, so a successful run resets straight back to `"idle"` — the global
  *  status toast `landCaptions` already sets is the confirmation, not a second local one. */
-function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId: string | null }) {
+function AutoCaptionsSection({
+  clipId,
+  projectId,
+  clipDurationSeconds,
+}: {
+  clipId: string;
+  projectId: string | null;
+  clipDurationSeconds: number;
+}) {
   const t = useTranslation();
   const save = useEditorStore((s) => s.save);
   const landCaptions = useEditorStore((s) => s.landCaptions);
@@ -456,6 +464,14 @@ function AutoCaptionsSection({ clipId, projectId }: { clipId: string; projectId:
         )}
         {pickerTab === "animation" && <TextAnimationPickerGrid current={animation} onPick={setAnimation} />}
       </div>
+      {/* Matches captions/route.ts's own real billing formula exactly — a per-minute rate with a
+          one-minute minimum, computed off this clip's own duration since a per-clip run (unlike
+          `AutoCaptionsDialog.tsx`'s whole-sequence one) only ever transcribes the one clip. */}
+      {hosted && (
+        <p className="mb-1.5 text-[11px] text-white/35">
+          {t("~{n} credits", { n: Math.max(1, Math.ceil(clipDurationSeconds / 60)) * CAPTIONS_CREDITS_PER_MINUTE })}
+        </p>
+      )}
       <button
         onClick={() => void begin()}
         className="mt-3 w-full rounded bg-sky-500 py-1.5 text-[12px] font-semibold text-white transition hover:bg-sky-400"
@@ -921,6 +937,15 @@ function RemoveObjectSection({
               placeholder={t("Describe the background that should appear (optional)")}
               className="mt-2 w-full rounded bg-white/5 px-2.5 py-1.5 text-[12px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60"
             />
+          )}
+          {/* Estimated against the WHOLE clip's own duration, not the drawn region's size — see the
+              section's own opening comment: the same region is erased across every frame of the clip
+              regardless of how small a box was drawn, matching inpaint/route.ts's own real billing
+              formula (a per-second rate with a one-second minimum) exactly. */}
+          {hosted && (
+            <p className="mt-1.5 text-[11px] text-white/35">
+              {t("~{n} credits", { n: Math.ceil(Math.max(1, clipDurationSeconds)) * REMOVE_OBJECT_CREDITS_PER_SECOND })}
+            </p>
           )}
           <div className="mt-2 flex gap-2">
             <button onClick={() => void begin()} className="flex-1 rounded bg-sky-500 py-1.5 text-[12px] font-semibold text-white transition hover:bg-sky-400">
@@ -2070,7 +2095,7 @@ export function Inspector() {
                     onToggle={() => toggleSection("Auto Captions")}
                     pro={HOSTED}
                   >
-                    <AutoCaptionsSection clipId={clip.id} projectId={projectId} />
+                    <AutoCaptionsSection clipId={clip.id} projectId={projectId} clipDurationSeconds={clip.sourceOut - clip.sourceIn} />
                   </CollapsibleSection>
                 )}
 

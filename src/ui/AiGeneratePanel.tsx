@@ -10,7 +10,7 @@ import {
   type AiAspectRatio,
   type AiImageModel,
 } from "../api/client.ts";
-import { startCheckout } from "../api/billing.ts";
+import { AI_IMAGE_CREDITS, AI_VIDEO_CREDITS_PER_GENERATION, startCheckout } from "../api/billing.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { Dropdown } from "./Dropdown.tsx";
@@ -241,7 +241,10 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
               className="mt-2 w-full shrink-0 text-[11px]"
               options={AI_IMAGE_MODELS.map((m) => ({
                 value: m,
-                label: `${MODEL_LABELS[m]} · ${m === "flare" ? t("Default") : m === "sunburst" ? t("Premium") : t("Alternative")}`,
+                // Credit cost appended to every option, not just the selected one shown in the closed
+                // dropdown — the whole POINT is comparing models before picking, and Sunburst/Nano
+                // Banana 2 cost meaningfully more than the default (16/21 credits vs. Flare's 4).
+                label: `${MODEL_LABELS[m]} · ${m === "flare" ? t("Default") : m === "sunburst" ? t("Premium") : t("Alternative")} · ${t("{n} credits", { n: AI_IMAGE_CREDITS[m] })}`,
               }))}
             />
           )}
@@ -266,7 +269,13 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
             disabled={!prompt.trim() && !(kind === "video" && videoBusy)}
             className="mt-3 w-full shrink-0 rounded bg-sky-500 py-1.5 text-[12px] font-medium text-white transition hover:bg-sky-400 disabled:cursor-default disabled:opacity-50"
           >
-            {kind === "image" ? (busy ? t("Generating…") : t("Generate image")) : videoBusy ? t("Cancel") : t("Generate video")}
+            {kind === "image"
+              ? busy
+                ? t("Generating…")
+                : t("Generate image — {n} credits", { n: AI_IMAGE_CREDITS[model] })
+              : videoBusy
+                ? t("Cancel")
+                : t("Generate video — {n} credits", { n: AI_VIDEO_CREDITS_PER_GENERATION })}
           </button>
 
           {(() => {
