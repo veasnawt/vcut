@@ -22,6 +22,7 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
   const projectId = useEditorStore((s) => s.projectId);
   const importing = useEditorStore((s) => s.importing);
   const importStockResult = useEditorStore((s) => s.importStockResult);
+  const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
 
   const [kind, setKind] = useState<"image" | "video">("image");
   const [query, setQuery] = useState("");
@@ -76,12 +77,19 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, query]);
 
+  // Picking a result now lands it straight on the timeline (at the playhead), not just into "My
+  // Media" for a SECOND step to actually use it — a search result is something the user just decided
+  // they want IN the project, so making that take one click instead of two matches how `AiGeneratePanel`
+  // tiles behave too (see its own doc comment on the identical change there).
   async function handlePick(result: StockSearchResult) {
     if (!projectId || importingId) return;
     setImportingId(result.id);
     const asset = await importStockResult(result);
     setImportingId(null);
-    if (asset) onAssetAdded?.();
+    if (asset) {
+      addAssetAtPlayhead(asset.id);
+      onAssetAdded?.();
+    }
   }
 
   if (!projectId) return null;

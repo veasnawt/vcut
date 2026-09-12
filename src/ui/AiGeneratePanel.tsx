@@ -13,6 +13,7 @@ import {
 import { startCheckout } from "../api/billing.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
+import { Dropdown } from "./Dropdown.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 
 /** Same "single fire-and-navigate action, no special busy/error state" reasoning `Inspector.tsx`'s own
@@ -194,27 +195,24 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
           />
 
           {/* Image only — video generation (`ai-video/route.ts`) has exactly one model, so there's
-              nothing to pick there. A vertical list, not a row like the aspect-ratio picker below:
-              "Nano Banana 2" doesn't fit legibly next to two others in this panel's own narrow width,
-              and a full-width row leaves room to show each model's ROLE alongside its name too. */}
+              nothing to pick there. A single compact dropdown, not the three full-width buttons this
+              used to be: picking a model is a secondary, occasional decision (most generations should
+              just use the default), and giving it the same visual weight as the PROMPT and aspect
+              ratio — the two things every single generation actually needs — overstated how often
+              anyone would reach for it. Same `Dropdown` component `MediaLibrary.tsx`'s own sort control
+              uses, so it reads as "one more small setting," not a third prominent choice. */}
           {kind === "image" && (
-            <div className="mt-2 space-y-1">
-              {AI_IMAGE_MODELS.map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setModel(m)}
-                  disabled={busy}
-                  className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-[11px] font-medium transition disabled:cursor-default disabled:opacity-60 ${
-                    model === m ? "bg-sky-500 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"
-                  }`}
-                >
-                  <span>{MODEL_LABELS[m]}</span>
-                  <span className="text-[10px] font-normal opacity-70">
-                    {m === "flare" ? t("Default") : m === "sunburst" ? t("Premium") : t("Alternative")}
-                  </span>
-                </button>
-              ))}
-            </div>
+            <Dropdown
+              value={model}
+              onChange={setModel}
+              disabled={busy}
+              ariaLabel={t("Model")}
+              className="mt-2 w-full text-[11px]"
+              options={AI_IMAGE_MODELS.map((m) => ({
+                value: m,
+                label: `${MODEL_LABELS[m]} · ${m === "flare" ? t("Default") : m === "sunburst" ? t("Premium") : t("Alternative")}`,
+              }))}
+            />
           )}
 
           <div className="mt-2 flex gap-1.5">
@@ -264,15 +262,20 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                   <div
                     role={item.status === "done" ? "button" : undefined}
                     tabIndex={item.status === "done" ? 0 : undefined}
-                    onDoubleClick={item.status === "done" && item.asset ? () => addAssetAtPlayhead(item.asset!.id) : undefined}
-                    // Same "plain tap is the only practical way to place a clip" reasoning
-                    // `MediaLibrary.tsx`'s own identical `onClick` documents — only wired when
-                    // `onAssetAdded` is passed (the mobile bottom-sheet usage).
+                    // A single click lands the result straight on the timeline (at the playhead), not
+                    // just into the (hidden, per `generateAiImage`'s own comment) library for a second
+                    // step to actually use it — a generation the user is looking at right after it
+                    // finished is something they've already decided they want IN the project, so this
+                    // is the same "one click, not two" change `StockSearchPanel.tsx`'s own `handlePick`
+                    // makes for the identical reason. Used to be double-click-only on desktop (a plain
+                    // click did nothing there at all) — that extra step no longer buys anything now
+                    // that this is the ONLY place a generation is visible to click on in the first
+                    // place (see `aiGenerations`'s own doc comment).
                     onClick={
-                      item.status === "done" && item.asset && onAssetAdded
+                      item.status === "done" && item.asset
                         ? () => {
                             addAssetAtPlayhead(item.asset!.id);
-                            onAssetAdded();
+                            onAssetAdded?.();
                           }
                         : undefined
                     }
@@ -283,7 +286,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                           }
                         : undefined
                     }
-                    title={item.status === "done" ? `${item.prompt}\n${t("Double-click to add at the playhead")}` : item.prompt}
+                    title={item.status === "done" ? `${item.prompt}\n${t("Click to add at the playhead")}` : item.prompt}
                     className={`flex w-full flex-col overflow-hidden rounded-lg bg-black/40 text-left ${
                       item.status === "done" ? "cursor-pointer transition hover:ring-1 hover:ring-sky-400/60" : ""
                     }`}
