@@ -88,6 +88,17 @@ export interface Asset {
    *  pipeline every other video-track clip already goes through — a color matte is just a video-track
    *  clip whose "source" is a solid fill instead of a decoded frame. */
   color?: string;
+  /** Set only when this asset's real file lives in the user's OWN account-wide media library
+   *  (`user_media` in Supabase — see that table's own migration comment) rather than this project's
+   *  own storage — the id of that library row. `relPath`/`thumbnailRelPath`/`filmstripRelPath`/
+   *  `waveformRelPath` are still populated exactly as they always are (so every existing consumer —
+   *  playback, export, thumbnail URLs — keeps working completely unchanged), just resolved against
+   *  the library's own media/thumbnails directories instead of this project's, wherever a file
+   *  actually gets read off disk (see `media/raw/route.ts`'s own branch on this field). Reusing the
+   *  SAME asset (imported or AI-generated once) across many projects is the whole point — see
+   *  `user_media`'s own migration comment for the full reasoning. Absent for a plain project-local
+   *  asset, exactly as every asset already was before this field existed. */
+  libraryMediaId?: string;
 }
 
 /** Visual style for a text asset. Simpler than `ClipTransform`: font size already controls "how big"

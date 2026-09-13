@@ -19,7 +19,7 @@ import type { Asset } from "../project/types.ts";
  *  otherwise hijack this modal's `fixed` positioning). */
 export function MediaPreviewModal({ asset, projectId, onClose }: { asset: Asset; projectId: string; onClose: () => void }) {
   const t = useTranslation();
-  const src = mediaUrl(projectId, asset.relPath);
+  const src = mediaUrl(projectId, asset.relPath, Boolean(asset.libraryMediaId));
 
   return createPortal(
     <div

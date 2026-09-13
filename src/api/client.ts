@@ -357,19 +357,24 @@ export async function aiVideoAvailable(): Promise<boolean> {
  *  last `onAuthStateChange` event is at most a few seconds stale, never actually wrong. Confirmed as
  *  a real production gap, not theoretical: every clip/thumbnail/waveform 401'd on the real vcut.io
  *  deploy before this existed. */
-export function mediaUrl(projectId: string, relPath: string): string {
+/** `library`: true for an asset carrying `Asset.libraryMediaId` — its real bytes live in the current
+ *  user's own account-wide `users/<id>/media` directory, not this project's own folder (see that
+ *  field's own doc comment), so the server has to be told which one to resolve `relPath` against. */
+export function mediaUrl(projectId: string, relPath: string, library = false): string {
   if (isNative) return nativeMediaUrl(projectId, relPath);
-  const base = `${BASE}/media/raw?projectId=${encodeURIComponent(projectId)}&relPath=${encodeURIComponent(relPath)}`;
+  const libraryParam = library ? "&library=1" : "";
+  const base = `${BASE}/media/raw?projectId=${encodeURIComponent(projectId)}&relPath=${encodeURIComponent(relPath)}${libraryParam}`;
   if (!HOSTED) return base;
   const token = getCachedAccessToken();
   return token ? `${base}&token=${encodeURIComponent(token)}` : base;
 }
 
 export function thumbnailUrl(projectId: string, asset: Asset): string | null {
+  const library = Boolean(asset.libraryMediaId);
   // Images are their own preview; everything else needs a generated thumbnail to have one.
-  if (asset.kind === "image") return mediaUrl(projectId, asset.relPath);
+  if (asset.kind === "image") return mediaUrl(projectId, asset.relPath, library);
   if (!asset.thumbnailRelPath) return null;
-  return `${mediaUrl(projectId, asset.thumbnailRelPath)}&kind=thumbnail`;
+  return `${mediaUrl(projectId, asset.thumbnailRelPath, library)}&kind=thumbnail`;
 }
 
 /** URL for one of the two bundled outro images (`OUTRO_LOGO_FILE`/`OUTRO_BG_FILE` in
@@ -386,7 +391,7 @@ export function outroAssetUrl(file: string): string {
  *  back to `thumbnailUrl`'s single frame. */
 export function filmstripUrl(projectId: string, asset: Asset): string | null {
   if (!asset.filmstripRelPath) return null;
-  return `${mediaUrl(projectId, asset.filmstripRelPath)}&kind=thumbnail`;
+  return `${mediaUrl(projectId, asset.filmstripRelPath, Boolean(asset.libraryMediaId))}&kind=thumbnail`;
 }
 
 /** A waveform PNG spanning the asset's FULL duration — `null` for anything that doesn't have one
@@ -395,11 +400,88 @@ export function filmstripUrl(projectId: string, asset: Asset): string | null {
  *  frontend doing any per-clip image generation of its own. */
 export function waveformUrl(projectId: string, asset: Asset): string | null {
   if (!asset.waveformRelPath) return null;
-  return `${mediaUrl(projectId, asset.waveformRelPath)}&kind=thumbnail`;
+  return `${mediaUrl(projectId, asset.waveformRelPath, Boolean(asset.libraryMediaId))}&kind=thumbnail`;
 }
 
 export function exportUrl(projectId: string, fileName: string): string {
   return `${mediaUrl(projectId, fileName)}&kind=export`;
+}
+
+/** One row of the current user's account-wide media library (`GET /api/vcut/media/library`) — every
+ *  import, AI generation, and stock download across every one of their projects, not just this one.
+ *  Field shape mirrors `Asset` closely on purpose: turning one into a placeable `Asset` (see
+ *  `assetFromLibraryMedia` below) is then just adding the two fields a library row doesn't need
+ *  (`importedAt`, `libraryMediaId`), not a real mapping. */
+export interface LibraryMediaItem {
+  id: string;
+  kind: "video" | "audio" | "image";
+  name: string;
+  relPath: string;
+  thumbnailRelPath: string | null;
+  filmstripRelPath: string | null;
+  waveformRelPath: string | null;
+  duration: number;
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  hasAudio: boolean;
+  sizeBytes: number;
+  aiGeneration: { prompt: string; aspectRatio: string; model?: string } | null;
+  createdAt: string;
+}
+
+/** Hosted-web only — desktop/local dev has no account for a cross-project library to belong to (every
+ *  asset there stays project-local, exactly as before this existed), so this simply never gets called
+ *  from that build. */
+export async function listLibraryMedia(): Promise<{ items: LibraryMediaItem[]; usedBytes: number; capBytes: number }> {
+  const response = await apiFetch(`${BASE}/media/library`);
+  return unwrap(response);
+}
+
+/** Turns a library row into a real, placeable project `Asset` — purely client-side, no round trip:
+ *  every field a fresh `Asset` needs is already sitting in the row `listLibraryMedia` returned. A new
+ *  random `id` (not the library row's own id) so two different projects placing the SAME library item
+ *  each get their own independent asset entry — `libraryMediaId` (not `id`) is what ties them back to
+ *  the one shared underlying file (see `Asset.libraryMediaId`'s own doc comment), and what
+ *  `findProjectsUsingMedia` scans for on the server when a library delete needs to warn about
+ *  cross-project usage. */
+export function assetFromLibraryMedia(item: LibraryMediaItem): Asset {
+  return {
+    id: crypto.randomUUID(),
+    kind: item.kind,
+    name: item.name,
+    relPath: item.relPath,
+    ...(item.thumbnailRelPath ? { thumbnailRelPath: item.thumbnailRelPath } : null),
+    ...(item.filmstripRelPath ? { filmstripRelPath: item.filmstripRelPath } : null),
+    ...(item.waveformRelPath ? { waveformRelPath: item.waveformRelPath } : null),
+    duration: item.duration,
+    ...(item.width != null ? { width: item.width } : null),
+    ...(item.height != null ? { height: item.height } : null),
+    ...(item.fps != null ? { fps: item.fps } : null),
+    hasAudio: item.hasAudio,
+    sizeBytes: item.sizeBytes,
+    importedAt: Date.now(),
+    ...(item.aiGeneration ? { aiGeneration: item.aiGeneration } : null),
+    libraryMediaId: item.id,
+  };
+}
+
+/** A non-forced delete finding the item still in use is an expected, common outcome — not a failure —
+ *  so it comes back as a real return value the caller branches on, rather than an exception to catch.
+ *  Pass `force: true` only on a SECOND call, after the caller already showed the user this result's own
+ *  `projects` list as a warning and they chose to proceed anyway. */
+export type LibraryDeleteResult = { deleted: true } | { deleted: false; usedByProjects: { id: string; name: string }[] };
+
+export async function deleteLibraryMedia(id: string, force = false): Promise<LibraryDeleteResult> {
+  const params = new URLSearchParams({ id });
+  if (force) params.set("force", "1");
+  const response = await apiFetch(`${BASE}/media/library?${params}`, { method: "DELETE" });
+  if (response.status === 409) {
+    const body = (await response.json()) as { projects: { id: string; name: string }[] };
+    return { deleted: false, usedByProjects: body.projects };
+  }
+  await unwrap(response);
+  return { deleted: true };
 }
 
 /** URL for one bundled `SFX_REGISTRY` catalog entry's audio file (`project/sfx.ts`'s own `file`) —

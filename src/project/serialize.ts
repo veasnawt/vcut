@@ -139,6 +139,12 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     ...(kind === "color"
       ? { color: typeof raw.color === "string" && /^#[0-9a-fA-F]{6}$/.test(raw.color) ? raw.color : "#000000" }
       : null),
+    // Confirmed the hard way, earlier in this same codebase's history (`aiGeneration` right above hit
+    // the identical gap once already): this whitelist parser silently drops any Asset field not
+    // explicitly listed here, including on the SERVER's own re-parse before writing a save to disk —
+    // so a new field missing from this list doesn't just fail to round-trip in a test, it silently
+    // vanishes from every real save regardless of what the client actually sent.
+    ...(typeof raw.libraryMediaId === "string" ? { libraryMediaId: raw.libraryMediaId } : null),
   };
 }
 

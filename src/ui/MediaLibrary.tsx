@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Add, Art, Close, Image as ImageIcon, Music, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
-import { thumbnailUrl } from "../api/client.ts";
+import { deleteLibraryMedia, HOSTED, listLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
 import { AddClipCommand } from "../commands/index.ts";
 import { translateText } from "../i18n/translations.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -11,6 +11,7 @@ import { fontById } from "../project/fonts.ts";
 import type { Asset } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
+import { ConfirmDialog } from "./ConfirmDialog.tsx";
 import { Dropdown } from "./Dropdown.tsx";
 import { ImportSourceMenu } from "./ImportSourceMenu.tsx";
 import { MediaPreviewModal } from "./MediaPreviewModal.tsx";
@@ -78,6 +79,33 @@ const DRAG_THRESHOLD = 4;
  *  drag-and-drop this replaces) since a mouse-drag was never ambiguous with scrolling to begin with. */
 const LONG_PRESS_MS = 450;
 
+/** A read-only stand-in `Asset` for a library row that ISN'T (yet) part of this project — just enough
+ *  shape for `AssetThumbnail`/`MediaPreviewModal`/`describe()` to render it. Deliberately NOT
+ *  `assetFromLibraryMedia` from `api/client.ts`: that one mints a fresh random `id` every call (correct
+ *  for actually PLACING a library item, where two projects placing the same file need independent asset
+ *  ids), which would break React's `key` and the "already added?" comparison below on every re-render.
+ *  This one keeps `id: item.id` stable instead — never appended to `project.assets`, so there's no
+ *  cross-project id collision risk to worry about here the way there would be for a real placement. */
+function pseudoAssetFromLibraryItem(item: LibraryMediaItem): Asset {
+  return {
+    id: item.id,
+    kind: item.kind,
+    name: item.name,
+    relPath: item.relPath,
+    ...(item.thumbnailRelPath ? { thumbnailRelPath: item.thumbnailRelPath } : null),
+    ...(item.filmstripRelPath ? { filmstripRelPath: item.filmstripRelPath } : null),
+    ...(item.waveformRelPath ? { waveformRelPath: item.waveformRelPath } : null),
+    duration: item.duration,
+    ...(item.width != null ? { width: item.width } : null),
+    ...(item.height != null ? { height: item.height } : null),
+    ...(item.fps != null ? { fps: item.fps } : null),
+    hasAudio: item.hasAudio,
+    sizeBytes: item.sizeBytes,
+    importedAt: new Date(item.createdAt).getTime(),
+    libraryMediaId: item.id,
+  };
+}
+
 function formatSize(bytes: number): string {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
   if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
@@ -131,6 +159,7 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
   const importFiles = useEditorStore((s) => s.importFiles);
   const removeAsset = useEditorStore((s) => s.removeAsset);
   const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
+  const addLibraryAssetToProject = useEditorStore((s) => s.addLibraryAssetToProject);
   const run = useEditorStore((s) => s.run);
   const setAssetDrag = useEditorStore((s) => s.setAssetDrag);
 
@@ -141,6 +170,77 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
   const [dragOver, setDragOver] = useState(false);
   const [showImportMenu, setShowImportMenu] = useState(false);
   const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
+
+  // "All my media" — every import/generation/stock download across every one of the user's OTHER
+  // projects too, not just this one (see `Asset.libraryMediaId`'s own doc comment). Hosted-only:
+  // `HOSTED` gates the toggle itself below, so this branch simply never activates on desktop/local dev.
+  const [isLibraryView, setIsLibraryView] = useState(false);
+  const [libraryItems, setLibraryItems] = useState<LibraryMediaItem[] | null>(null);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryUsage, setLibraryUsage] = useState<{ usedBytes: number; capBytes: number } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ item: LibraryMediaItem; usedByProjects: { id: string; name: string }[] } | null>(
+    null
+  );
+
+  useEffect(() => {
+    if (!isLibraryView || !HOSTED) return;
+    let cancelled = false;
+    setLibraryLoading(true);
+    listLibraryMedia()
+      .then((res) => {
+        if (cancelled) return;
+        setLibraryItems(res.items);
+        setLibraryUsage({ usedBytes: res.usedBytes, capBytes: res.capBytes });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        useEditorStore.getState().setStatus(err instanceof Error ? err.message : "Could not load your media library", "error");
+        setIsLibraryView(false);
+      })
+      .finally(() => {
+        if (!cancelled) setLibraryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isLibraryView]);
+
+  const libraryAssets = useMemo(() => {
+    const list = (libraryItems ?? []).filter((item) => item.name.toLowerCase().includes(query.trim().toLowerCase()));
+    return list.sort((a, b) => {
+      if (sortKey === "name") return a.name.localeCompare(b.name);
+      if (sortKey === "duration") return b.duration - a.duration;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+  }, [libraryItems, query, sortKey]);
+
+  /** `force`: the caller already showed `deleteConfirm`'s own warning and the user chose to proceed
+   *  anyway — see `deleteLibraryMedia`'s own doc comment on why a non-forced "in use" outcome is a
+   *  normal return value here, not a thrown error. */
+  async function handleDeleteLibraryItem(item: LibraryMediaItem, force = false) {
+    try {
+      const result = await deleteLibraryMedia(item.id, force);
+      if (!result.deleted) {
+        setDeleteConfirm({ item, usedByProjects: result.usedByProjects });
+        return;
+      }
+      setDeleteConfirm(null);
+      setLibraryItems((items) => items?.filter((i) => i.id !== item.id) ?? null);
+      setLibraryUsage((u) => (u ? { ...u, usedBytes: Math.max(0, u.usedBytes - item.sizeBytes) } : u));
+      // If this item was ALSO already placed in the current project, `removeAsset` cleans up that local
+      // reference too (and shows its own "Removed" status) — same guard against an in-use-on-the-
+      // timeline clip it already applies for a plain "remove from project" action, reused here rather
+      // than duplicated.
+      const placedAsset = project?.assets.find((a) => a.libraryMediaId === item.id);
+      if (placedAsset) {
+        void removeAsset(placedAsset);
+      } else {
+        useEditorStore.getState().setStatus(translateText(useEditorStore.getState().language, "Deleted {name}", { name: item.name }));
+      }
+    } catch (err) {
+      useEditorStore.getState().setStatus(err instanceof Error ? err.message : "Could not delete that media", "error");
+    }
+  }
 
   /** "Photos" side of the native Import menu — the OS's own photo/video library, via
    *  `@capacitor/camera`'s multi-picker. Historically an IMAGE-first API (its `pickImages` name is
@@ -308,6 +408,31 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
         }
       `}</style>
 
+      {/* Hosted-only: local/desktop dev has no per-user "account" for a cross-project library to
+          belong to at all — every asset stays project-local there exactly as before this existed, so
+          this row (and the toggle it exists to offer) would have nothing real to switch to. */}
+      {HOSTED && (
+        <div className="flex items-center gap-1 border-b border-white/10 px-3 py-1.5">
+          <button
+            onClick={() => setIsLibraryView(false)}
+            className={`rounded px-2 py-1 text-[11px] font-medium transition ${!isLibraryView ? "bg-white/15 text-white" : "text-white/50 hover:text-white/80"}`}
+          >
+            {t("This project")}
+          </button>
+          <button
+            onClick={() => setIsLibraryView(true)}
+            className={`rounded px-2 py-1 text-[11px] font-medium transition ${isLibraryView ? "bg-white/15 text-white" : "text-white/50 hover:text-white/80"}`}
+          >
+            {t("All my media")}
+          </button>
+          {isLibraryView && libraryUsage && (
+            <span className="ml-auto shrink-0 text-[10px] tabular-nums text-white/40">
+              {t("{used} / {cap}", { used: formatSize(libraryUsage.usedBytes), cap: formatSize(libraryUsage.capBytes) })}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* No title header of its own — same "the tab strip already names it" reasoning
           `StockSearchPanel.tsx`/`AiGeneratePanel.tsx` both document, and previously the one thing that
           made this panel different from its two siblings: back when the tab strip said "My Media", a
@@ -373,6 +498,7 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
             The list ALWAYS renders now, even with zero real assets — the Import tile below is its own
             first item, not a separate button that used to live in the header row above, so there has
             to be a list for it to be the first item OF. */}
+        {!isLibraryView && (
         <div className="vcut-media-grid-container lg:contents">
           <ul className="vcut-media-grid gap-2 lg:flex lg:flex-col lg:gap-1">
             {/* Import, as a tile matching every OTHER item's own shape instead of a separate labeled
@@ -574,6 +700,75 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
             </p>
           )}
         </div>
+        )}
+
+        {isLibraryView && (
+          <ul className="flex flex-col gap-1">
+            {libraryLoading && libraryItems === null && (
+              <li className="px-2 py-4 text-center text-xs text-white/40">{t("Loading your media…")}</li>
+            )}
+            {libraryItems !== null && libraryAssets.length === 0 && (
+              <li className="px-2 py-4 text-center text-xs leading-relaxed text-white/40">
+                {libraryItems.length === 0
+                  ? t("Nothing in your library yet — import, generate, or download stock media to build it up.")
+                  : t("Nothing matches that search.")}
+              </li>
+            )}
+            {libraryAssets.map((item) => {
+              const pseudoAsset = pseudoAssetFromLibraryItem(item);
+              const inProject = project?.assets.some((a) => a.libraryMediaId === item.id) ?? false;
+              return (
+                <li key={item.id} className="flex items-center gap-2.5 rounded-lg p-1.5 hover:bg-white/5">
+                  <div
+                    className="relative h-11 w-16 shrink-0 overflow-hidden rounded bg-black"
+                    style={{ aspectRatio: item.width && item.height ? `${item.width} / ${item.height}` : "16 / 9" }}
+                  >
+                    <AssetThumbnail asset={pseudoAsset} projectId={projectId} />
+                    {isPreviewable(item.kind) && (
+                      <button
+                        onClick={() => setPreviewAsset(pseudoAsset)}
+                        title={t("Preview {name}", { name: item.name })}
+                        aria-label={t("Preview {name}", { name: item.name })}
+                        className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white/80 transition hover:bg-black/80 hover:text-white"
+                      >
+                        <Play size={12} />
+                      </button>
+                    )}
+                    {item.kind !== "image" && (
+                      <span className="absolute bottom-0 right-0 rounded-tl bg-black/75 px-1 text-[10px] tabular-nums text-white/90">
+                        {formatDuration(item.duration)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium text-white/90">{item.name}</p>
+                    <p className="truncate text-[11px] text-white/45">{formatSize(item.sizeBytes)}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {inProject ? (
+                      <span className="px-2 py-1 text-[11px] font-medium text-emerald-300">{t("In this project")}</span>
+                    ) : (
+                      <button
+                        onClick={() => addLibraryAssetToProject(item)}
+                        className="rounded bg-sky-500/20 px-2 py-1 text-[11px] font-medium text-sky-300 transition hover:bg-sky-500/30"
+                      >
+                        {t("Add")}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => void handleDeleteLibraryItem(item)}
+                      title={t("Delete from library")}
+                      aria-label={t("Delete {name} from your library", { name: item.name })}
+                      className="rounded p-1 text-white/30 transition hover:bg-white/10 hover:text-rose-300"
+                    >
+                      <Close size={12} />
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
 
       {/* Follows the pointer during an in-progress asset drag — the visual feedback native drag-and-
@@ -591,6 +786,19 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
       )}
       {previewAsset && projectId && (
         <MediaPreviewModal asset={previewAsset} projectId={projectId} onClose={() => setPreviewAsset(null)} />
+      )}
+      {deleteConfirm && (
+        <ConfirmDialog
+          title={t("Delete from your library?")}
+          message={t("\"{name}\" is still used in {n} other project(s): {projects}. Deleting it removes it from those projects too.", {
+            name: deleteConfirm.item.name,
+            n: deleteConfirm.usedByProjects.length,
+            projects: deleteConfirm.usedByProjects.map((p) => p.name).join(", "),
+          })}
+          confirmLabel={t("Delete anyway")}
+          onConfirm={() => void handleDeleteLibraryItem(deleteConfirm.item, true)}
+          onCancel={() => setDeleteConfirm(null)}
+        />
       )}
     </section>
   );

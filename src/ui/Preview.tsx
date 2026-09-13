@@ -232,7 +232,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
         const state = useEditorStore.getState();
         const asset = state.project?.assets.find((a) => a.id === assetId);
         if (!asset || !state.projectId) return null;
-        return mediaUrl(state.projectId, asset.relPath);
+        return mediaUrl(state.projectId, asset.relPath, Boolean(asset.libraryMediaId));
       },
       lutUrlFor: (lutId) => {
         const state = useEditorStore.getState();

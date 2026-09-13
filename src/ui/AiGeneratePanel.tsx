@@ -242,9 +242,14 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
               options={AI_IMAGE_MODELS.map((m) => ({
                 value: m,
                 // Credit cost appended to every option, not just the selected one shown in the closed
-                // dropdown — the whole POINT is comparing models before picking, and Sunburst/Nano
-                // Banana 2 cost meaningfully more than the default (16/21 credits vs. Flare's 4).
-                label: `${MODEL_LABELS[m]} · ${m === "flare" ? t("Default") : m === "sunburst" ? t("Premium") : t("Alternative")} · ${t("{n} credits", { n: AI_IMAGE_CREDITS[m] })}`,
+                // dropdown — the whole POINT is comparing models before picking. The old "Default /
+                // Premium / Alternative" quality-tier labels are gone (confirmed a real, reported
+                // confusion once costs became visible: Nano Banana 2 is labeled "Alternative" but
+                // actually costs MORE than Sunburst's "Premium" — those words were never tied to
+                // actual per-model cost ranking in the first place). The credit number alone already
+                // says which is pricier, with no risk of contradicting itself the way a separate,
+                // unranked label could.
+                label: m === "flare" ? `${MODEL_LABELS[m]} · ${t("Default")} · ${t("{n} credits", { n: AI_IMAGE_CREDITS[m] })}` : `${MODEL_LABELS[m]} · ${t("{n} credits", { n: AI_IMAGE_CREDITS[m] })}`,
               }))}
             />
           )}

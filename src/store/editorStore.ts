@@ -449,6 +449,13 @@ export interface EditorState {
    *  running — mirrors `cancelInpaint`'s own "racing the job's own completion is normal" tolerance. */
   cancelAiVideoGeneration: () => void;
   removeAsset: (asset: Asset) => Promise<void>;
+  /** Places a user's account-wide library item (from `MediaLibrary.tsx`'s own "All my media" view — see
+   *  `api.LibraryMediaItem`'s own doc comment) into THIS project, as a real, placeable `Asset`. Pure and
+   *  synchronous (no server round trip): `api.assetFromLibraryMedia` already has everything it needs
+   *  from the row the library listing returned. Idempotent against a re-click: if this exact library
+   *  item is already in `project.assets` (`libraryMediaId` match), returns that existing asset instead
+   *  of adding a duplicate. */
+  addLibraryAssetToProject: (item: api.LibraryMediaItem) => Asset | null;
   /** Imports one file into the project's own reusable "My Sounds" library (`project.customSfx`) —
    *  same "not undo-able, an import is more like an asset creation than a timeline edit" reasoning
    *  `importFiles` itself already follows, just against a separate library array instead of
@@ -1198,7 +1205,15 @@ export const useEditorStore = create<EditorState>((set, get) => {
       }
 
       try {
-        await api.deleteMedia(projectId, asset);
+        // A library-backed asset (`asset.libraryMediaId` set — see that field's own doc comment)
+        // has no file living in THIS project's own folder to delete at all: the real file lives in
+        // the user's account-wide library, possibly still referenced by other projects. "Remove from
+        // project" for one of these means detaching the reference here ONLY — the same
+        // `api.deleteMedia` call this used to make unconditionally would, at best, no-op against a
+        // path that was never in this project's own media directory, and at worst risk touching an
+        // unrelated same-named file there instead. Actually deleting the shared file (with its own
+        // cross-project usage warning) is a separate, explicit library action, not this one.
+        if (!asset.libraryMediaId) await api.deleteMedia(projectId, asset);
         const current = get().project;
         if (current) applyProject({ ...current, assets: current.assets.filter((a) => a.id !== asset.id) });
         get().setStatus(translateText(get().language, "Removed {name}", { name: asset.name }));
@@ -1206,6 +1221,17 @@ export const useEditorStore = create<EditorState>((set, get) => {
         const message = err instanceof Error ? err.message : "Could not remove that media";
         get().setStatus(translateText(get().language, message), "error");
       }
+    },
+
+    addLibraryAssetToProject(item) {
+      const { project } = get();
+      if (!project) return null;
+      const existing = project.assets.find((a) => a.libraryMediaId === item.id);
+      if (existing) return existing;
+      const asset = api.assetFromLibraryMedia(item);
+      applyProject({ ...project, assets: [...project.assets, asset] });
+      get().setStatus(translateText(get().language, "Added {name}", { name: asset.name }));
+      return asset;
     },
 
     async importSfx(file) {
