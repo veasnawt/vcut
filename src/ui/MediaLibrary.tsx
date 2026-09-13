@@ -2,7 +2,7 @@
 
 import React, { useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Add, Art, Close, Image as ImageIcon, Music, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
+import { Add, Art, Check, Close, Image as ImageIcon, Music, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
 import { deleteLibraryMedia, HOSTED, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
 import { AddClipCommand } from "../commands/index.ts";
 import { translateText } from "../i18n/translations.ts";
@@ -701,22 +701,36 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                     <p className="truncate text-xs font-medium text-white/90">{item.name}</p>
                     <p className="truncate text-[11px] text-white/45">{formatSize(item.sizeBytes)}</p>
                   </div>
+                  {/* Both states below are the SAME fixed `h-6 w-6` footprint — a plain text label
+                      ("In this project") next to a short "Add" button used to leave the row's total
+                      width (and so the Delete button's own on-screen position) shifting from row to row
+                      depending purely on which state that ROW happened to be in (a real, reported
+                      "the X looks off" complaint). Two same-sized icon buttons side by side pins Delete
+                      to a consistent offset regardless of state. */}
                   <div className="flex shrink-0 items-center gap-1">
                     {inProject ? (
-                      <span className="px-2 py-1 text-[11px] font-medium text-emerald-300">{t("In this project")}</span>
+                      <span
+                        title={t("Already in this project")}
+                        aria-label={t("Already in this project")}
+                        className="flex h-6 w-6 items-center justify-center rounded text-emerald-300"
+                      >
+                        <Check size={14} />
+                      </span>
                     ) : (
                       <button
                         onClick={() => addLibraryAssetToProject(item)}
-                        className="rounded bg-sky-500/20 px-2 py-1 text-[11px] font-medium text-sky-300 transition hover:bg-sky-500/30"
+                        title={t("Add to this project")}
+                        aria-label={t("Add {name} to this project", { name: item.name })}
+                        className="flex h-6 w-6 items-center justify-center rounded bg-sky-500/20 text-sky-300 transition hover:bg-sky-500/30"
                       >
-                        {t("Add")}
+                        <Add size={14} />
                       </button>
                     )}
                     <button
                       onClick={() => void handleDeleteLibraryItem(item)}
                       title={t("Delete from library")}
                       aria-label={t("Delete {name} from your library", { name: item.name })}
-                      className="rounded p-1 text-white/30 transition hover:bg-white/10 hover:text-rose-300"
+                      className="flex h-6 w-6 items-center justify-center rounded text-white/30 transition hover:bg-white/10 hover:text-rose-300"
                     >
                       <Close size={12} />
                     </button>

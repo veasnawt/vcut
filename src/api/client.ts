@@ -35,7 +35,22 @@ export async function apiFetch(input: string, init?: RequestInit): Promise<Respo
   if (!token) return fetch(input, init);
   const headers = new Headers(init?.headers);
   headers.set("Authorization", `Bearer ${token}`);
-  return fetch(input, { ...init, headers });
+  const response = await fetch(input, { ...init, headers });
+  if (response.status !== 401) return response;
+  // A 401 here isn't necessarily a genuinely dead session — a real, reported bug: it can also be a
+  // stale-but-still-refreshable token, e.g. right after this same tab sat backgrounded for a while
+  // (Supabase's own auto-refresh ticker pauses while hidden — see `getSupabaseBrowserClient`'s own
+  // `visibilitychange` handler) and this very call raced that recovery. `getAccessToken()` re-checks
+  // real expiry and refreshes through Supabase's own logic if the refresh token is still valid — one
+  // retry with whatever that returns costs nothing when the session really IS dead (same token comes
+  // back, or none at all, and the original 401 is returned unchanged), but silently recovers the far
+  // more common case where it wasn't, instead of surfacing "session expired" to someone who was still
+  // actively using the app moments earlier.
+  const freshToken = await getAccessToken();
+  if (!freshToken || freshToken === token) return response;
+  const retryHeaders = new Headers(init?.headers);
+  retryHeaders.set("Authorization", `Bearer ${freshToken}`);
+  return fetch(input, { ...init, headers: retryHeaders });
 }
 
 /** Appends the current session token as a `?token=` query param, for the one class of caller that
