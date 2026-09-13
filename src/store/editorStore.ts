@@ -24,7 +24,7 @@ import { translateText } from "../i18n/translations.ts";
 import type { PlaybackEngine } from "../playback/PlaybackEngine.ts";
 import { createColorAsset, createTextAsset, findAsset, findClip, sequenceDuration } from "../project/createProject.ts";
 import { assetFromBundledSfx, type SfxDefinition } from "../project/sfx.ts";
-import { fillTemplateSlot } from "../project/template.ts";
+import { fillTemplateSlot, setTemplateClipText, trimTemplateSlot } from "../project/template.ts";
 import type { TextStylePreset } from "../project/textStylePresets.ts";
 import type { Asset, Clip, Project, TextStyle } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
@@ -471,6 +471,13 @@ export interface EditorState {
    *  `addLibraryAssetToProject`, a stock download, or an AI generation just produced) — there's no
    *  server round trip of its own here, the asset already exists by the time this is called. */
   fillTemplateSlot: (placeholderAssetId: string, asset: Asset) => void;
+  /** Shifts a picked video's own shared trim start point — `TemplateTrimDialog.tsx`'s only mutation.
+   *  See `trimTemplateSlot` (`project/template.ts`) for the full reasoning; this is a thin store
+   *  wrapper over that pure function, same shape as `fillTemplateSlot` just above. */
+  trimTemplateSlot: (assetId: string, sourceIn: number) => void;
+  /** Edits a text clip's own content in a template-origin project — `TemplatePreviewScreen.tsx`'s Text
+   *  tab, same thin-wrapper shape as `trimTemplateSlot` just above. */
+  setTemplateClipText: (assetId: string, textContent: string) => void;
   /** Imports one file into the project's own reusable "My Sounds" library (`project.customSfx`) —
    *  same "not undo-able, an import is more like an asset creation than a timeline edit" reasoning
    *  `importFiles` itself already follows, just against a separate library array instead of
@@ -1266,6 +1273,18 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const { project } = get();
       if (!project) return;
       applyProject(fillTemplateSlot(project, placeholderAssetId, asset));
+    },
+
+    trimTemplateSlot(assetId, sourceIn) {
+      const { project } = get();
+      if (!project) return;
+      applyProject(trimTemplateSlot(project, assetId, sourceIn));
+    },
+
+    setTemplateClipText(assetId, textContent) {
+      const { project } = get();
+      if (!project) return;
+      applyProject(setTemplateClipText(project, assetId, textContent));
     },
 
     async importSfx(file) {

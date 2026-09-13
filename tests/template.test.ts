@@ -4,8 +4,13 @@ import {
   fillTemplateSlot,
   buildProjectFromTemplate,
   sanitizeProjectForTemplate,
+  setTemplateClipText,
   templateAudioAssets,
+  templateClips,
+  templateSlotRequiredLength,
   templateSlots,
+  templateVideoAssets,
+  trimTemplateSlot,
 } from "../src/project/template.ts";
 import { addClip, addTrack, setClipTransform } from "../src/timeline/operations.ts";
 import {
@@ -417,5 +422,220 @@ describe("templateAudioAssets", () => {
     const clip = clipsOf(replaced, audioTrackId(replaced))[0];
     assert.equal(clip.assetId, "newsong");
     assert.equal(clip.sourceOut - clip.sourceIn, 30, "capped to the ORIGINAL clip's own required length, not the new track's full 45s");
+  });
+});
+
+describe("templateVideoAssets / templateSlotRequiredLength / trimTemplateSlot", () => {
+  it("lists the video/image assets currently placed, one row per shared source", () => {
+    const base = emptyProject([videoAsset("v1", 10), imageAsset("i1")]);
+    let project = addClip(base, videoTrackId(base), "v1", 0);
+    project = addClip(project, videoTrackId(project), "i1", 10);
+
+    const rows = templateVideoAssets(project);
+    assert.deepEqual(
+      rows.map((a) => a.id),
+      ["v1", "i1"]
+    );
+  });
+
+  it("groups a duplicated clip into one row, matching templateAudioAssets' own convention", () => {
+    const base = emptyProject([videoAsset("v1", 20)]);
+    let project = addClip(base, videoTrackId(base), "v1", 0);
+    project = addClip(project, videoTrackId(project), "v1", 15);
+    assert.equal(templateVideoAssets(project).length, 1);
+  });
+
+  it("returns [] for a project with no video/image content", () => {
+    const base = emptyProject([audioAsset()]);
+    const project = addClip(base, audioTrackId(base), "music", 0);
+    assert.deepEqual(templateVideoAssets(project), []);
+  });
+
+  it("templateSlotRequiredLength reads the clip's OWN current trim length", () => {
+    const base = emptyProject([videoAsset("v1", 20)]);
+    const project = addClip(base, videoTrackId(base), "v1", 0);
+    const clip = clipsOf(project, videoTrackId(project))[0];
+    // A 6-second trim out of a 20-second source.
+    const trimmed = {
+      ...project,
+      sequence: {
+        ...project.sequence,
+        tracks: project.sequence.tracks.map((t) =>
+          t.id === videoTrackId(project) ? { ...t, clips: [{ ...clip, sourceIn: 2, sourceOut: 8 }] } : t
+        ),
+      },
+    };
+    assert.equal(templateSlotRequiredLength(trimmed, "v1"), 6);
+  });
+
+  it("templateSlotRequiredLength is the LONGEST clip when a source is shared by clips of different lengths", () => {
+    const base = emptyProject([videoAsset("v1", 20)]);
+    let project = addClip(base, videoTrackId(base), "v1", 0);
+    project = addClip(project, videoTrackId(project), "v1", 10);
+    project = {
+      ...project,
+      sequence: {
+        ...project.sequence,
+        tracks: project.sequence.tracks.map((t) =>
+          t.id === videoTrackId(project)
+            ? { ...t, clips: t.clips.map((c, i) => (i === 0 ? { ...c, sourceIn: 0, sourceOut: 3 } : { ...c, sourceIn: 0, sourceOut: 7 })) }
+            : t
+        ),
+      },
+    };
+    assert.equal(templateSlotRequiredLength(project, "v1"), 7);
+  });
+
+  it("trimTemplateSlot shifts the shared start point while preserving each clip's own length", () => {
+    const base = emptyProject([videoAsset("v1", 20)]);
+    const project = addClip(base, videoTrackId(base), "v1", 0);
+    const clip = clipsOf(project, videoTrackId(project))[0];
+    const sized = {
+      ...project,
+      sequence: {
+        ...project.sequence,
+        tracks: project.sequence.tracks.map((t) => (t.id === videoTrackId(project) ? { ...t, clips: [{ ...clip, sourceIn: 0, sourceOut: 5 }] } : t)),
+      },
+    };
+
+    const trimmed = trimTemplateSlot(sized, "v1", 8);
+    const result = clipsOf(trimmed, videoTrackId(trimmed))[0];
+    assert.equal(result.sourceIn, 8);
+    assert.equal(result.sourceOut, 13, "length (5s) must be preserved, just shifted to start at 8");
+  });
+
+  it("trimTemplateSlot clamps sourceIn so the trim window never runs past the real asset's own duration", () => {
+    const base = emptyProject([videoAsset("v1", 10)]);
+    const project = addClip(base, videoTrackId(base), "v1", 0);
+    const clip = clipsOf(project, videoTrackId(project))[0];
+    const sized = {
+      ...project,
+      sequence: {
+        ...project.sequence,
+        tracks: project.sequence.tracks.map((t) => (t.id === videoTrackId(project) ? { ...t, clips: [{ ...clip, sourceIn: 0, sourceOut: 4 }] } : t)),
+      },
+    };
+
+    // Asked for sourceIn=9 on a 4s-long clip against a 10s source — 9+4=13 would overrun; clamps to
+    // the latest valid start (10 - 4 = 6) instead.
+    const trimmed = trimTemplateSlot(sized, "v1", 9);
+    const result = clipsOf(trimmed, videoTrackId(trimmed))[0];
+    assert.equal(result.sourceIn, 6);
+    assert.equal(result.sourceOut, 10);
+  });
+
+  it("trimTemplateSlot also clamps a negative sourceIn up to 0", () => {
+    const base = emptyProject([videoAsset("v1", 10)]);
+    const project = addClip(base, videoTrackId(base), "v1", 0);
+    const trimmed = trimTemplateSlot(project, "v1", -5);
+    const result = clipsOf(trimmed, videoTrackId(trimmed))[0];
+    assert.equal(result.sourceIn, 0);
+  });
+
+  it("trimTemplateSlot does nothing when nothing references the given asset id", () => {
+    const base = emptyProject([videoAsset("v1", 10)]);
+    const project = addClip(base, videoTrackId(base), "v1", 0);
+    const untouched = trimTemplateSlot(project, "nonexistent-id", 3);
+    assert.deepEqual(untouched, project);
+  });
+
+  it("trimTemplateSlot applies the SAME start point to every clip sharing the source, each keeping its own length", () => {
+    const base = emptyProject([videoAsset("v1", 20)]);
+    let project = addClip(base, videoTrackId(base), "v1", 0);
+    project = addClip(project, videoTrackId(project), "v1", 10);
+    project = {
+      ...project,
+      sequence: {
+        ...project.sequence,
+        tracks: project.sequence.tracks.map((t) =>
+          t.id === videoTrackId(project)
+            ? { ...t, clips: t.clips.map((c, i) => (i === 0 ? { ...c, sourceIn: 0, sourceOut: 3 } : { ...c, sourceIn: 0, sourceOut: 7 })) }
+            : t
+        ),
+      },
+    };
+
+    const trimmed = trimTemplateSlot(project, "v1", 5);
+    const [clipA, clipB] = clipsOf(trimmed, videoTrackId(trimmed));
+    assert.equal(clipA.sourceIn, 5);
+    assert.equal(clipA.sourceOut, 8, "3s length preserved");
+    assert.equal(clipB.sourceIn, 5);
+    assert.equal(clipB.sourceOut, 12, "7s length preserved");
+  });
+});
+
+describe("templateClips", () => {
+  it("lists video and text clips, in timeline order, one entry per CLIP INSTANCE", () => {
+    let base = emptyProject([videoAsset("v1", 5), textAsset("t1", "Hello")]);
+    base = addTrack(base, "text");
+    let project = addClip(base, textTrackId(base), "t1", 5);
+    project = addClip(project, videoTrackId(project), "v1", 0);
+
+    const entries = templateClips(project);
+    assert.deepEqual(
+      entries.map((e) => e.asset.id),
+      ["v1", "t1"],
+      "ordered by timelineStart, not by track or insertion order"
+    );
+  });
+
+  it("does NOT deduplicate a source shared by two clips — unlike templateVideoAssets, a filmstrip shows every instance", () => {
+    const base = emptyProject([videoAsset("v1", 10)]);
+    let project = addClip(base, videoTrackId(base), "v1", 0);
+    project = addClip(project, videoTrackId(project), "v1", 5);
+    assert.equal(templateClips(project).length, 2);
+  });
+
+  it("excludes audio — a template's music is a single global track, not a per-clip filmstrip entry", () => {
+    const base = emptyProject([videoAsset("v1", 5), audioAsset("music", 10)]);
+    let project = addClip(base, videoTrackId(base), "v1", 0);
+    project = addClip(project, audioTrackId(project), "music", 0);
+
+    const entries = templateClips(project);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].asset.kind, "video");
+  });
+
+  it("returns [] for a project with no video/text content", () => {
+    const base = emptyProject([audioAsset()]);
+    const project = addClip(base, audioTrackId(base), "music", 0);
+    assert.deepEqual(templateClips(project), []);
+  });
+});
+
+describe("setTemplateClipText", () => {
+  it("updates a text asset's own content", () => {
+    let base = emptyProject([textAsset("t1", "Old text")]);
+    base = addTrack(base, "text");
+    const project = addClip(base, textTrackId(base), "t1", 0);
+
+    const updated = setTemplateClipText(project, "t1", "New text");
+    assert.equal(updated.assets.find((a) => a.id === "t1")?.textContent, "New text");
+  });
+
+  it("updates every clip sharing the same text asset (a duplicated text clip)", () => {
+    let base = emptyProject([textAsset("t1", "Old text")]);
+    base = addTrack(base, "text");
+    let project = addClip(base, textTrackId(base), "t1", 0);
+    project = addClip(project, textTrackId(project), "t1", 5);
+
+    const updated = setTemplateClipText(project, "t1", "New text");
+    const [clipA, clipB] = clipsOf(updated, textTrackId(updated));
+    assert.equal(updated.assets.find((a) => a.id === clipA.assetId)?.textContent, "New text");
+    assert.equal(updated.assets.find((a) => a.id === clipB.assetId)?.textContent, "New text");
+  });
+
+  it("is a no-op when the given id isn't a text asset", () => {
+    const base = emptyProject([videoAsset("v1")]);
+    const project = addClip(base, videoTrackId(base), "v1", 0);
+    const untouched = setTemplateClipText(project, "v1", "New text");
+    assert.deepEqual(untouched, project);
+  });
+
+  it("is a no-op when the given id doesn't exist at all", () => {
+    const base = emptyProject([videoAsset("v1")]);
+    const project = addClip(base, videoTrackId(base), "v1", 0);
+    const untouched = setTemplateClipText(project, "nonexistent-id", "New text");
+    assert.deepEqual(untouched, project);
   });
 });

@@ -309,6 +309,119 @@ export function templateAudioAssets(project: Project): Asset[] {
   return rows;
 }
 
+/** Every distinct real video/image asset currently placed in a template-origin project — the "Trim"/
+ *  "Replace" rows `TemplatePreviewScreen.tsx` shows, one row per clip GROUP the same way
+ *  `templateAudioAssets` groups duplicated audio clips (and `sanitizeProjectForTemplate` originally
+ *  grouped duplicated video/image slots): a duplicated clip (the same picked footage placed more than
+ *  once) shares ONE row, not two — replacing or re-trimming "this footage" should affect every copy of
+ *  it at once. Ordered by each group's first clip's own `timelineStart`, matching `templateAudioAssets`'
+ *  own chronological convention. Read LIVE off whatever `project.assets`/clips currently are, same
+ *  "no separate still-open state to track" reasoning that function's own doc comment gives. */
+export function templateVideoAssets(project: Project): Asset[] {
+  const seen = new Set<string>();
+  const rows: Asset[] = [];
+  project.sequence.tracks
+    .flatMap((track) => track.clips.map((clip) => ({ track, clip })))
+    .filter(({ track }) => track.kind === "video")
+    .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart)
+    .forEach(({ clip }) => {
+      if (seen.has(clip.assetId)) return;
+      const asset = project.assets.find((a) => a.id === clip.assetId);
+      if (!asset || (asset.kind !== "video" && asset.kind !== "image")) return;
+      seen.add(clip.assetId);
+      rows.push(asset);
+    });
+  return rows;
+}
+
+/** The longest CURRENT trim length among every clip referencing `assetId` — what `trimTemplateSlot`
+ *  itself has to preserve per-clip (see its own doc comment) and what a trim UI needs to know before
+ *  it can even offer trimming at all: `asset.duration - templateSlotRequiredLength(...)` is exactly
+ *  how much room there is to shift the shared start point by. Zero room (an exact-length pick) means
+ *  there's nothing to trim — the caller's own job to hide the control in that case, this just answers
+ *  the question. Returns `0` if nothing currently references `assetId` (nothing to measure). */
+export function templateSlotRequiredLength(project: Project, assetId: string): number {
+  const lengths = project.sequence.tracks
+    .flatMap((t) => t.clips)
+    .filter((c) => c.assetId === assetId)
+    .map((c) => c.sourceOut - c.sourceIn);
+  return lengths.length > 0 ? Math.max(...lengths) : 0;
+}
+
+/** Shifts the shared trim START point for every clip currently referencing `assetId` — each clip
+ *  keeps its OWN length (`sourceOut - sourceIn`, exactly as `fillTemplateSlot` originally sized it),
+ *  just reading from `sourceIn` onward instead of the fixed `0` a slot fill always starts at. Lets a
+ *  video pick's own showcased portion be adjusted after the fact — asked for directly: the first few
+ *  seconds of a real video are rarely the most interesting part, and slot-filling always used to lock
+ *  in exactly those. Never meaningfully offered for an IMAGE pick (a still frame has no "which portion"
+ *  to choose — see `TemplatePreviewScreen.tsx`'s own video-only gating), but this function itself
+ *  doesn't need to know or care; `sourceOut = sourceIn + length` is well-defined either way.
+ *
+ *  `sourceIn` is clamped so EVERY clip in the group stays within the real asset's own duration — the
+ *  caller (`TemplateTrimDialog.tsx`) already constrains its own drag range using
+ *  `templateSlotRequiredLength` for the same reason; this is the safety net for that assumption ever
+ *  being violated, not the primary guard. */
+export function trimTemplateSlot(project: Project, assetId: string, sourceIn: number): Project {
+  const asset = project.assets.find((a) => a.id === assetId);
+  if (!asset) return project;
+  const maxLength = templateSlotRequiredLength(project, assetId);
+  if (maxLength === 0) return project;
+  const clampedSourceIn = Math.max(0, Math.min(sourceIn, asset.duration - maxLength));
+
+  const tracks = project.sequence.tracks.map((track) => ({
+    ...track,
+    clips: track.clips.map((clip) => {
+      if (clip.assetId !== assetId) return clip;
+      const length = clip.sourceOut - clip.sourceIn;
+      return { ...clip, sourceIn: clampedSourceIn, sourceOut: clampedSourceIn + length };
+    }),
+  }));
+
+  return { ...project, sequence: { ...project.sequence, tracks } };
+}
+
+/** One clip a template-origin project's per-clip editor (`TemplatePreviewScreen.tsx`'s filmstrip) can
+ *  show and act on, paired with the real asset it currently plays. */
+export interface TemplateClipEntry {
+  clip: Clip;
+  asset: Asset;
+}
+
+/** Every VIDEO/IMAGE/TEXT clip currently on the timeline, in timeline order — the filmstrip
+ *  `TemplatePreviewScreen.tsx`'s per-clip editor shows, one entry per CLIP INSTANCE, deliberately NOT
+ *  deduplicated by asset the way `templateVideoAssets` groups duplicated placements: a filmstrip is
+ *  meant to mirror the actual sequence a viewer sees, tap-for-tap, the same way a normal editor's own
+ *  Timeline never collapses two placements of the same source into one visual clip either. Selecting
+ *  an entry that shares its asset with another (a duplicated placement) still trims/replaces the WHOLE
+ *  group when acted on — see `fillTemplateSlot`/`trimTemplateSlot`'s own doc comments — this only
+ *  decides what's tappable in the first place.
+ *
+ *  Audio is deliberately excluded — a template's music is a single global track (`Asset.
+ *  templateBundledAudio`'s own doc comment), edited via `templateAudioAssets`'s own "Replace" row, not
+ *  a per-CLIP concept the way video/image/text are; there's nothing meaningful for a filmstrip tile to
+ *  represent for it. */
+export function templateClips(project: Project): TemplateClipEntry[] {
+  return project.sequence.tracks
+    .filter((t) => t.kind === "video" || t.kind === "text")
+    .flatMap((track) => track.clips.map((clip) => ({ clip, asset: project.assets.find((a) => a.id === clip.assetId) })))
+    .filter((e): e is TemplateClipEntry => Boolean(e.asset))
+    .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
+}
+
+/** Updates a text clip's own CONTENT — the only thing a template-origin project's Text tab lets you
+ *  change (structure/timing/style stay locked, same "content editable, structure locked" boundary
+ *  `TemplatePreviewScreen.tsx`'s own doc comment establishes for video/image too). Lives on the ASSET,
+ *  not the clip (`Asset.textContent`'s own doc comment explains why — it's what the asset intrinsically
+ *  IS), so every clip sharing that same text asset (a duplicated text clip) updates together, the same
+ *  grouping principle `trimTemplateSlot`/`fillTemplateSlot` already establish for video/audio. A no-op
+ *  if `assetId` doesn't resolve to a text asset — defensive, not expected to ever actually happen given
+ *  the caller only ever offers this for a clip `templateClips` already reported as `kind === "text"`. */
+export function setTemplateClipText(project: Project, assetId: string, textContent: string): Project {
+  const asset = project.assets.find((a) => a.id === assetId);
+  if (!asset || asset.kind !== "text") return project;
+  return { ...project, assets: project.assets.map((a) => (a.id === assetId ? { ...a, textContent } : a)) };
+}
+
 /** A fresh, app-generated id for a template row — same shape `newId` already gives everything else
  *  in a project, reused here rather than a raw `crypto.randomUUID()` so a template id is
  *  self-describing the same way. */
