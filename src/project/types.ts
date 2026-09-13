@@ -853,6 +853,16 @@ export interface Project {
    *  a REQUIRED field would force every local `project.json` ever written before this existed to fail
    *  `deserializeProject`'s validation the instant it's opened again. */
   ownerId?: string;
+  /** Set once, permanently, by `buildProjectFromTemplate` — never by anything else, and never cleared
+   *  afterward, even once every slot has been filled. Marks this as a guided, export-only project: the
+   *  normal timeline/clip editor is never shown for one of these (`VCutApp.tsx`'s own top-level branch
+   *  on this field), regardless of whether it still has open `templateSlots` or not — asked for
+   *  directly, to keep the packaged template EXPERIENCE consistent (what a template promises is what
+   *  comes out) rather than opening it up to the same free-form editing any other project gets, which
+   *  could otherwise drift the result away from the template's own intended look. `undefined` for every
+   *  ordinary project — including one created via the OLDER "start from a template" flow, before this
+   *  field existed, which stays fully editable exactly as it always was. */
+  templateOrigin?: true;
 }
 
 /** How long a still image occupies the timeline when first placed, in seconds. */

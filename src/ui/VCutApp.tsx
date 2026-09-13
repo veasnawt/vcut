@@ -60,12 +60,13 @@ import { NewTextComposer } from "./NewTextComposer.tsx";
 import { PixelEffectPickerMenu } from "./PixelEffectPickerMenu.tsx";
 import { SaveAsTemplateDialog } from "./SaveAsTemplateDialog.tsx";
 import { StylePickerMenu } from "./StylePickerMenu.tsx";
-import { TemplateSlotsDialog } from "./TemplateSlotsDialog.tsx";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { Preview } from "./Preview.tsx";
 import { ScopesPanel } from "./ScopesPanel.tsx";
 import { SfxPanel } from "./SfxPanel.tsx";
 import { Timeline } from "./Timeline.tsx";
+import { TemplateFillScreen } from "./TemplateFillScreen.tsx";
+import { TemplatePreviewScreen } from "./TemplatePreviewScreen.tsx";
 import { TextStylePickerMenu } from "./TextStylePickerMenu.tsx";
 import { TransitionPickerMenu } from "./TransitionPickerMenu.tsx";
 import { UserMenu } from "./UserMenu.tsx";
@@ -1279,13 +1280,11 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   const [showMobileSignIn, setShowMobileSignIn] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showSaveAsTemplate, setShowSaveAsTemplate] = useState(false);
-  const [showTemplateSlots, setShowTemplateSlots] = useState(false);
-  // Which `projectId` this has already checked for open template slots — a ref, not state, since
-  // checking is a one-time side effect per project, not something that should itself trigger a
-  // re-render. Guards against re-opening the dialog on every ordinary edit while the SAME project
-  // stays open (`project`'s own object identity changes on every `applyProject`, but `projectId`
-  // only changes when the user actually switches to a different project).
-  const checkedSlotsForProjectId = useRef<string | null>(null);
+  // Set only by `TemplateFillScreen`'s own "Preview" button — every slot being filled makes that
+  // button ENABLED, not an automatic jump to `TemplatePreviewScreen` the instant the last pick lands;
+  // the user still has to explicitly confirm they're done. See the `project.templateOrigin` branch
+  // below for how this combines with `templateSlots(project)`'s own live count.
+  const [confirmedTemplatePreview, setConfirmedTemplatePreview] = useState(false);
   const userMenuButtonRef = useRef<HTMLButtonElement>(null);
 
   // The desktop half of sign-in: `main.ts` extracts `access_token`/`refresh_token` from the
@@ -1522,15 +1521,6 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, load]);
 
-  // Auto-opens the "fill in your media" step the first time a project started from a template
-  // finishes loading — see `TemplateSlotsDialog.tsx`'s own doc comment. Fires once per `projectId`
-  // (via `checkedSlotsForProjectId`), not on every subsequent edit.
-  useEffect(() => {
-    if (!project || checkedSlotsForProjectId.current === projectId) return;
-    checkedSlotsForProjectId.current = projectId;
-    if (templateSlots(project).length > 0) setShowTemplateSlots(true);
-  }, [project, projectId]);
-
   // Flush on unmount and on window close, so the autosave debounce can never swallow the final edit.
   useEffect(() => {
     const onBeforeUnload = () => void flushPendingSave();
@@ -1710,6 +1700,21 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
     );
   }
 
+  // A project started from a template never shows the normal timeline/clip editor at all — asked for
+  // directly, so the packaged template EXPERIENCE stays consistent rather than opening it up to the
+  // same free-form editing any other project gets. Stays on `TemplateFillScreen` until BOTH every slot
+  // is filled (`templateSlots(project)` re-checked live on every render — cheap, a plain filter over
+  // `project.assets`) AND the user has explicitly hit its own "Preview" button
+  // (`confirmedTemplatePreview`) — filling the last slot alone only ENABLES that button, it doesn't
+  // jump the screen out from under someone mid-pick.
+  if (project.templateOrigin) {
+    const hasOpenSlots = templateSlots(project).length > 0;
+    if (hasOpenSlots || !confirmedTemplatePreview) {
+      return <TemplateFillScreen onAllFilled={() => setConfirmedTemplatePreview(true)} />;
+    }
+    return <TemplatePreviewScreen />;
+  }
+
   return (
     // "VCut" is a product name — never translated. `vcut-lang-km` (see studios/vcut's
     // globals.css) swaps the whole chrome's font-family to a Khmer-capable face via inheritance —
@@ -1875,7 +1880,6 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         </div>
       </header>
       {showSaveAsTemplate && <SaveAsTemplateDialog onClose={() => setShowSaveAsTemplate(false)} />}
-      {showTemplateSlots && <TemplateSlotsDialog onClose={() => setShowTemplateSlots(false)} />}
 
       {/* Three panes at `lg`+ (1024px): media on the left, preview + inspector in the middle,
           timeline across the bottom — the original desktop layout, unchanged. Below `lg`, there's no

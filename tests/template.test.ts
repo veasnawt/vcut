@@ -143,6 +143,7 @@ describe("buildProjectFromTemplate", () => {
 
     const built = buildProjectFromTemplate("bp2", "From Template", template);
 
+    assert.equal(built.templateOrigin, true, "a project built from a template must be permanently marked as such");
     assert.equal(built.sequence.width, template.width);
     assert.equal(built.sequence.height, template.height);
     assert.equal(built.sequence.fps, template.fps);

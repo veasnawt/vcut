@@ -637,6 +637,11 @@ export function deserializeProject(json: string): Project {
     // `masterGain` above uses) for anything saved before this existed, or any local/desktop project —
     // see `Project.ownerId`'s own doc comment for why this stays optional.
     ...(typeof raw.ownerId === "string" && raw.ownerId ? { ownerId: raw.ownerId } : null),
+    // Same "critical: this whitelist parser drops anything not explicitly listed, server re-parse on
+    // every save included" gotcha `Asset.libraryMediaId`'s own comment (`parseAsset` above) documents —
+    // omitting this here would silently un-mark a template-origin project as a normal one on its very
+    // first save.
+    ...(raw.templateOrigin === true ? { templateOrigin: true as const } : null),
   };
 
   // A clip pointing at an asset that isn't in the file would crash the compositor on first render.

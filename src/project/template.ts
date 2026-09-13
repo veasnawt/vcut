@@ -157,6 +157,10 @@ export function buildProjectFromTemplate(bpProjectId: string, name: string, temp
 
   project.assets = assets;
   project.sequence.tracks = tracks;
+  // Permanent, never cleared even once every slot is filled — see `Project.templateOrigin`'s own doc
+  // comment for why the normal timeline editor stays off-limits for this project forever, not just
+  // until its slots are filled.
+  project.templateOrigin = true;
   return project;
 }
 

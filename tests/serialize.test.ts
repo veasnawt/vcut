@@ -25,6 +25,14 @@ describe("project serialization", () => {
     assert.equal(restored.assets[0].filmstripRelPath, "asset1-filmstrip.jpg");
   });
 
+  it("round-trips Project.templateOrigin", () => {
+    const base = { ...emptyProject(), templateOrigin: true as const };
+
+    const restored = deserializeProject(serializeProject(base));
+
+    assert.equal(restored.templateOrigin, true);
+  });
+
   it("round-trips an edited multi-clip timeline losslessly", () => {
     const base = emptyProject();
     let project = addClip(base, videoTrackId(base), "asset1", 0);
