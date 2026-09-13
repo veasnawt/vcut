@@ -139,6 +139,11 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [cssFullscreen]);
+  // Either real (`isFullscreen`) or the CSS-only stand-in (`cssFullscreen`) counts — asked for
+  // directly: fullscreen is meant as a "just watch it big" mode, so on-canvas click-to-select and the
+  // transform/text handles it would otherwise reveal have no business being reachable there at all,
+  // regardless of which of the two fullscreen mechanisms actually got the panel into that state.
+  const fullscreen = isFullscreen || cssFullscreen;
   function toggleFullscreen() {
     if (!fullscreenSupported) {
       setCssFullscreen((v) => !v);
@@ -310,7 +315,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
   // coordination needed between the two. This only ever fires for a click whose real target IS the
   // canvas: empty frame area, or a clip with no handle currently drawn over that exact point.
   function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>) {
-    if (!project || !canvas) return;
+    if (fullscreen || !project || !canvas) return;
     // The outro end card renders here (see `getProject`'s own `buildOutroPreviewProject` call above)
     // whenever the playhead is scrubbed into its own [total, total+OUTRO_DURATION_SECONDS) window, but
     // it isn't a real clip in `project` — `computeVisibleClipBoxes`/`hitTestClip` below would find
@@ -410,8 +415,16 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
             className="bg-black shadow-2xl ring-1 ring-white/15"
             style={{ width: `${displaySize?.width ?? 1}px`, height: `${displaySize?.height ?? 1}px` }}
           />
-          <TransformHandles canvas={canvas} stageEl={previewBoxRef.current} />
-          <TextTransformHandles canvas={canvas} stageEl={previewBoxRef.current} />
+          {/* Not rendered at all in fullscreen — see `fullscreen`'s own doc comment. A selected clip's
+              handles would otherwise still be sitting there (drawn from `selectedClipIds`, which
+              fullscreen doesn't touch), reachable and functional, even though `handleCanvasClick`
+              itself already refuses to CHANGE the selection while fullscreen is active. */}
+          {!fullscreen && (
+            <>
+              <TransformHandles canvas={canvas} stageEl={previewBoxRef.current} />
+              <TextTransformHandles canvas={canvas} stageEl={previewBoxRef.current} />
+            </>
+          )}
           <RemoveObjectOverlay canvas={canvas} />
           {empty && (
             <p className="pointer-events-none absolute text-xs text-white/35">
