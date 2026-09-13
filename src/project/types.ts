@@ -70,15 +70,15 @@ export interface Asset {
    *  was sitting right there in `project.assets`, just with nothing left connecting it back to "this
    *  came from a generation, here's the prompt that made it." */
   aiGeneration?: { prompt: string; aspectRatio: string; model?: string };
-  /** Present ONLY on an asset inside a saved template's own stored structure (see
+  /** Present ONLY on a VIDEO or IMAGE asset inside a saved template's own stored structure (see
    *  `sanitizeProjectForTemplate` in `template.ts`) — and, transiently, on the placeholder a brand-new
-   *  project-from-template starts with, before "fill in your media" replaces it with a real asset.
-   *  Marks this as a stand-in for a real video/audio/image file that was deliberately stripped when the
-   *  template was saved: `relPath` is `""` (no real file, same convention a text asset's own empty
-   *  `relPath` already uses), and `duration`/`width`/`height`/`hasAudio` describe what the ORIGINAL clip
-   *  needed, not anything actually playable yet. Never present on a real project's own asset once every
-   *  slot has been filled — `fillTemplateSlot` (`template.ts`) removes it the moment a real asset is
-   *  bound in. */
+   *  project-from-template starts with, before "fill in your media" replaces it with a real asset. NOT
+   *  used for audio — see `templateBundledAudio` below for why music/voiceover is handled differently.
+   *  Marks this as a stand-in for a real file that was deliberately stripped when the template was
+   *  saved: `relPath` is `""` (no real file, same convention a text asset's own empty `relPath` already
+   *  uses), and `duration`/`width`/`height`/`hasAudio` describe what the ORIGINAL clip needed, not
+   *  anything actually playable yet. Never present on a real project's own asset once every slot has
+   *  been filled — `fillTemplateSlot` (`template.ts`) removes it the moment a real asset is bound in. */
   templatePlaceholder?: {
     /** Ordering across every placeholder in the template, timeline order — what the "fill in your
      *  media" picker's own numbered slots key off (see `templateSlots` in `template.ts`). */
@@ -90,6 +90,19 @@ export interface Asset {
      *  every other trim operation in this app already follows. */
     requiredDuration: number;
   };
+  /** Present ONLY on an audio asset inside a saved template's own stored structure — asked for
+   *  directly: unlike a video/image clip (which is deliberately turned into a fillable slot, since the
+   *  whole visual content is meant to be replaced), a template's background music/voiceover is part of
+   *  its own identity and should just carry over unchanged for every future use, the same way CapCut's
+   *  own templates keep their song. The real audio FILE is bundled with the template itself (see
+   *  `_lib/paths.ts`'s own `templateAudioPaths`, server-side) rather than referencing whichever project
+   *  happened to save the template — `relPath` still points at a real, playable file the whole time
+   *  (unlike `templatePlaceholder`'s always-empty one), just relative to the TEMPLATE's own storage
+   *  once saved, and copied into each new project's own `mediaDir` fresh (a real, independent file, not
+   *  a shared/symlinked one) the moment someone starts a project from it — never present on a real
+   *  project's own asset for that reason: by the time it reaches `project.assets`, it's indistinguishable
+   *  from any other imported audio file. */
+  templateBundledAudio?: true;
   /** Present only when `kind === "text"`. A text asset has no backing file — `relPath` is an empty
    *  string and `hasAudio` is always false — its "content" is this string, authored directly rather
    *  than imported. Lives on the ASSET (not the clip) for the same reason a video's pixels do: it's

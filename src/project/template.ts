@@ -4,12 +4,18 @@ import type { Asset, Clip, Project, Track } from "./types.ts";
 /** What a saved template actually stores — deliberately NOT a full `Project`, but (unlike this
  *  feature's own first version) not a structure-only skeleton either. A template exists to let someone
  *  ELSE reuse an entire edited look — every clip's timing, trim points, transform/effects/color-
- *  grading/keyframes, transitions, and any music — with their OWN photos/videos standing in for
- *  whatever video/audio/image footage the original edit used. `tracks`/`assets` here are the SANITIZED
- *  output `sanitizeProjectForTemplate` below produces: every clip survives as-is, but a clip whose
- *  asset is real media points at a PLACEHOLDER asset (`Asset.templatePlaceholder` set, no real file)
- *  instead of the original file, which was never something safe to hand to a stranger's project in the
- *  first place. */
+ *  grading/keyframes, and transitions — with their OWN photos/videos standing in for whatever
+ *  video/image footage the original edit used, while any music/voiceover just carries over unchanged
+ *  (asked for directly — a template's song is part of its own identity, the same way CapCut's own
+ *  templates keep theirs). `tracks`/`assets` here are the SANITIZED output `sanitizeProjectForTemplate`
+ *  below produces: every clip survives as-is, but a VIDEO/IMAGE clip's asset points at a PLACEHOLDER
+ *  (`Asset.templatePlaceholder` set, no real file — the original was never something safe to hand to a
+ *  stranger's project) while an AUDIO clip's asset keeps a real, playable file, just bundled with the
+ *  TEMPLATE itself rather than referencing the project that happened to save it (`Asset.
+ *  templateBundledAudio` — see its own doc comment for why audio is handled so differently from video/
+ *  image here). The actual audio-file copying (into `_lib/paths.ts`'s own `templateAudioPaths`, and
+ *  later out of it into each new project) is server-side I/O this pure function can't do itself —
+ *  `templates/route.ts`'s own POST handler is what actually performs it, right after calling this. */
 export interface TemplateProjectData {
   width: number;
   height: number;
@@ -18,7 +24,9 @@ export interface TemplateProjectData {
   assets: Asset[];
 }
 
-/** One open slot a "fill in your media" step needs to ask about — see `templateSlots` below. */
+/** One open slot a "fill in your media" step needs to ask about — see `templateSlots` below. Audio is
+ *  deliberately never a slot at all (see `Asset.templateBundledAudio`'s own doc comment) — only visual
+ *  content is meant to be replaced. */
 export interface TemplateSlot {
   /** The placeholder `Asset.id` this slot fills — what `fillTemplateSlot` needs to find and replace. */
   assetId: string;
@@ -26,7 +34,7 @@ export interface TemplateSlot {
   /** What the ORIGINAL clip was — a real pick can still be either kind (see `fillTemplateSlot`'s own
    *  doc comment), this is just what the template author actually used, shown so a slot reads as
    *  "Video · 4.2s" rather than a bare number. */
-  kind: "video" | "audio" | "image";
+  kind: "video" | "image";
   requiredDuration: number;
 }
 
@@ -36,23 +44,27 @@ export interface TemplateSlot {
  *  `createProject.ts`'s own "always mint fresh ids at construction time" convention rather than
  *  pre-emptively renaming ids in a document nothing else references yet). A text or color-matte asset
  *  carries over verbatim (see `createTextAsset`/`createColorAsset`'s own doc comments — neither has a
- *  backing file at all, so there's nothing to strip). A video/audio/image asset is replaced with a
+ *  backing file at all, so there's nothing to strip). A VIDEO/IMAGE asset is replaced with a
  *  placeholder: same `kind`/`name`/dimensions/`hasAudio` (what the "fill in your media" step needs to
  *  describe the slot and validate a pick against), no real file (`relPath: ""`, `sizeBytes: 0` — the
  *  same "no backing file" convention a text asset's own empty `relPath` already uses), and a fresh
  *  `templatePlaceholder` marker. `slotIndex` is assigned across the WHOLE timeline in chronological
  *  order (by `clip.timelineStart`, tracks considered together) — not per-track — since that's the
  *  order a person filling in slots would actually expect ("the first thing that happens," not "every
- *  video-track clip, then every audio-track clip"). Each CLIP gets its OWN placeholder asset even when
+ *  video-track clip, then every other track's own"). Each CLIP gets its OWN placeholder asset even when
  *  two clips originally shared one real asset (the same file used twice): asking a user to pick media
  *  for "slot 3" twice is a simpler, more predictable contract than tracking which slots secretly need
- *  to stay linked. */
+ *  to stay linked. An AUDIO asset is never turned into a slot at all — it carries over marked
+ *  `templateBundledAudio: true`, its real `relPath` left UNCHANGED (still relative to the SOURCE
+ *  project's own `mediaDir` at this point) specifically so `templates/route.ts`'s own POST handler,
+ *  which calls this function, knows exactly which file to actually copy into the template's own
+ *  storage next — this function itself never touches the filesystem. */
 export function sanitizeProjectForTemplate(project: Project): TemplateProjectData {
   const mediaClipOrder = project.sequence.tracks
     .flatMap((track) => track.clips.map((clip) => ({ track, clip })))
     .filter(({ clip }) => {
       const asset = project.assets.find((a) => a.id === clip.assetId);
-      return Boolean(asset) && (asset!.kind === "video" || asset!.kind === "audio" || asset!.kind === "image");
+      return Boolean(asset) && (asset!.kind === "video" || asset!.kind === "image");
     })
     .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
 
@@ -63,7 +75,7 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
     const original = project.assets.find((a) => a.id === clip.assetId)!;
     placeholderAssetByClipId.set(clip.id, {
       id: newId("tplasset"),
-      kind: original.kind as "video" | "audio" | "image",
+      kind: original.kind as "video" | "image",
       name: original.name,
       relPath: "",
       duration: clipDuration(clip),
@@ -77,19 +89,23 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
     });
   });
 
-  const keptTextColorAssetIds = new Set<string>();
+  // Covers text/color (carried over verbatim) AND audio (carried over as a real, still-to-be-bundled
+  // file — see this function's own doc comment) — everything that ISN'T becoming a placeholder slot.
+  const keptAssetIds = new Set<string>();
   const tracks: Track[] = project.sequence.tracks.map((track) => ({
     ...track,
     clips: track.clips.map((clip): Clip => {
       const placeholder = placeholderAssetByClipId.get(clip.id);
       if (placeholder) return { ...clip, assetId: placeholder.id };
-      keptTextColorAssetIds.add(clip.assetId);
+      keptAssetIds.add(clip.assetId);
       return { ...clip };
     }),
   }));
 
   const assets: Asset[] = [
-    ...project.assets.filter((a) => keptTextColorAssetIds.has(a.id)),
+    ...project.assets
+      .filter((a) => keptAssetIds.has(a.id))
+      .map((a) => (a.kind === "audio" ? { ...a, templateBundledAudio: true as const } : a)),
     ...placeholderAssetByClipId.values(),
   ];
 
@@ -111,10 +127,18 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
  *  the same template used twice must never produce two projects that quietly share a clip id) and
  *  `assetId` (remapped to the freshly-minted asset below) actually change.
  *
- *  A resulting project's own placeholder assets are NOT yet fillable content — every one of them still
- *  has `templatePlaceholder` set, exactly like the template's own stored version, just with a fresh
- *  `id` (`assetIdMap` is what lets each clip find its own new placeholder). `templateSlots` below is
- *  what a "fill in your media" UI calls next to find out what to ask for. */
+ *  A resulting project's own placeholder (video/image) assets are NOT yet fillable content — every one
+ *  of them still has `templatePlaceholder` set, exactly like the template's own stored version, just
+ *  with a fresh `id` (`assetIdMap` is what lets each clip find its own new placeholder). `templateSlots`
+ *  below is what a "fill in your media" UI calls next to find out what to ask for.
+ *
+ *  An AUDIO asset (`templateBundledAudio` set) comes out of THIS function still pointing at the
+ *  TEMPLATE's own bundled-audio storage, not the new project's — same "pure function, no filesystem
+ *  access" limit `sanitizeProjectForTemplate`'s own doc comment explains. `project/route.ts`'s own POST
+ *  handler, which calls this function, is what actually copies the real file into the new project's own
+ *  `mediaDir` right afterward and rewrites this entry to a completely normal, real asset before ever
+ *  persisting or returning the project — by the time anything else sees it, `templateBundledAudio` is
+ *  already gone. */
 export function buildProjectFromTemplate(bpProjectId: string, name: string, template: TemplateProjectData): Project {
   const project = createProject(bpProjectId, name, { width: template.width, height: template.height, fps: template.fps });
 
@@ -130,8 +154,9 @@ export function buildProjectFromTemplate(bpProjectId: string, name: string, temp
       assetIdMap.set(asset.id, fresh.id);
       return fresh;
     }
-    // video/audio/image — still a placeholder (`sanitizeProjectForTemplate` never stores anything
-    // else for these kinds), just with a freshly-minted id like every other asset here.
+    // video/image (still a placeholder) or audio (still bundled-but-not-yet-copied) — either way, a
+    // freshly-minted id like every other asset here; `project/route.ts`'s own POST handler resolves
+    // the audio case into a real asset right after this returns (see this function's own doc comment).
     const freshId = newId("tplasset");
     assetIdMap.set(asset.id, freshId);
     return { ...asset, id: freshId };
@@ -176,7 +201,7 @@ export function templateSlots(project: Project): TemplateSlot[] {
     .map((a) => ({
       assetId: a.id,
       slotIndex: a.templatePlaceholder.slotIndex,
-      kind: a.kind as "video" | "audio" | "image",
+      kind: a.kind as "video" | "image",
       requiredDuration: a.templatePlaceholder.requiredDuration,
     }))
     .sort((a, b) => a.slotIndex - b.slotIndex);

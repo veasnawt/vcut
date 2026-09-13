@@ -16,13 +16,14 @@ import {
 } from "./fixture.ts";
 
 describe("sanitizeProjectForTemplate", () => {
-  it("keeps every clip — video/audio/image get a placeholder asset, text/color carry over as-is", () => {
-    let base = emptyProject([videoAsset(), imageAsset(), colorAsset(), textAsset()]);
+  it("keeps every clip — video/image get a placeholder asset, text/color/audio carry over as-is", () => {
+    let base = emptyProject([videoAsset(), imageAsset(), colorAsset(), textAsset(), audioAsset()]);
     base = addTrack(base, "text");
     let project = addClip(base, videoTrackId(base), "asset1", 0); // video
     project = addClip(project, videoTrackId(project), "img1", 10); // image
     project = addClip(project, videoTrackId(project), "color1", 12); // color
     project = addClip(project, textTrackId(project), "text1", 0); // text
+    project = addClip(project, audioTrackId(project), "music", 0); // audio
 
     const template = sanitizeProjectForTemplate(project);
 
@@ -31,6 +32,8 @@ describe("sanitizeProjectForTemplate", () => {
     assert.equal(videoTrackClips.length, 3);
     const textTrackClips = template.tracks.find((t) => t.kind === "text")!.clips;
     assert.equal(textTrackClips.length, 1);
+    const audioTrackClips = template.tracks.find((t) => t.kind === "audio")!.clips;
+    assert.equal(audioTrackClips.length, 1);
 
     // The color/text assets carry over unchanged — no placeholder, same id.
     assert.equal(template.assets.find((a) => a.id === "color1")?.templatePlaceholder, undefined);
@@ -43,22 +46,33 @@ describe("sanitizeProjectForTemplate", () => {
     const placeholders = template.assets.filter((a) => a.templatePlaceholder);
     assert.equal(placeholders.length, 2);
     assert.ok(placeholders.every((a) => a.relPath === "" && a.sizeBytes === 0));
+
+    // Audio is never a placeholder — it keeps its SAME id and its REAL relPath (still relative to the
+    // source project's own mediaDir at this point — see this asset's own doc comment on why), just
+    // marked for the server's own POST handler to bundle its real file with the template next.
+    const music = template.assets.find((a) => a.id === "music")!;
+    assert.equal(music.templateBundledAudio, true);
+    assert.equal(music.templatePlaceholder, undefined);
+    assert.equal(music.relPath, "music.mp3");
   });
 
-  it("assigns slotIndex in chronological (timelineStart) order across the whole project, not per track", () => {
+  it("assigns slotIndex in chronological (timelineStart) order across the whole project, not per track — audio never becomes a slot at all", () => {
     const base = emptyProject([videoAsset("v1"), audioAsset("a1"), videoAsset("v2", 5)]);
     let project = addClip(base, videoTrackId(base), "v2", 0); // starts first
-    project = addClip(project, audioTrackId(project), "a1", 2); // starts second
+    project = addClip(project, audioTrackId(project), "a1", 2); // starts second (but audio, so no slot)
     project = addClip(project, videoTrackId(project), "v1", 20); // starts last
 
     const template = sanitizeProjectForTemplate(project);
-    const slots = templateSlots(buildProjectFromTemplate("bp-order", "Order", template));
+    const built = buildProjectFromTemplate("bp-order", "Order", template);
+    const slots = templateSlots(built);
 
-    assert.equal(slots.length, 3);
+    assert.equal(slots.length, 2);
     assert.deepEqual(
       slots.map((s) => s.kind),
-      ["video", "audio", "video"]
+      ["video", "video"]
     );
+    // The audio clip's own asset survived the round trip too, just not as a slot.
+    assert.ok(built.assets.some((a) => a.kind === "audio"));
   });
 
   it("captures each clip's own trim length as requiredDuration", () => {
@@ -159,6 +173,25 @@ describe("buildProjectFromTemplate", () => {
     const builtTextClip = clipsOf(built, textTrackId(built))[0];
     assert.ok(builtTextClip, "expected the text clip to carry over");
     assert.equal(builtTextClip.timelineStart, 2);
+  });
+
+  it("passes an audio asset through with a fresh id, still marked templateBundledAudio (not stripped to a placeholder)", () => {
+    const base = emptyProject([audioAsset()]);
+    const project = addClip(base, audioTrackId(base), "music", 0);
+    const template = sanitizeProjectForTemplate(project);
+
+    const built = buildProjectFromTemplate("bp-audio", "Audio", template);
+
+    const builtAudio = built.assets.find((a) => a.kind === "audio")!;
+    assert.ok(builtAudio, "expected the audio asset to survive");
+    assert.notEqual(builtAudio.id, "music", "should still get a fresh id like every other asset");
+    assert.equal(builtAudio.templateBundledAudio, true);
+    // Not yet a real, project-local file — `project/route.ts`'s own POST handler resolves this into
+    // one right after calling buildProjectFromTemplate (see that function's own doc comment); the pure
+    // function itself has no filesystem access to do that step.
+    assert.equal(builtAudio.relPath, "music.mp3");
+    const builtAudioClip = clipsOf(built, audioTrackId(built))[0];
+    assert.equal(builtAudioClip.assetId, builtAudio.id);
   });
 
   it("produces two independent projects from the same template with no shared ids", () => {

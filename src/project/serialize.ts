@@ -157,6 +157,12 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     // vanishes from every real save regardless of what the client actually sent.
     ...(typeof raw.libraryMediaId === "string" ? { libraryMediaId: raw.libraryMediaId } : null),
     ...(templatePlaceholder ? { templatePlaceholder } : null),
+    // Should never actually reach a live project's own project.json (the server always resolves this
+    // into a real, project-local asset before ever persisting one — see `Asset.templateBundledAudio`'s
+    // own doc comment), but whitelisted anyway for the same round-trip-safety reason every other field
+    // here is, rather than letting a bug that DID leave one behind get silently, further corrupted by
+    // the very next save.
+    ...(raw.templateBundledAudio === true ? { templateBundledAudio: true as const } : null),
   };
 }
 

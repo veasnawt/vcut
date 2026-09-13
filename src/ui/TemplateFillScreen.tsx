@@ -10,19 +10,22 @@ import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
 import { useLibraryMedia } from "./useLibraryMedia.ts";
 
-function isCompatible(slotKind: TemplateSlot["kind"], itemKind: "video" | "audio" | "image"): boolean {
-  return slotKind === "audio" ? itemKind === "audio" : itemKind === "video" || itemKind === "image";
-}
-
-const KIND_ICON: Record<TemplateSlot["kind"], typeof Video> = { video: Video, audio: Music, image: ImageIcon };
+/** Covers `LibraryGridTile`'s own general `LibraryMediaItem.kind` (video/audio/image — a user's
+ *  library can hold all three) even though a slot's own `TemplateSlot["kind"]` only ever needs
+ *  "video"/"image" — audio is deliberately never a slot at all (see `Asset.templateBundledAudio`'s
+ *  own doc comment: a template's music carries over automatically, nothing to pick for it here), so
+ *  the "audio" entry only exists for this Record to stay total; nothing in this file ever actually
+ *  looks it up. */
+const KIND_ICON: Record<"video" | "audio" | "image", typeof Video> = { video: Video, audio: Music, image: ImageIcon };
 
 /** Full-screen "add your media" step for a project just started from a Pro template — never a modal
  *  overlaid on the normal editor (unlike this feature's own first version): a template-origin project
  *  (`Project.templateOrigin`) never shows the timeline editor at all, so this and `TemplatePreviewScreen`
- *  ARE the whole app until export. A grid of the user's own account-wide media (video/image, or audio
- *  when the active slot needs it) fills whichever slot is currently active; the slots themselves sit as
- *  a horizontally-scrollable row of square, rounded tiles below the grid, each showing its own required
- *  duration — tapping one makes IT the active slot, so any pick can be revisited before moving on.
+ *  ARE the whole app until export. A grid of the user's own account-wide photos/videos fills whichever
+ *  slot is currently active (music/voiceover isn't pickable here at all — it carries over from the
+ *  template automatically); the slots themselves sit as a horizontally-scrollable row of square, rounded
+ *  tiles below the grid, each showing its own required duration — tapping one makes IT the active slot,
+ *  so any pick can be revisited before moving on.
  *
  *  `allSlots` is captured ONCE, on mount, from `templateSlots(project)` — that function's own live
  *  result would shrink every time a slot gets filled (a filled slot's placeholder asset is gone
@@ -70,7 +73,7 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
     if (imported[0]) assign(activeSlot, imported[0]);
   }
 
-  const compatibleLibraryItems = activeSlot ? library.items?.filter((i) => isCompatible(activeSlot.kind, i.kind)) ?? [] : [];
+  const compatibleLibraryItems = activeSlot ? library.items?.filter((i) => i.kind === "video" || i.kind === "image") ?? [] : [];
 
   return (
     <div className="flex h-full flex-col bg-[#0a0c10] text-white">
@@ -78,12 +81,10 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
         <h1 className="text-sm font-semibold text-white">{t("Add your own media")}</h1>
         <p className="mt-1 text-xs text-white/50">
           {activeSlot
-            ? activeSlot.kind === "audio"
-              ? t("Pick audio for slot {n} — {duration} needed", { n: allSlots.indexOf(activeSlot) + 1, duration: formatDuration(activeSlot.requiredDuration) })
-              : t("Pick a photo or video for slot {n} — {duration} needed", {
-                  n: allSlots.indexOf(activeSlot) + 1,
-                  duration: formatDuration(activeSlot.requiredDuration),
-                })
+            ? t("Pick a photo or video for slot {n} — {duration} needed", {
+                n: allSlots.indexOf(activeSlot) + 1,
+                duration: formatDuration(activeSlot.requiredDuration),
+              })
             : allFilled
               ? t("All set — tap Preview below to see your video.")
               : t("This template keeps its original timing, effects, and music.")}
@@ -99,7 +100,7 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
               type="file"
               className="hidden"
               disabled={uploading || !activeSlot}
-              accept={activeSlot?.kind === "audio" ? ".wav,.mp3,.aac,.flac,.m4a,.ogg" : ".mp4,.mov,.webm,.mkv,.avi,.m4v,.png,.jpg,.jpeg,.webp,.gif"}
+              accept=".mp4,.mov,.webm,.mkv,.avi,.m4v,.png,.jpg,.jpeg,.webp,.gif"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 e.target.value = "";
