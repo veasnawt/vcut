@@ -593,12 +593,13 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                       {/* Mobile-grid remove button — overlaid on the thumbnail (top-right) since a grid
                           tile has no separate inline slot for it the way the desktop row does. Always
                           visible (not hover-revealed) for the same reason the desktop button already
-                          makes an exception below `lg`: touch has no `:hover` to reveal it from. Moved
-                          in from the corner slightly (`top-8`, under the duration/kind badges) rather
-                          than sharing their exact corner now that this tile can be much taller than the
-                          old fixed 80px cap — pinning it to the very top edge regardless of tile height
-                          kept it readable, but a genuinely tall tile made it feel disconnected from the
-                          title it's actually removing, which now lives at the BOTTOM. */}
+                          makes an exception below `lg`: touch has no `:hover` to reveal it from.
+                          Dropped below the duration badge (`top-8`) ONLY when one is actually there
+                          (video/audio) to avoid overlapping it — sharing the kind badge's own `top-1`
+                          corner otherwise (image/text) — a real, reported bug: a fixed `top-8` regardless
+                          of kind left an IMAGE tile's remove button floating with nothing above it at
+                          all, a disconnected-looking gap from the top edge, since only video/audio ever
+                          render a duration badge there to begin with. */}
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -606,7 +607,9 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                         }}
                         title={t("Remove from project")}
                         aria-label={t("Remove {name} from project", { name: asset.name })}
-                        className="absolute right-1 top-8 flex items-center rounded bg-black/70 p-1 text-white/70 transition hover:bg-black/90 hover:text-white lg:hidden"
+                        className={`absolute right-1 flex items-center rounded bg-black/70 p-1 text-white/70 transition hover:bg-black/90 hover:text-white lg:hidden ${
+                          asset.kind !== "image" && asset.kind !== "text" ? "top-8" : "top-1"
+                        }`}
                       >
                         <Close size={12} />
                       </button>
