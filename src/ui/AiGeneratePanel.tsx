@@ -51,10 +51,15 @@ const MODEL_LABELS: Record<AiImageModel, string> = {
 
 /** A shape both `aiGenerations` (this project's own live history) and the account-wide library listing
  *  (every OTHER project's own past generations — see `useLibraryMedia`'s own doc comment) can be mapped
- *  into, so the results grid below has exactly one rendering path regardless of which one the "This
- *  project" / "All my generations" toggle currently shows. `libraryItem` is set ONLY for a tile sourced
- *  from the library listing — it's what `pickTile` needs to actually place a generation that isn't in
- *  THIS project yet (see its own comment). */
+ *  into, so the results grid below is ONE continuous feed — not split into a "this project" / "all
+ *  projects" toggle: an AI generation is a deliberately-made, credit-costing thing a user genuinely
+ *  wants to browse and reuse regardless of which project made it, unlike an ordinary media import
+ *  (`MediaLibrary.tsx` keeps its own toggle for exactly that reason — a raw upload is far more often
+ *  project-specific work-in-progress). `libraryItem` is set ONLY for a tile sourced from the library
+ *  listing — it's what `pickTile` needs to actually place a generation that isn't in THIS project yet
+ *  (see its own comment). `importedAt` (epoch millis) is sort-only — never rendered — since it's what
+ *  lets a project-local "done" tile and a library-sourced one merge into one correctly time-ordered
+ *  feed instead of two concatenated blocks. */
 interface DisplayTile {
   id: string;
   kind: "image" | "video";
@@ -65,6 +70,7 @@ interface DisplayTile {
   error?: string;
   progress?: number;
   libraryItem?: LibraryMediaItem;
+  importedAt?: number;
 }
 
 /** AI image/video generation from a text prompt (`ai-image/route.ts` and `ai-video/route.ts`, both
@@ -96,17 +102,16 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   const [imageAvailable, setImageAvailable] = useState<boolean | null>(null);
   const [videoAvailable, setVideoAvailable] = useState<boolean | null>(null);
 
-  // "All my generations" — every past AI generation across every one of the user's OTHER projects too,
-  // not just this one (same account-wide reuse `MediaLibrary.tsx`'s own "All my media" toggle offers,
-  // just pre-filtered here to items that actually carry `aiGeneration`). Hosted-only: `hosted` gates the
-  // toggle itself below, so this branch simply never activates on desktop/local dev.
-  const [isLibraryView, setIsLibraryView] = useState(false);
-  const library = useLibraryMedia(isLibraryView);
+  // Every past AI generation across every one of the user's OTHER projects too, not just this one —
+  // merged into ONE feed below (see `DisplayTile`'s own doc comment for why this has no "this project" /
+  // "all projects" toggle the way `MediaLibrary.tsx` does), pre-filtered to items that actually carry
+  // `aiGeneration`. `enabled: hosted` — always fetches once hosted, no manual toggle to gate it on;
+  // never fetches at all on desktop/local dev, which has no account for this to belong to.
+  const library = useLibraryMedia(hosted);
   const libraryError = library.error;
   useEffect(() => {
     if (!libraryError) return;
     useEditorStore.getState().setStatus(libraryError, "error");
-    setIsLibraryView(false);
   }, [libraryError]);
 
   useEffect(() => {
@@ -339,30 +344,36 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
             // right in the middle of the IMAGE grid (and vice versa) with nothing distinguishing the
             // two, which read as one undifferentiated pile rather than two separate galleries. Switching
             // the Image/Video toggle above now genuinely switches which history you're looking at.
-            const projectTiles: DisplayTile[] = aiGenerations
-              .filter((g) => g.kind === kind)
-              .map((g) => ({
-                id: g.id,
-                kind: g.kind,
-                status: g.status,
-                prompt: g.prompt,
-                aspectRatio: g.aspectRatio,
-                asset: g.asset,
-                error: g.error,
-                progress: g.progress,
-              }));
+            //
+            // Still generating/failed items always come from THIS session's own `aiGenerations` — a
+            // library row for one doesn't exist yet (nothing to insert until the file is actually
+            // produced), so there's nowhere else these could come from. Pinned at the front regardless
+            // of the sort below: the thing you just started is the most relevant tile on screen, not
+            // something that should wait to be outranked by an older "done" tile's own real timestamp.
+            const inProgress: DisplayTile[] = aiGenerations
+              .filter((g) => g.kind === kind && g.status !== "done")
+              .map((g) => ({ id: g.id, kind: g.kind, status: g.status, prompt: g.prompt, aspectRatio: g.aspectRatio, error: g.error, progress: g.progress }));
 
-            // Every OTHER project's own past generation of this kind, newest first — same account-wide
-            // reuse `MediaLibrary.tsx`'s own "All my media" view offers, pre-filtered to items that
-            // actually carry `aiGeneration` (an upload or stock download never does). `previewAssetFrom
-            // LibraryMedia` gives each one just enough shape to render a thumbnail; `libraryItem` (not
-            // set on `projectTiles` above) is what tells `pickTile` this one needs
-            // `addLibraryAssetToProject` before it can be placed.
-            const libraryTiles: DisplayTile[] = (library.items ?? [])
+            // This project's own completed generations — kept from `aiGenerations` (not the library
+            // fetch) so a generation that JUST finished shows immediately, before the library listing has
+            // even had a chance to refetch and pick it up.
+            const doneFromProject: DisplayTile[] = aiGenerations
+              .filter((g) => g.kind === kind && g.status === "done" && g.asset)
+              .map((g) => ({ id: g.id, kind: g.kind, status: "done", prompt: g.prompt, aspectRatio: g.aspectRatio, asset: g.asset, importedAt: g.asset!.importedAt }));
+
+            // Every OTHER project's own past generation of this kind — same account-wide reuse
+            // `MediaLibrary.tsx`'s own "All my media" view offers, pre-filtered to items that actually
+            // carry `aiGeneration` (an upload or stock download never does), and deduplicated against
+            // `doneFromProject` above by `libraryMediaId` — the SAME generation would otherwise show
+            // twice once the library fetch resolves (once from each source). `previewAssetFromLibraryMedia`
+            // gives each one just enough shape to render a thumbnail; `libraryItem` (not set on
+            // `doneFromProject` above) is what tells `pickTile` this one needs `addLibraryAssetToProject`
+            // before it can be placed.
+            const doneFromLibrary: DisplayTile[] = (library.items ?? [])
               .filter((item): item is LibraryMediaItem & { aiGeneration: NonNullable<LibraryMediaItem["aiGeneration"]> } =>
                 item.kind === kind && Boolean(item.aiGeneration)
               )
-              .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+              .filter((item) => !doneFromProject.some((t) => t.asset?.libraryMediaId === item.id))
               .map((item) => ({
                 id: item.id,
                 kind: item.kind as "image" | "video",
@@ -371,35 +382,16 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                 aspectRatio: item.aiGeneration.aspectRatio as AiAspectRatio,
                 asset: previewAssetFromLibraryMedia(item),
                 libraryItem: item,
+                importedAt: new Date(item.createdAt).getTime(),
               }));
 
-            const visible = isLibraryView ? libraryTiles : projectTiles;
+            // One feed, correctly time-ordered across BOTH sources — see `DisplayTile`'s own doc comment
+            // for why there's no "this project" / "all projects" toggle to pick between them instead.
+            const done = [...doneFromProject, ...doneFromLibrary].sort((a, b) => (b.importedAt ?? 0) - (a.importedAt ?? 0));
+            const visible = [...inProgress, ...done];
 
             return (
               <>
-                {/* Hosted-only: local/desktop dev has no per-user "account" for a cross-project
-                    generation history to belong to at all — every generation stays project-local there
-                    exactly as before this existed. Shown even when `visible` is empty so the toggle
-                    itself stays discoverable regardless of which view currently has anything in it. */}
-                {hosted && (
-                  <div className="mt-3 flex shrink-0 gap-1">
-                    <button
-                      onClick={() => setIsLibraryView(false)}
-                      className={`rounded px-2 py-1 text-[11px] font-medium transition ${!isLibraryView ? "bg-white/15 text-white" : "text-white/50 hover:text-white/80"}`}
-                    >
-                      {t("This project")}
-                    </button>
-                    <button
-                      onClick={() => setIsLibraryView(true)}
-                      className={`rounded px-2 py-1 text-[11px] font-medium transition ${isLibraryView ? "bg-white/15 text-white" : "text-white/50 hover:text-white/80"}`}
-                    >
-                      {t("All my generations")}
-                    </button>
-                  </div>
-                )}
-                {isLibraryView && library.loading && library.items === null && (
-                  <p className="mt-3 text-[12px] text-white/35">{t("Loading…")}</p>
-                )}
                 {visible.length > 0 && (
               // A CSS multi-column flow, not `grid grid-cols-*` — a fixed-row grid forces every tile to
               // the SAME height regardless of its own aspect ratio, which is exactly what stopped a 9:16
