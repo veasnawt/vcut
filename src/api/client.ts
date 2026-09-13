@@ -465,6 +465,36 @@ export function assetFromLibraryMedia(item: LibraryMediaItem): Asset {
   };
 }
 
+/** A read-only stand-in `Asset` for a library row that ISN'T (yet) part of the CURRENT project — just
+ *  enough shape for a thumbnail/preview to render it. Deliberately NOT `assetFromLibraryMedia` above:
+ *  that one mints a fresh random `id` every call (correct for actually PLACING a library item, where
+ *  two projects placing the same file need independent asset ids), which would break a React `key` and
+ *  any "already added?" comparison on every re-render. This one keeps `id: item.id` stable instead —
+ *  never appended to `project.assets`, so there's no cross-project id collision risk to worry about
+ *  here the way there would be for a real placement. Shared by `MediaLibrary.tsx`'s own "All my media"
+ *  view and `AiGeneratePanel.tsx`'s own "All my generations" view — both need the identical conversion,
+ *  just filtered to a different subset of the same library listing. */
+export function previewAssetFromLibraryMedia(item: LibraryMediaItem): Asset {
+  return {
+    id: item.id,
+    kind: item.kind,
+    name: item.name,
+    relPath: item.relPath,
+    ...(item.thumbnailRelPath ? { thumbnailRelPath: item.thumbnailRelPath } : null),
+    ...(item.filmstripRelPath ? { filmstripRelPath: item.filmstripRelPath } : null),
+    ...(item.waveformRelPath ? { waveformRelPath: item.waveformRelPath } : null),
+    duration: item.duration,
+    ...(item.width != null ? { width: item.width } : null),
+    ...(item.height != null ? { height: item.height } : null),
+    ...(item.fps != null ? { fps: item.fps } : null),
+    hasAudio: item.hasAudio,
+    sizeBytes: item.sizeBytes,
+    importedAt: new Date(item.createdAt).getTime(),
+    ...(item.aiGeneration ? { aiGeneration: item.aiGeneration } : null),
+    libraryMediaId: item.id,
+  };
+}
+
 /** A non-forced delete finding the item still in use is an expected, common outcome — not a failure —
  *  so it comes back as a real return value the caller branches on, rather than an exception to catch.
  *  Pass `force: true` only on a SECOND call, after the caller already showed the user this result's own

@@ -6,16 +6,20 @@ import {
   AI_IMAGE_MODELS,
   aiImageAvailable,
   aiVideoAvailable,
+  previewAssetFromLibraryMedia,
   thumbnailUrl,
   type AiAspectRatio,
   type AiImageModel,
+  type LibraryMediaItem,
 } from "../api/client.ts";
 import { AI_IMAGE_CREDITS, AI_VIDEO_CREDITS_PER_GENERATION, startCheckout } from "../api/billing.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
+import type { Asset } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { Dropdown } from "./Dropdown.tsx";
 import { pickAssetForPlacement } from "./pickPlacement.ts";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
+import { useLibraryMedia } from "./useLibraryMedia.ts";
 
 /** Same "single fire-and-navigate action, no special busy/error state" reasoning `Inspector.tsx`'s own
  *  `handleUpgradeClick` documents — duplicated rather than imported since it isn't exported from there
@@ -45,6 +49,24 @@ const MODEL_LABELS: Record<AiImageModel, string> = {
   "nano-banana-2": "Nano Banana 2",
 };
 
+/** A shape both `aiGenerations` (this project's own live history) and the account-wide library listing
+ *  (every OTHER project's own past generations — see `useLibraryMedia`'s own doc comment) can be mapped
+ *  into, so the results grid below has exactly one rendering path regardless of which one the "This
+ *  project" / "All my generations" toggle currently shows. `libraryItem` is set ONLY for a tile sourced
+ *  from the library listing — it's what `pickTile` needs to actually place a generation that isn't in
+ *  THIS project yet (see its own comment). */
+interface DisplayTile {
+  id: string;
+  kind: "image" | "video";
+  status: "generating" | "done" | "failed";
+  prompt: string;
+  aspectRatio: AiAspectRatio;
+  asset?: Asset;
+  error?: string;
+  progress?: number;
+  libraryItem?: LibraryMediaItem;
+}
+
 /** AI image/video generation from a text prompt (`ai-image/route.ts` and `ai-video/route.ts`, both
  *  Replicate-backed) — a third `MediaPanel.tsx` tab alongside "My Media" and "Stock", same "self-
  *  contained panel, not woven into `MediaLibrary.tsx`'s own intricate logic" reasoning
@@ -64,6 +86,7 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   const generateAiImage = useEditorStore((s) => s.generateAiImage);
   const startAiVideoGeneration = useEditorStore((s) => s.startAiVideoGeneration);
   const cancelAiVideoGeneration = useEditorStore((s) => s.cancelAiVideoGeneration);
+  const addLibraryAssetToProject = useEditorStore((s) => s.addLibraryAssetToProject);
   const { hosted, credits, outOfCredits, isPro } = useHostedCreditsGate();
 
   const [kind, setKind] = useState<"image" | "video">("image");
@@ -72,6 +95,19 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   const [model, setModel] = useState<AiImageModel>("flare");
   const [imageAvailable, setImageAvailable] = useState<boolean | null>(null);
   const [videoAvailable, setVideoAvailable] = useState<boolean | null>(null);
+
+  // "All my generations" — every past AI generation across every one of the user's OTHER projects too,
+  // not just this one (same account-wide reuse `MediaLibrary.tsx`'s own "All my media" toggle offers,
+  // just pre-filtered here to items that actually carry `aiGeneration`). Hosted-only: `hosted` gates the
+  // toggle itself below, so this branch simply never activates on desktop/local dev.
+  const [isLibraryView, setIsLibraryView] = useState(false);
+  const library = useLibraryMedia(isLibraryView);
+  const libraryError = library.error;
+  useEffect(() => {
+    if (!libraryError) return;
+    useEditorStore.getState().setStatus(libraryError, "error");
+    setIsLibraryView(false);
+  }, [libraryError]);
 
   useEffect(() => {
     void aiImageAvailable().then(setImageAvailable);
@@ -87,6 +123,21 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
   // makes, via the shared `pickAssetForPlacement` — see its own doc comment.
   function pickGeneration(assetId: string) {
     pickAssetForPlacement(assetId, onAssetAdded);
+  }
+
+  /** Picks a tile from EITHER list `DisplayTile`s can come from. A tile sourced from the account-wide
+   *  library (`tile.libraryItem` set) isn't a real asset in THIS project yet — `addLibraryAssetToProject`
+   *  mints one (idempotently: a re-pick of something already added just returns the existing asset, no
+   *  duplicate), and only then does placement proceed, so a single click still does the whole job in one
+   *  step, same as picking an already-live generation always has. */
+  function pickTile(tile: DisplayTile) {
+    if (tile.status !== "done" || !tile.asset) return;
+    if (tile.libraryItem) {
+      const asset = addLibraryAssetToProject(tile.libraryItem);
+      if (asset) pickGeneration(asset.id);
+    } else {
+      pickGeneration(tile.asset.id);
+    }
   }
 
   function handleGenerate() {
@@ -288,9 +339,68 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
             // right in the middle of the IMAGE grid (and vice versa) with nothing distinguishing the
             // two, which read as one undifferentiated pile rather than two separate galleries. Switching
             // the Image/Video toggle above now genuinely switches which history you're looking at.
-            const visible = aiGenerations.filter((g) => g.kind === kind);
-            if (visible.length === 0) return null;
+            const projectTiles: DisplayTile[] = aiGenerations
+              .filter((g) => g.kind === kind)
+              .map((g) => ({
+                id: g.id,
+                kind: g.kind,
+                status: g.status,
+                prompt: g.prompt,
+                aspectRatio: g.aspectRatio,
+                asset: g.asset,
+                error: g.error,
+                progress: g.progress,
+              }));
+
+            // Every OTHER project's own past generation of this kind, newest first — same account-wide
+            // reuse `MediaLibrary.tsx`'s own "All my media" view offers, pre-filtered to items that
+            // actually carry `aiGeneration` (an upload or stock download never does). `previewAssetFrom
+            // LibraryMedia` gives each one just enough shape to render a thumbnail; `libraryItem` (not
+            // set on `projectTiles` above) is what tells `pickTile` this one needs
+            // `addLibraryAssetToProject` before it can be placed.
+            const libraryTiles: DisplayTile[] = (library.items ?? [])
+              .filter((item): item is LibraryMediaItem & { aiGeneration: NonNullable<LibraryMediaItem["aiGeneration"]> } =>
+                item.kind === kind && Boolean(item.aiGeneration)
+              )
+              .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+              .map((item) => ({
+                id: item.id,
+                kind: item.kind as "image" | "video",
+                status: "done",
+                prompt: item.aiGeneration.prompt,
+                aspectRatio: item.aiGeneration.aspectRatio as AiAspectRatio,
+                asset: previewAssetFromLibraryMedia(item),
+                libraryItem: item,
+              }));
+
+            const visible = isLibraryView ? libraryTiles : projectTiles;
+
             return (
+              <>
+                {/* Hosted-only: local/desktop dev has no per-user "account" for a cross-project
+                    generation history to belong to at all — every generation stays project-local there
+                    exactly as before this existed. Shown even when `visible` is empty so the toggle
+                    itself stays discoverable regardless of which view currently has anything in it. */}
+                {hosted && (
+                  <div className="mt-3 flex shrink-0 gap-1">
+                    <button
+                      onClick={() => setIsLibraryView(false)}
+                      className={`rounded px-2 py-1 text-[11px] font-medium transition ${!isLibraryView ? "bg-white/15 text-white" : "text-white/50 hover:text-white/80"}`}
+                    >
+                      {t("This project")}
+                    </button>
+                    <button
+                      onClick={() => setIsLibraryView(true)}
+                      className={`rounded px-2 py-1 text-[11px] font-medium transition ${isLibraryView ? "bg-white/15 text-white" : "text-white/50 hover:text-white/80"}`}
+                    >
+                      {t("All my generations")}
+                    </button>
+                  </div>
+                )}
+                {isLibraryView && library.loading && library.items === null && (
+                  <p className="mt-3 text-[12px] text-white/35">{t("Loading…")}</p>
+                )}
+                {visible.length > 0 && (
               // A CSS multi-column flow, not `grid grid-cols-*` — a fixed-row grid forces every tile to
               // the SAME height regardless of its own aspect ratio, which is exactly what stopped a 9:16
               // placeholder/thumbnail from ever looking tall: the grid cell itself capped it back down to
@@ -308,16 +418,17 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                     role={item.status === "done" ? "button" : undefined}
                     tabIndex={item.status === "done" ? 0 : undefined}
                     // A single click picks the result — one step, not two, same reasoning
-                    // `StockSearchPanel.tsx`'s own `handlePick` documents, via the same desktop-vs-
-                    // mobile `pickGeneration` branch defined above. Used to be double-click-only on
-                    // desktop (a plain click did nothing there at all) — that extra step no longer
-                    // buys anything now that this is the ONLY place a generation is visible to click
-                    // on in the first place (see `aiGenerations`'s own doc comment).
-                    onClick={item.status === "done" && item.asset ? () => pickGeneration(item.asset!.id) : undefined}
+                    // `StockSearchPanel.tsx`'s own `handlePick` documents, via the shared `pickTile`
+                    // (see its own doc comment for the extra step a library-sourced tile needs first).
+                    // Used to be double-click-only on desktop (a plain click did nothing there at all)
+                    // — that extra step no longer buys anything now that this is the ONLY place a
+                    // generation is visible to click on in the first place (see `aiGenerations`'s own
+                    // doc comment).
+                    onClick={item.status === "done" && item.asset ? () => pickTile(item) : undefined}
                     onKeyDown={
                       item.status === "done" && item.asset
                         ? (e) => {
-                            if (e.key === "Enter") pickGeneration(item.asset!.id);
+                            if (e.key === "Enter") pickTile(item);
                           }
                         : undefined
                     }
@@ -413,6 +524,8 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                   ))}
                 </div>
               </div>
+                )}
+              </>
             );
           })()}
         </>

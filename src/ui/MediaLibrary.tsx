@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Add, Art, Close, Image as ImageIcon, Music, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
-import { deleteLibraryMedia, HOSTED, listLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
+import { deleteLibraryMedia, HOSTED, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
 import { AddClipCommand } from "../commands/index.ts";
 import { translateText } from "../i18n/translations.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -17,6 +17,7 @@ import { ImportSourceMenu } from "./ImportSourceMenu.tsx";
 import { MediaPreviewModal } from "./MediaPreviewModal.tsx";
 import { pickAssetForPlacement } from "./pickPlacement.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
+import { useLibraryMedia } from "./useLibraryMedia.ts";
 
 /** Which asset kinds `MediaPreviewModal` actually has real media to show — text/color have no backing
  *  file at all (see `Asset.color`/`textContent`'s own doc comments), so a preview trigger for them
@@ -78,33 +79,6 @@ const DRAG_THRESHOLD = 4;
  *  iOS's own Files/Photos apps use. Mouse skips this entirely (armed immediately, matching the native
  *  drag-and-drop this replaces) since a mouse-drag was never ambiguous with scrolling to begin with. */
 const LONG_PRESS_MS = 450;
-
-/** A read-only stand-in `Asset` for a library row that ISN'T (yet) part of this project — just enough
- *  shape for `AssetThumbnail`/`MediaPreviewModal`/`describe()` to render it. Deliberately NOT
- *  `assetFromLibraryMedia` from `api/client.ts`: that one mints a fresh random `id` every call (correct
- *  for actually PLACING a library item, where two projects placing the same file need independent asset
- *  ids), which would break React's `key` and the "already added?" comparison below on every re-render.
- *  This one keeps `id: item.id` stable instead — never appended to `project.assets`, so there's no
- *  cross-project id collision risk to worry about here the way there would be for a real placement. */
-function pseudoAssetFromLibraryItem(item: LibraryMediaItem): Asset {
-  return {
-    id: item.id,
-    kind: item.kind,
-    name: item.name,
-    relPath: item.relPath,
-    ...(item.thumbnailRelPath ? { thumbnailRelPath: item.thumbnailRelPath } : null),
-    ...(item.filmstripRelPath ? { filmstripRelPath: item.filmstripRelPath } : null),
-    ...(item.waveformRelPath ? { waveformRelPath: item.waveformRelPath } : null),
-    duration: item.duration,
-    ...(item.width != null ? { width: item.width } : null),
-    ...(item.height != null ? { height: item.height } : null),
-    ...(item.fps != null ? { fps: item.fps } : null),
-    hasAudio: item.hasAudio,
-    sizeBytes: item.sizeBytes,
-    importedAt: new Date(item.createdAt).getTime(),
-    libraryMediaId: item.id,
-  };
-}
 
 function formatSize(bytes: number): string {
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
@@ -175,44 +149,28 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
   // projects too, not just this one (see `Asset.libraryMediaId`'s own doc comment). Hosted-only:
   // `HOSTED` gates the toggle itself below, so this branch simply never activates on desktop/local dev.
   const [isLibraryView, setIsLibraryView] = useState(false);
-  const [libraryItems, setLibraryItems] = useState<LibraryMediaItem[] | null>(null);
-  const [libraryLoading, setLibraryLoading] = useState(false);
-  const [libraryUsage, setLibraryUsage] = useState<{ usedBytes: number; capBytes: number } | null>(null);
+  const library = useLibraryMedia(isLibraryView);
   const [deleteConfirm, setDeleteConfirm] = useState<{ item: LibraryMediaItem; usedByProjects: { id: string; name: string }[] } | null>(
     null
   );
 
-  useEffect(() => {
-    if (!isLibraryView || !HOSTED) return;
-    let cancelled = false;
-    setLibraryLoading(true);
-    listLibraryMedia()
-      .then((res) => {
-        if (cancelled) return;
-        setLibraryItems(res.items);
-        setLibraryUsage({ usedBytes: res.usedBytes, capBytes: res.capBytes });
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        useEditorStore.getState().setStatus(err instanceof Error ? err.message : "Could not load your media library", "error");
-        setIsLibraryView(false);
-      })
-      .finally(() => {
-        if (!cancelled) setLibraryLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isLibraryView]);
+  // A failed fetch bounces the toggle back to "This project" rather than leaving the view stuck showing
+  // a permanent error where the library grid would be.
+  const libraryError = library.error;
+  React.useEffect(() => {
+    if (!libraryError) return;
+    useEditorStore.getState().setStatus(libraryError, "error");
+    setIsLibraryView(false);
+  }, [libraryError]);
 
   const libraryAssets = useMemo(() => {
-    const list = (libraryItems ?? []).filter((item) => item.name.toLowerCase().includes(query.trim().toLowerCase()));
+    const list = (library.items ?? []).filter((item) => item.name.toLowerCase().includes(query.trim().toLowerCase()));
     return list.sort((a, b) => {
       if (sortKey === "name") return a.name.localeCompare(b.name);
       if (sortKey === "duration") return b.duration - a.duration;
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
-  }, [libraryItems, query, sortKey]);
+  }, [library.items, query, sortKey]);
 
   /** `force`: the caller already showed `deleteConfirm`'s own warning and the user chose to proceed
    *  anyway — see `deleteLibraryMedia`'s own doc comment on why a non-forced "in use" outcome is a
@@ -225,8 +183,7 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
         return;
       }
       setDeleteConfirm(null);
-      setLibraryItems((items) => items?.filter((i) => i.id !== item.id) ?? null);
-      setLibraryUsage((u) => (u ? { ...u, usedBytes: Math.max(0, u.usedBytes - item.sizeBytes) } : u));
+      library.removeLocally(item.id, item.sizeBytes);
       // If this item was ALSO already placed in the current project, `removeAsset` cleans up that local
       // reference too (and shows its own "Removed" status) — same guard against an in-use-on-the-
       // timeline clip it already applies for a plain "remove from project" action, reused here rather
@@ -425,9 +382,9 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
           >
             {t("All my media")}
           </button>
-          {isLibraryView && libraryUsage && (
+          {isLibraryView && library.items !== null && (
             <span className="ml-auto shrink-0 text-[10px] tabular-nums text-white/40">
-              {t("{used} / {cap}", { used: formatSize(libraryUsage.usedBytes), cap: formatSize(libraryUsage.capBytes) })}
+              {t("{used} / {cap}", { used: formatSize(library.usedBytes), cap: formatSize(library.capBytes) })}
             </span>
           )}
         </div>
@@ -704,18 +661,18 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
 
         {isLibraryView && (
           <ul className="flex flex-col gap-1">
-            {libraryLoading && libraryItems === null && (
+            {library.loading && library.items === null && (
               <li className="px-2 py-4 text-center text-xs text-white/40">{t("Loading your media…")}</li>
             )}
-            {libraryItems !== null && libraryAssets.length === 0 && (
+            {library.items !== null && libraryAssets.length === 0 && (
               <li className="px-2 py-4 text-center text-xs leading-relaxed text-white/40">
-                {libraryItems.length === 0
+                {library.items.length === 0
                   ? t("Nothing in your library yet — import, generate, or download stock media to build it up.")
                   : t("Nothing matches that search.")}
               </li>
             )}
             {libraryAssets.map((item) => {
-              const pseudoAsset = pseudoAssetFromLibraryItem(item);
+              const pseudoAsset = previewAssetFromLibraryMedia(item);
               const inProject = project?.assets.some((a) => a.libraryMediaId === item.id) ?? false;
               return (
                 <li key={item.id} className="flex items-center gap-2.5 rounded-lg p-1.5 hover:bg-white/5">
