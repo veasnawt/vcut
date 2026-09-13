@@ -23,6 +23,7 @@ import type { Language } from "../i18n/translations.ts";
 import { translateText } from "../i18n/translations.ts";
 import type { PlaybackEngine } from "../playback/PlaybackEngine.ts";
 import { createColorAsset, createTextAsset, findAsset, findClip, sequenceDuration } from "../project/createProject.ts";
+import { fillTemplateSlot } from "../project/template.ts";
 import type { TextStylePreset } from "../project/textStylePresets.ts";
 import type { Asset, Clip, Project, TextStyle } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
@@ -456,6 +457,12 @@ export interface EditorState {
    *  item is already in `project.assets` (`libraryMediaId` match), returns that existing asset instead
    *  of adding a duplicate. */
   addLibraryAssetToProject: (item: api.LibraryMediaItem) => Asset | null;
+  /** Binds a real asset into one open "fill in your media" slot of a project started from a template
+   *  (see `templateSlots`/`fillTemplateSlot` in `project/template.ts` for the full reasoning) —
+   *  `TemplateSlotsDialog.tsx`'s only mutation. Takes any already-real `Asset` (whatever `importFiles`,
+   *  `addLibraryAssetToProject`, a stock download, or an AI generation just produced) — there's no
+   *  server round trip of its own here, the asset already exists by the time this is called. */
+  fillTemplateSlot: (placeholderAssetId: string, asset: Asset) => void;
   /** Imports one file into the project's own reusable "My Sounds" library (`project.customSfx`) —
    *  same "not undo-able, an import is more like an asset creation than a timeline edit" reasoning
    *  `importFiles` itself already follows, just against a separate library array instead of
@@ -1232,6 +1239,12 @@ export const useEditorStore = create<EditorState>((set, get) => {
       applyProject({ ...project, assets: [...project.assets, asset] });
       get().setStatus(translateText(get().language, "Added {name}", { name: asset.name }));
       return asset;
+    },
+
+    fillTemplateSlot(placeholderAssetId, asset) {
+      const { project } = get();
+      if (!project) return;
+      applyProject(fillTemplateSlot(project, placeholderAssetId, asset));
     },
 
     async importSfx(file) {

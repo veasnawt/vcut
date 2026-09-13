@@ -70,6 +70,26 @@ export interface Asset {
    *  was sitting right there in `project.assets`, just with nothing left connecting it back to "this
    *  came from a generation, here's the prompt that made it." */
   aiGeneration?: { prompt: string; aspectRatio: string; model?: string };
+  /** Present ONLY on an asset inside a saved template's own stored structure (see
+   *  `sanitizeProjectForTemplate` in `template.ts`) — and, transiently, on the placeholder a brand-new
+   *  project-from-template starts with, before "fill in your media" replaces it with a real asset.
+   *  Marks this as a stand-in for a real video/audio/image file that was deliberately stripped when the
+   *  template was saved: `relPath` is `""` (no real file, same convention a text asset's own empty
+   *  `relPath` already uses), and `duration`/`width`/`height`/`hasAudio` describe what the ORIGINAL clip
+   *  needed, not anything actually playable yet. Never present on a real project's own asset once every
+   *  slot has been filled — `fillTemplateSlot` (`template.ts`) removes it the moment a real asset is
+   *  bound in. */
+  templatePlaceholder?: {
+    /** Ordering across every placeholder in the template, timeline order — what the "fill in your
+     *  media" picker's own numbered slots key off (see `templateSlots` in `template.ts`). */
+    slotIndex: number;
+    /** Seconds — the trim window's own length the ORIGINAL clip used (`sourceOut - sourceIn`). The
+     *  media a user picks to fill this slot needs to cover at least this much; shorter source media is
+     *  used in full (the clip's own timeline length shrinks to match) rather than looped or held,
+     *  same "an editor should never silently synthesize frames that were never really there" reasoning
+     *  every other trim operation in this app already follows. */
+    requiredDuration: number;
+  };
   /** Present only when `kind === "text"`. A text asset has no backing file — `relPath` is an empty
    *  string and `hasAudio` is always false — its "content" is this string, authored directly rather
    *  than imported. Lives on the ASSET (not the clip) for the same reason a video's pixels do: it's

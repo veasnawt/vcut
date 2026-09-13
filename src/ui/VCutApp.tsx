@@ -39,6 +39,7 @@ import { translateText } from "../i18n/translations.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { findAsset, findClip } from "../project/createProject.ts";
 import { preloadAllFonts } from "../project/fonts.ts";
+import { templateSlots } from "../project/template.ts";
 import { flushPendingSave, useEditorStore } from "../store/editorStore.ts";
 import { clipAtTime } from "../timeline/queries.ts";
 import { DEFAULT_TRANSITION } from "../timeline/transitions.ts";
@@ -59,6 +60,7 @@ import { NewTextComposer } from "./NewTextComposer.tsx";
 import { PixelEffectPickerMenu } from "./PixelEffectPickerMenu.tsx";
 import { SaveAsTemplateDialog } from "./SaveAsTemplateDialog.tsx";
 import { StylePickerMenu } from "./StylePickerMenu.tsx";
+import { TemplateSlotsDialog } from "./TemplateSlotsDialog.tsx";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { Preview } from "./Preview.tsx";
 import { ScopesPanel } from "./ScopesPanel.tsx";
@@ -1277,6 +1279,13 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   const [showMobileSignIn, setShowMobileSignIn] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showSaveAsTemplate, setShowSaveAsTemplate] = useState(false);
+  const [showTemplateSlots, setShowTemplateSlots] = useState(false);
+  // Which `projectId` this has already checked for open template slots — a ref, not state, since
+  // checking is a one-time side effect per project, not something that should itself trigger a
+  // re-render. Guards against re-opening the dialog on every ordinary edit while the SAME project
+  // stays open (`project`'s own object identity changes on every `applyProject`, but `projectId`
+  // only changes when the user actually switches to a different project).
+  const checkedSlotsForProjectId = useRef<string | null>(null);
   const userMenuButtonRef = useRef<HTMLButtonElement>(null);
 
   // The desktop half of sign-in: `main.ts` extracts `access_token`/`refresh_token` from the
@@ -1512,6 +1521,15 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
     // this project is already open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, load]);
+
+  // Auto-opens the "fill in your media" step the first time a project started from a template
+  // finishes loading — see `TemplateSlotsDialog.tsx`'s own doc comment. Fires once per `projectId`
+  // (via `checkedSlotsForProjectId`), not on every subsequent edit.
+  useEffect(() => {
+    if (!project || checkedSlotsForProjectId.current === projectId) return;
+    checkedSlotsForProjectId.current = projectId;
+    if (templateSlots(project).length > 0) setShowTemplateSlots(true);
+  }, [project, projectId]);
 
   // Flush on unmount and on window close, so the autosave debounce can never swallow the final edit.
   useEffect(() => {
@@ -1857,6 +1875,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         </div>
       </header>
       {showSaveAsTemplate && <SaveAsTemplateDialog onClose={() => setShowSaveAsTemplate(false)} />}
+      {showTemplateSlots && <TemplateSlotsDialog onClose={() => setShowTemplateSlots(false)} />}
 
       {/* Three panes at `lg`+ (1024px): media on the left, preview + inspector in the middle,
           timeline across the bottom — the original desktop layout, unchanged. Below `lg`, there's no

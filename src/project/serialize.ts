@@ -103,12 +103,23 @@ function parseAiGeneration(value: unknown): { prompt: string; aspectRatio: strin
   return { prompt: r.prompt, aspectRatio: r.aspectRatio, ...(typeof r.model === "string" ? { model: r.model } : null) };
 }
 
+/** Guards `Asset.templatePlaceholder` the same "additive, fall back to absent rather than throw" way
+ *  `parseAiGeneration` above does — a malformed/missing value just means this asset is treated as a
+ *  normal (if oddly empty) one rather than rejecting the whole project. */
+function parseTemplatePlaceholder(value: unknown): { slotIndex: number; requiredDuration: number } | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const r = value as Record<string, unknown>;
+  if (typeof r.slotIndex !== "number" || typeof r.requiredDuration !== "number") return undefined;
+  return { slotIndex: r.slotIndex, requiredDuration: r.requiredDuration };
+}
+
 function parseAsset(raw: Record<string, unknown>): Asset {
   const kind = str(raw.kind, "asset kind");
   if (kind !== "video" && kind !== "audio" && kind !== "image" && kind !== "text" && kind !== "color") {
     throw new ProjectFormatError(`Project file has an unknown asset kind: ${kind}`);
   }
   const aiGeneration = parseAiGeneration(raw.aiGeneration);
+  const templatePlaceholder = parseTemplatePlaceholder(raw.templatePlaceholder);
   // Optional fields are spread in only when actually present, never written as an explicit
   // `undefined`. `JSON.stringify` omits undefined values entirely, so setting them unconditionally
   // would make a restored project structurally differ from the one that was saved — the round trip
@@ -145,6 +156,7 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     // so a new field missing from this list doesn't just fail to round-trip in a test, it silently
     // vanishes from every real save regardless of what the client actually sent.
     ...(typeof raw.libraryMediaId === "string" ? { libraryMediaId: raw.libraryMediaId } : null),
+    ...(templatePlaceholder ? { templatePlaceholder } : null),
   };
 }
 

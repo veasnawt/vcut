@@ -39,7 +39,7 @@ export function SaveAsTemplateDialog({ onClose }: { onClose: () => void }) {
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-sm rounded-xl border border-white/10 bg-[#12151c] p-5 shadow-2xl">
         <h2 className="text-sm font-semibold text-white">{t("Save as template")}</h2>
         <p className="mt-2 text-xs leading-relaxed text-white/60">
-          {t("Saves the aspect ratio, tracks, and any text or color clips — not the media itself. Use it to start new projects from this same structure.")}
+          {t("Saves the whole edit — timing, effects, transitions, music, text — for anyone to reuse with their own photos and videos.")}
         </p>
         <input
           value={name}
