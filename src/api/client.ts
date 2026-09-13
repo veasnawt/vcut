@@ -137,10 +137,19 @@ export async function saveProject(projectId: string, project: Project): Promise<
   await unwrap<{ ok: boolean }>(response);
 }
 
-export async function importMedia(projectId: string, file: File): Promise<Asset> {
+/** `hiddenFromLibrary`: a stock sound effect or voiceover take, not something the user chose to
+ *  import as their own media — see `Asset.hiddenFromLibrary`'s own doc comment for the CLIENT-side
+ *  half of this (keeps it off "This project"'s own Media tab). Threaded through to the server as a
+ *  separate `hidden` form field so the account-wide "All my media" listing can exclude it too (a real,
+ *  reported bug otherwise: every hosted-mode upload lands in the user's library table regardless, so
+ *  without this the clip stayed invisible in ITS OWN project's Media tab while still cluttering "All my
+ *  media" account-wide, forever). Not sent at all for a plain user upload — `undefined`/`false` both
+ *  mean "a normal import," visible in the library exactly as it always has been. */
+export async function importMedia(projectId: string, file: File, options?: { hiddenFromLibrary?: boolean }): Promise<Asset> {
   if (isNative) return nativeImportMedia(projectId, file);
   const form = new FormData();
   form.append("file", file);
+  if (options?.hiddenFromLibrary) form.append("hidden", "1");
   const response = await apiFetch(`${BASE}/media?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     body: form,
@@ -414,6 +423,11 @@ export function filmstripUrl(projectId: string, asset: Asset): string | null {
  *  frontend doing any per-clip image generation of its own. */
 export function waveformUrl(projectId: string, asset: Asset): string | null {
   if (!asset.waveformRelPath) return null;
+  // Bundled catalog SFX (`Asset.bundledSfx`) never had a per-project waveform generated at all — its
+  // `waveformRelPath` names a sibling file in the app's own shared `assets/sfx/` directory instead
+  // (see that field's own doc comment), resolved through the same unauthenticated bundled-asset route
+  // `sfxAssetUrl` uses rather than this project's own `media/raw`.
+  if (asset.bundledSfx) return sfxWaveformUrl(asset.waveformRelPath);
   return `${mediaUrl(projectId, asset.waveformRelPath, Boolean(asset.libraryMediaId))}&kind=thumbnail`;
 }
 
@@ -538,6 +552,14 @@ export async function deleteLibraryMedia(id: string, force = false): Promise<Lib
  *  asset this app serves via its own API route rather than Next's `public/` static folder — there's
  *  no `studios/vcut/public/sfx/` directory for a bare `/sfx/${file}` to ever resolve against. */
 export function sfxAssetUrl(file: string): string {
+  return `${BASE}/sfx/${file}`;
+}
+
+/** URL for a bundled `SFX_REGISTRY` entry's pre-generated waveform PNG (`sfxMetadata.generated.ts`'s
+ *  own `SFX_METADATA[file].waveformFile`) — same bundled, unauthenticated `sfx/[file]/route.ts` route
+ *  `sfxAssetUrl` uses, since the waveform is just a plain sibling file in that same directory (see that
+ *  generated file's own doc comment for why there's no separate directory/route for it). */
+export function sfxWaveformUrl(file: string): string {
   return `${BASE}/sfx/${file}`;
 }
 

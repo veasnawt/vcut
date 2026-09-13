@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Maximize, Pause, Play, Redo, SkipBack, SkipForward, StepBack, StepForward, Undo } from "@veasnawt/vicons";
-import { mediaUrl, outroAssetUrl } from "../api/client.ts";
+import { mediaUrl, outroAssetUrl, sfxAssetUrl } from "../api/client.ts";
 import { sequenceDuration } from "../project/createProject.ts";
 import { buildComposePreviewProject } from "../playback/composePreview.ts";
 import { OUTRO_BG_ASSET_ID, OUTRO_BG_FILE, OUTRO_DURATION_SECONDS, OUTRO_LOGO_ASSET_ID, OUTRO_LOGO_FILE } from "../export/outro.ts";
@@ -237,6 +237,11 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
         const state = useEditorStore.getState();
         const asset = state.project?.assets.find((a) => a.id === assetId);
         if (!asset || !state.projectId) return null;
+        // A bundled catalog SFX (`Asset.bundledSfx`) is never copied into the project at all — its
+        // real file is the same shared, immutable one every user's playback of the same sound reads,
+        // resolved through the app's own unauthenticated bundled-asset route rather than this
+        // project's own media.
+        if (asset.bundledSfx) return sfxAssetUrl(asset.relPath);
         return mediaUrl(state.projectId, asset.relPath, Boolean(asset.libraryMediaId));
       },
       lutUrlFor: (lutId) => {

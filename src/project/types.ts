@@ -132,6 +132,20 @@ export interface Asset {
    *  `user_media`'s own migration comment for the full reasoning. Absent for a plain project-local
    *  asset, exactly as every asset already was before this field existed. */
   libraryMediaId?: string;
+  /** Set only on an asset built from a bundled `SFX_REGISTRY` catalog entry (`SfxPanel.tsx`'s "Add",
+   *  when `sfxMetadata.generated.ts` has an entry for it) — `relPath` is the entry's own `file`,
+   *  resolved against the app's SHARED, immutable `packages/vcut/assets/sfx/` directory instead of this
+   *  project's own media (or the account library's), and `waveformRelPath` similarly names a sibling
+   *  file in that same bundled directory. Never copied anywhere: the exact same file every user's
+   *  export of the same catalog sound reads (`sfxAssetUrl`/`sfxAssetPath`, both keyed by plain
+   *  filename) — a real, reported waste otherwise, since a stock sound effect is identical for every
+   *  user and doesn't need its own private copy per placement the way a real upload does. Also implies
+   *  `hiddenFromLibrary: true` (set alongside this) for the same "already reachable from its own
+   *  browsable panel" reasoning that field's own doc comment gives — even though this asset was never
+   *  actually imported at all, so there's nothing to keep OUT of the library that could ever have
+   *  reached it in the first place; kept for symmetry with older bundled-SFX clips placed before this
+   *  field existed, which DID go through the ordinary import path. */
+  bundledSfx?: true;
 }
 
 /** Visual style for a text asset. Simpler than `ClipTransform`: font size already controls "how big"

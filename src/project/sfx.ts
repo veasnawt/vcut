@@ -2,17 +2,22 @@
  *  `fonts.ts`'s `FONT_REGISTRY` shape (one flat array of small, self-describing entries, keyed by a
  *  stable `id`), but for a much simpler problem: a font needs several real files per family (one per
  *  weight/style FFmpeg's `drawtext` can point at) and gets read by two different renderers, while an
- *  SFX clip is just one short audio file a user previews and drops onto an audio track — no export-time
- *  code path ever reads this registry at all (see `sfxAssetUrl`'s own comment in `api/client.ts`).
+ *  SFX clip is just one short audio file a user previews and drops onto an audio track.
  *
- *  Deliberately NO `sfxById`-with-fallback the way `fontById` has one: `fontById`'s leniency exists
- *  because a font id gets PERSISTED into `project.json` (`TextStyle.fontId`), so a project saved by a
- *  newer build (or one that later drops a font) must still open in an older/changed build without
- *  throwing. An SFX id is never persisted anywhere — picking an entry here just fetches its bundled
- *  file and runs it through the ordinary import pipeline (see `SfxPanel.tsx`'s "Add" handler), after
- *  which it's a completely normal `Asset`/`Clip` like any dragged-in audio file, with no further
- *  reference back to this registry or its ids. There is nothing left for an "unknown id" to mean once
- *  that hand-off happens, so there's nothing here worth being lenient about. */
+ *  `assetFromBundledSfx` below is what "Add" actually calls now — the file behind an entry here is
+ *  shared and immutable, so placing one on the timeline references it directly (`Asset.bundledSfx`,
+ *  resolved by `export/route.ts`'s own `inputPathFor` too — a real export-time reader DOES exist now)
+ *  rather than fetching and re-importing a private copy of a file every user already has equal access
+ *  to. `SfxDefinition.id` is still never itself persisted into `project.json` (an `Asset`'s own `id`
+ *  is, as always, freshly minted per placement) — what DOES now persist, on a zero-copy pick, is
+ *  `file` (as `Asset.relPath`) and `sfxMetadata.generated.ts`'s own precomputed duration/waveform.
+ *  `SFX_METADATA` missing an entry for a given `file` (a brand-new registry addition nobody's
+ *  regenerated metadata for yet) isn't an error: `assetFromBundledSfx` returns `null`, and
+ *  `SfxPanel.tsx`'s own "Add" falls back to the ordinary fetch-and-import path for that one entry,
+ *  same as every bundled entry always worked before this existed. */
+
+import { SFX_METADATA } from "./sfxMetadata.generated.ts";
+import type { Asset } from "./types.ts";
 
 export interface SfxDefinition {
   id: string;
@@ -234,4 +239,29 @@ export const SFX_REGISTRY: SfxDefinition[] = [
  *  `ffmpeg.ts`'s `resolveFontsDir`/`textFontPath` for the same packaged-vs-dev directory split. */
 export function sfxById(id: string): SfxDefinition | undefined {
   return SFX_REGISTRY.find((s) => s.id === id);
+}
+
+/** Builds a real, placeable `Asset` for a bundled catalog entry with NO server round trip at all —
+ *  see this file's own top comment for why: the real file is shared and immutable, so this just
+ *  references it (`Asset.bundledSfx`) instead of fetching and re-importing a private copy. `id` is
+ *  freshly minted per call (same reasoning `assetFromLibraryMedia`'s own doc comment gives — two
+ *  placements of the same sound, even in the same project, need independent asset ids, e.g. so each
+ *  can be trimmed/effects'd independently). Returns `null` when `SFX_METADATA` has no entry for this
+ *  definition's file — see this file's own top comment for what the caller should do about that. */
+export function assetFromBundledSfx(def: SfxDefinition): Asset | null {
+  const metadata = SFX_METADATA[def.file];
+  if (!metadata) return null;
+  return {
+    id: crypto.randomUUID(),
+    kind: "audio",
+    name: def.label,
+    relPath: def.file,
+    waveformRelPath: metadata.waveformFile,
+    duration: metadata.duration,
+    hasAudio: true,
+    sizeBytes: metadata.sizeBytes,
+    importedAt: Date.now(),
+    hiddenFromLibrary: true,
+    bundledSfx: true,
+  };
 }

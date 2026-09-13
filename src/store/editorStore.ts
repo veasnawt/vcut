@@ -23,6 +23,7 @@ import type { Language } from "../i18n/translations.ts";
 import { translateText } from "../i18n/translations.ts";
 import type { PlaybackEngine } from "../playback/PlaybackEngine.ts";
 import { createColorAsset, createTextAsset, findAsset, findClip, sequenceDuration } from "../project/createProject.ts";
+import { assetFromBundledSfx, type SfxDefinition } from "../project/sfx.ts";
 import { fillTemplateSlot } from "../project/template.ts";
 import type { TextStylePreset } from "../project/textStylePresets.ts";
 import type { Asset, Clip, Project, TextStyle } from "../project/types.ts";
@@ -457,6 +458,13 @@ export interface EditorState {
    *  item is already in `project.assets` (`libraryMediaId` match), returns that existing asset instead
    *  of adding a duplicate. */
   addLibraryAssetToProject: (item: api.LibraryMediaItem) => Asset | null;
+  /** Places a bundled `SFX_REGISTRY` catalog entry into this project as a real, placeable `Asset` —
+   *  same "pure, synchronous, no server round trip" shape as `addLibraryAssetToProject` just above, for
+   *  the same underlying reason (`project/sfx.ts`'s own `assetFromBundledSfx` already has everything it
+   *  needs precomputed). Returns `null` when that function does — see its own doc comment — in which
+   *  case `SfxPanel.tsx`'s own "Add" falls back to the ordinary fetch-and-import flow instead of calling
+   *  this at all. */
+  addBundledSfx: (def: SfxDefinition) => Asset | null;
   /** Binds a real asset into one open "fill in your media" slot of a project started from a template
    *  (see `templateSlots`/`fillTemplateSlot` in `project/template.ts` for the full reasoning) —
    *  `TemplateSlotsDialog.tsx`'s only mutation. Takes any already-real `Asset` (whatever `importFiles`,
@@ -1028,7 +1036,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
       // firing a dozen of those at once would thrash the disk and spawn a dozen processes.
       for (const file of files) {
         try {
-          const asset = await api.importMedia(projectId, file);
+          const asset = await api.importMedia(projectId, file, options);
           imported.push(options?.hiddenFromLibrary ? { ...asset, hiddenFromLibrary: true } : asset);
         } catch (err) {
           failures.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
@@ -1220,7 +1228,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
         // path that was never in this project's own media directory, and at worst risk touching an
         // unrelated same-named file there instead. Actually deleting the shared file (with its own
         // cross-project usage warning) is a separate, explicit library action, not this one.
-        if (!asset.libraryMediaId) await api.deleteMedia(projectId, asset);
+        // A bundled catalog SFX (`asset.bundledSfx`) has no file in this project's own folder either,
+        // for the same underlying reason a library-backed asset doesn't — its real file was never
+        // copied anywhere in the first place (see that field's own doc comment). Nothing to delete
+        // either way, just a reference to drop.
+        if (!asset.libraryMediaId && !asset.bundledSfx) await api.deleteMedia(projectId, asset);
         const current = get().project;
         if (current) applyProject({ ...current, assets: current.assets.filter((a) => a.id !== asset.id) });
         get().setStatus(translateText(get().language, "Removed {name}", { name: asset.name }));
@@ -1238,6 +1250,15 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const asset = api.assetFromLibraryMedia(item);
       applyProject({ ...project, assets: [...project.assets, asset] });
       get().setStatus(translateText(get().language, "Added {name}", { name: asset.name }));
+      return asset;
+    },
+
+    addBundledSfx(def) {
+      const { project } = get();
+      if (!project) return null;
+      const asset = assetFromBundledSfx(def);
+      if (!asset) return null;
+      applyProject({ ...project, assets: [...project.assets, asset] });
       return asset;
     },
 

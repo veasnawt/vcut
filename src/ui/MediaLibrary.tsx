@@ -125,6 +125,151 @@ function AssetThumbnail({ asset, projectId }: { asset: Asset; projectId: string 
   return <img src={url} alt="" className="h-full w-full object-cover" draggable={false} />;
 }
 
+/** One row of "All my media" — deliberately the SAME masonry-tile-on-mobile/list-row-on-desktop shape
+ *  the "This project" tab's own asset tiles use below (natural aspect ratio, preview button, mobile
+ *  kind badge, duration badge, overlaid title/description on mobile vs. plain text beside a small fixed
+ *  thumbnail on desktop) — asked for directly, since the two tabs used to look like two different
+ *  apps stitched together. Only the trailing ACTIONS differ from a "This project" tile, because they
+ *  genuinely are different here: "Add to this project" / "Already in this project" plus "Delete from
+ *  library" (permanent, cross-project), vs. that tab's own single "Remove from project" (this project
+ *  only). No drag-to-timeline or double-click-to-place either — unlike a "This project" asset, a
+ *  library item isn't in `project.assets` yet, so there's nothing valid to drag/double-click onto the
+ *  timeline until `onAdd` actually places it there first. */
+function LibraryItemCard({
+  item,
+  projectId,
+  inProject,
+  onPreview,
+  onAdd,
+  onDelete,
+}: {
+  item: LibraryMediaItem;
+  projectId: string;
+  inProject: boolean;
+  onPreview: () => void;
+  onAdd: () => void;
+  onDelete: () => void;
+}) {
+  const t = useTranslation();
+  const pseudoAsset = previewAssetFromLibraryMedia(item);
+
+  return (
+    <div className="group relative flex w-full flex-col rounded-lg text-left transition hover:bg-white/10 lg:flex-row lg:items-center lg:gap-2.5 lg:p-1.5">
+      <div
+        className="relative w-full shrink-0 overflow-hidden bg-black lg:h-11 lg:w-16 lg:rounded"
+        style={{ aspectRatio: item.width && item.height ? `${item.width} / ${item.height}` : "16 / 9" }}
+      >
+        <AssetThumbnail asset={pseudoAsset} projectId={projectId} />
+        {isPreviewable(item.kind) && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onPreview();
+            }}
+            title={t("Preview {name}", { name: item.name })}
+            aria-label={t("Preview {name}", { name: item.name })}
+            className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white/80 transition hover:bg-black/80 hover:text-white"
+          >
+            <Play size={12} />
+          </button>
+        )}
+        <span className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded bg-black/70 lg:hidden">
+          {(() => {
+            const { Icon, className } = KIND_BADGE[item.kind];
+            return <Icon size={12} className={className} />;
+          })()}
+        </span>
+        {item.kind !== "image" && (
+          <span className="absolute right-1 top-1 rounded bg-black/75 px-1 text-[10px] tabular-nums text-white/90 lg:bottom-0 lg:right-0 lg:top-auto lg:rounded-none">
+            {formatDuration(item.duration)}
+          </span>
+        )}
+        {/* Mobile-grid actions — stacked in the same top-right corner the "This project" tab's own
+            remove button occupies, dropped below the duration badge (`top-8`) whenever one's there for
+            the same reason that tab's own comment gives. Always visible, not hover-revealed — touch has
+            no `:hover` to reveal them from. */}
+        <div className={`absolute right-1 flex flex-col items-end gap-1 lg:hidden ${item.kind !== "image" ? "top-8" : "top-1"}`}>
+          {inProject ? (
+            <span
+              title={t("Already in this project")}
+              aria-label={t("Already in this project")}
+              className="flex h-6 w-6 items-center justify-center rounded bg-black/70 text-emerald-300"
+            >
+              <Check size={14} />
+            </span>
+          ) : (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onAdd();
+              }}
+              title={t("Add to this project")}
+              aria-label={t("Add {name} to this project", { name: item.name })}
+              className="flex h-6 w-6 items-center justify-center rounded bg-sky-500/80 text-white transition hover:bg-sky-500"
+            >
+              <Add size={14} />
+            </button>
+          )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            title={t("Delete from library")}
+            aria-label={t("Delete {name} from your library", { name: item.name })}
+            className="flex h-6 w-6 items-center justify-center rounded bg-black/70 text-white/70 transition hover:bg-black/90 hover:text-rose-300"
+          >
+            <Close size={12} />
+          </button>
+        </div>
+        {/* Title + description overlaid on the thumbnail — mobile-grid only, matching the "This
+            project" tab's identical treatment. */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-1.5 pb-1 pt-4 lg:hidden">
+          <p className="truncate text-[11px] font-medium text-white/95">{item.name}</p>
+          <p className="truncate text-[10px] text-white/70">{describe(pseudoAsset)}</p>
+        </div>
+      </div>
+      <div className="hidden min-w-0 lg:block lg:flex-1">
+        <p className="truncate text-xs font-medium text-white/90">{item.name}</p>
+        <p className="truncate text-[11px] text-white/45">{describe(pseudoAsset)}</p>
+      </div>
+      {/* Desktop-row-only actions — see this component's own doc comment for why these two buttons
+          (not a single "remove") are what a library item actually needs. Both states share the same
+          fixed footprint (see the ORIGINAL version of this row's own reasoning, preserved here) so
+          Delete's own position never shifts depending on whether a row shows the check or the Add
+          button. */}
+      <div className="hidden shrink-0 items-center gap-1 lg:flex">
+        {inProject ? (
+          <span
+            title={t("Already in this project")}
+            aria-label={t("Already in this project")}
+            className="flex h-6 w-6 items-center justify-center rounded text-emerald-300"
+          >
+            <Check size={14} />
+          </span>
+        ) : (
+          <button
+            onClick={onAdd}
+            title={t("Add to this project")}
+            aria-label={t("Add {name} to this project", { name: item.name })}
+            className="flex h-6 w-6 items-center justify-center rounded bg-sky-500/20 text-sky-300 transition hover:bg-sky-500/30"
+          >
+            <Add size={14} />
+          </button>
+        )}
+        <button
+          onClick={onDelete}
+          title={t("Delete from library")}
+          aria-label={t("Delete {name} from your library", { name: item.name })}
+          className="flex h-6 w-6 items-center justify-center rounded text-white/30 transition hover:bg-white/10 hover:text-rose-300"
+        >
+          <Close size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {}) {
   const t = useTranslation();
   const projectId = useEditorStore((s) => s.projectId);
@@ -663,94 +808,44 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
         )}
 
         {isLibraryView && (
-          <ul className="flex flex-col gap-1">
-            {library.loading && library.items === null && (
-              <li className="px-2 py-4 text-center text-xs text-white/40">{t("Loading your media…")}</li>
-            )}
-            {library.items !== null && libraryAssets.length === 0 && (
-              <li className="px-2 py-4 text-center text-xs leading-relaxed text-white/40">
-                {library.items.length === 0
-                  ? t("Nothing in your library yet — import, generate, or download stock media to build it up.")
-                  : t("Nothing matches that search.")}
-              </li>
-            )}
-            {libraryAssets.map((item) => {
-              const pseudoAsset = previewAssetFromLibraryMedia(item);
-              const inProject = project?.assets.some((a) => a.libraryMediaId === item.id) ?? false;
-              return (
-                <li key={item.id} className="flex items-center gap-2.5 rounded-lg p-1.5 hover:bg-white/5">
-                  <div
-                    className="relative h-11 w-16 shrink-0 overflow-hidden rounded bg-black"
-                    style={{ aspectRatio: item.width && item.height ? `${item.width} / ${item.height}` : "16 / 9" }}
-                  >
-                    <AssetThumbnail asset={pseudoAsset} projectId={projectId} />
-                    {isPreviewable(item.kind) && (
-                      <button
-                        onClick={() => setPreviewAsset(pseudoAsset)}
-                        title={t("Preview {name}", { name: item.name })}
-                        aria-label={t("Preview {name}", { name: item.name })}
-                        className="absolute left-1/2 top-1/2 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white/80 transition hover:bg-black/80 hover:text-white"
-                      >
-                        <Play size={12} />
-                      </button>
-                    )}
-                    {item.kind !== "image" && (
-                      <span className="absolute bottom-0 right-0 rounded-tl bg-black/75 px-1 text-[10px] tabular-nums text-white/90">
-                        {formatDuration(item.duration)}
-                      </span>
-                    )}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs font-medium text-white/90">{item.name}</p>
-                    <p className="truncate text-[11px] text-white/45">{formatSize(item.sizeBytes)}</p>
-                  </div>
-                  {/* Both states below are the SAME fixed `h-6 w-6` footprint — a plain text label
-                      ("In this project") next to a short "Add" button used to leave the row's total
-                      width (and so the Delete button's own on-screen position) shifting from row to row
-                      depending purely on which state that ROW happened to be in (a real, reported
-                      "the X looks off" complaint). Two same-sized icon buttons side by side pins Delete
-                      to a consistent offset regardless of state. */}
-                  <div className="flex shrink-0 items-center gap-1">
-                    {inProject ? (
-                      <span
-                        title={t("Already in this project")}
-                        aria-label={t("Already in this project")}
-                        className="flex h-6 w-6 items-center justify-center rounded text-emerald-300"
-                      >
-                        <Check size={14} />
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => {
-                          // Reported directly: picking something from "All my media" used to just add
-                          // it to this project's own library, sitting there until a separate manual
-                          // drag/double-click actually put it on the timeline — landing back in the
-                          // editor with nothing to show for the pick. Placing it at the playhead right
-                          // away (same as double-clicking a "This project" tile already does) is the
-                          // one-step "use this" a deliberate library pick is actually asking for.
-                          const asset = addLibraryAssetToProject(item);
-                          if (asset) addAssetAtPlayhead(asset.id);
-                        }}
-                        title={t("Add to this project")}
-                        aria-label={t("Add {name} to this project", { name: item.name })}
-                        className="flex h-6 w-6 items-center justify-center rounded bg-sky-500/20 text-sky-300 transition hover:bg-sky-500/30"
-                      >
-                        <Add size={14} />
-                      </button>
-                    )}
-                    <button
-                      onClick={() => void handleDeleteLibraryItem(item)}
-                      title={t("Delete from library")}
-                      aria-label={t("Delete {name} from your library", { name: item.name })}
-                      className="flex h-6 w-6 items-center justify-center rounded text-white/30 transition hover:bg-white/10 hover:text-rose-300"
-                    >
-                      <Close size={12} />
-                    </button>
-                  </div>
+          <div className="vcut-media-grid-container lg:contents">
+            <ul className="vcut-media-grid gap-2 lg:flex lg:flex-col lg:gap-1">
+              {library.loading && library.items === null && (
+                <li className="px-2 py-4 text-center text-xs text-white/40">{t("Loading your media…")}</li>
+              )}
+              {library.items !== null && libraryAssets.length === 0 && (
+                <li className="px-2 py-4 text-center text-xs leading-relaxed text-white/40">
+                  {library.items.length === 0
+                    ? t("Nothing in your library yet — import, generate, or download stock media to build it up.")
+                    : t("Nothing matches that search.")}
                 </li>
-              );
-            })}
-          </ul>
+              )}
+              {libraryAssets.map((item) => {
+                const inProject = project?.assets.some((a) => a.libraryMediaId === item.id) ?? false;
+                return (
+                  <li key={item.id} className="mb-2 break-inside-avoid lg:mb-0">
+                    <LibraryItemCard
+                      item={item}
+                      projectId={projectId}
+                      inProject={inProject}
+                      onPreview={() => setPreviewAsset(previewAssetFromLibraryMedia(item))}
+                      onAdd={() => {
+                        // Reported directly: picking something from "All my media" used to just add it
+                        // to this project's own library, sitting there until a separate manual drag/
+                        // double-click actually put it on the timeline — landing back in the editor with
+                        // nothing to show for the pick. Placing it at the playhead right away (same as
+                        // double-clicking a "This project" tile already does) is the one-step "use this"
+                        // a deliberate library pick is actually asking for.
+                        const asset = addLibraryAssetToProject(item);
+                        if (asset) addAssetAtPlayhead(asset.id);
+                      }}
+                      onDelete={() => void handleDeleteLibraryItem(item)}
+                    />
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )}
       </div>
 

@@ -33,6 +33,7 @@ export function SfxPanel({ onClose }: { onClose: () => void }) {
   const activeTrackId = useEditorStore((s) => s.activeTrackId);
   const playhead = useEditorStore((s) => s.playhead);
   const importFiles = useEditorStore((s) => s.importFiles);
+  const addBundledSfx = useEditorStore((s) => s.addBundledSfx);
   const importSfx = useEditorStore((s) => s.importSfx);
   const removeSfx = useEditorStore((s) => s.removeSfx);
   const importingSfx = useEditorStore((s) => s.importingSfx);
@@ -132,14 +133,19 @@ export function SfxPanel({ onClose }: { onClose: () => void }) {
     return addTrack.trackId;
   }
 
-  /** Generalized the same way `togglePreview` is — `id`/`label`/`url` plus the FILENAME to hand
-   *  `importFiles` (bundled and "My Sounds" both already have a real one of their own: `def.file` /
-   *  `sfx.relPath`'s own basename — never invented here). A "My Sounds" pick goes through this exact
-   *  same fetch-then-`importFiles` hand-off as a bundled one, not a direct reference to its
+  /** The fetch-then-copy path — the ONLY path for "My Sounds" (a genuinely unique, user-owned file: no
+   *  shared copy exists to reference instead, unlike a bundled catalog entry, so there's real work to
+   *  do here), and `addBundledSfxToTimeline`'s own fallback for a bundled entry `sfxMetadata.generated.ts`
+   *  has no precomputed metadata for yet. A "My Sounds" pick goes through this exact same
+   *  fetch-then-`importFiles` hand-off as a bundled fallback, not a direct reference to its own
    *  `CustomSfxAsset` — clips need a real `Asset` id (`project.assets`), and `customSfx` is a separate,
    *  LUT/font-shaped LIBRARY of re-usable sources, not itself a placeable asset (see
    *  `CustomSfxAsset`'s own doc comment for why "Add to timeline" and a plain library entry are
-   *  genuinely different operations). */
+   *  genuinely different operations). Deliberately still COPIES a "My Sounds" pick rather than
+   *  referencing the project's own `customSfxDir` file directly the way a bundled entry now can:
+   *  "My Sounds" entries are individually deletable (`removeSfx`), and an already-placed clip
+   *  referencing that same file directly would go dangling the moment its library entry got deleted —
+   *  a hazard a bundled catalog file (permanent, never deletable) simply doesn't have. */
   async function addToTimeline(id: string, label: string, url: string, fileName: string) {
     if (!project || addingId) return;
     setAddingId(id);
@@ -147,8 +153,9 @@ export function SfxPanel({ onClose }: { onClose: () => void }) {
       const blob = await fetch(url).then((r) => r.blob());
       const file = new File([blob], fileName, { type: blob.type || "audio/mpeg" });
       // `hiddenFromLibrary: true` — same choice as `VoiceoverRecorder`'s own take, now, not the
-      // opposite: this bundled clip is already reachable from its own browsable panel (this one, a
-      // click away any time), so a second copy of it sitting in the Media Library too was reported as
+      // opposite: this clip is already reachable from its own browsable panel (this one, a
+      // click away any time — "My Sounds" or the bundled catalog either way), so a second copy of it
+      // sitting in the Media Library too was reported as
       // clutter rather than a convenience. Once it's on the timeline it's still a completely ordinary
       // clip — droppable/duplicable/trimmable exactly like any other — this flag only keeps it out of
       // the LIBRARY LISTING, never off the timeline itself.
@@ -167,6 +174,25 @@ export function SfxPanel({ onClose }: { onClose: () => void }) {
     } finally {
       setAddingId(null);
     }
+  }
+
+  /** The bundled-catalog "Add" — tries the zero-copy path first (`addBundledSfx`, no server round trip
+   *  at all: the real file is shared/immutable, so this just references it — see `Asset.bundledSfx`'s
+   *  own doc comment), falling back to the ordinary fetch-and-import flow (`addToTimeline`) only when
+   *  `sfxMetadata.generated.ts` has no precomputed entry for this one yet (a brand-new registry addition
+   *  nobody's regenerated metadata for). "My Sounds" entries never call this — see `addToTimeline`'s own
+   *  doc comment for why a genuinely unique, user-owned file stays on the ordinary copy-on-add path. */
+  function addBundledSfxToTimeline(def: SfxDefinition) {
+    if (!project || addingId) return;
+    const asset = addBundledSfx(def);
+    if (!asset) {
+      void addToTimeline(def.id, def.label, sfxAssetUrl(def.file), def.file);
+      return;
+    }
+    const trackId = targetAudioTrackId(defaultClipDuration(asset));
+    addAssetAtPlayhead(asset.id, trackId);
+    setStatus(t('Added "{name}" to the timeline', { name: def.label }));
+    onClose();
   }
 
   const normalizedQuery = query.trim().toLowerCase();
@@ -307,7 +333,7 @@ export function SfxPanel({ onClose }: { onClose: () => void }) {
                     </button>
                     <span className="min-w-0 flex-1 truncate text-xs text-white/80">{def.label}</span>
                     <button
-                      onClick={() => void addToTimeline(def.id, def.label, sfxAssetUrl(def.file), def.file)}
+                      onClick={() => addBundledSfxToTimeline(def)}
                       disabled={addingId === def.id}
                       className="shrink-0 rounded bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white transition hover:bg-white/20 disabled:cursor-default disabled:opacity-50"
                     >

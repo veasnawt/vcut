@@ -163,6 +163,10 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     // here is, rather than letting a bug that DID leave one behind get silently, further corrupted by
     // the very next save.
     ...(raw.templateBundledAudio === true ? { templateBundledAudio: true as const } : null),
+    // See `Asset.bundledSfx`'s own doc comment — a real, playable reference to a shared bundled file,
+    // not a placeholder, so (unlike `templatePlaceholder`) this DOES legitimately persist in an
+    // ordinary project's own project.json indefinitely, for as long as the clip stays placed.
+    ...(raw.bundledSfx === true ? { bundledSfx: true as const } : null),
   };
 }
 
