@@ -91,7 +91,7 @@ export function EffectsPickerMenu({
     <div
       ref={menuRef}
       role="menu"
-      aria-label={t("Effects")}
+      aria-label={t("Filters")}
       style={{ position: "fixed", bottom, left, width: MENU_WIDTH }}
       className="z-50 rounded-lg border border-white/10 bg-[#181b22] p-2.5 shadow-2xl"
     >
@@ -101,7 +101,7 @@ export function EffectsPickerMenu({
           onClick={() => run(new SetClipEffectsCommand(clip.id, IDENTITY_EFFECTS))}
           className="mt-2.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/60 transition hover:bg-white/10 hover:text-white"
         >
-          {t("Reset effects")}
+          {t("Reset filters")}
         </button>
       )}
     </div>,

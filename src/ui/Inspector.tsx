@@ -1027,7 +1027,7 @@ export function Inspector() {
    *  extra clicks, while every secondary section (Styles, Animation, Effects, Color Grading, LUT,
    *  Chroma Key, Transition Out, Auto Captions, Remove Object) stays out of the way until asked for. */
   const [collapsed, setCollapsed] = useState<Set<string>>(
-    () => new Set(["Details", "Styles", "Animation", "Remove Object", "Effects", "Color Grading", "LUT", "Chroma Key", "Transition Out", "Auto Captions"])
+    () => new Set(["Details", "Styles", "Animation", "Remove Object", "Filters", "Color Grading", "LUT", "Chroma Key", "Transition Out", "Auto Captions"])
   );
   function toggleSection(name: string) {
     setCollapsed((prev) => {
@@ -2104,10 +2104,10 @@ export function Inspector() {
                     for the preview/export approximation notes on brightness/blur specifically. */}
                 {activeTab === "transform" && track.kind === "video" && (
                   <CollapsibleSection
-                    title={t("Effects")}
+                    title={t("Filters")}
                     accent="bg-amber-400"
-                    open={!collapsed.has("Effects")}
-                    onToggle={() => toggleSection("Effects")}
+                    open={!collapsed.has("Filters")}
+                    onToggle={() => toggleSection("Filters")}
                   >
                     <KeyframeTrack clip={clip} property="effects" playhead={playhead} fps={fps} run={run} />
                     {(() => {
@@ -2179,7 +2179,7 @@ export function Inspector() {
                               onClick={() => run(new SetClipEffectsCommand(clip.id, IDENTITY_EFFECTS))}
                               className="mt-2.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/60 transition hover:bg-white/10 hover:text-white"
                             >
-                              {t("Reset effects")}
+                              {t("Reset filters")}
                             </button>
                           )}
                         </>

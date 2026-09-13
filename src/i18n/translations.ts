@@ -351,7 +351,7 @@ export const KM_TRANSLATIONS: Record<string, string> = {
   Saturation: "តិត្ថិភាពពណ៌",
   Blur: "ព្រិល",
   Opacity: "តម្លាភាព",
-  "Reset effects": "កំណត់បែបផែនត្រឡប់មកវិញ",
+  "Reset filters": "កំណត់បែបផែនត្រឡប់មកវិញ",
   "Crossfade from previous clip": "លាយបញ្ចូលពីឈុតមុន",
   "Fade in from black": "លេចឡើងបន្តិចម្តងៗពីខ្មៅ",
   "Fade in": "លេចឡើងបន្តិចម្តងៗ",

@@ -394,6 +394,127 @@ export function buildCanvasFilterString(effects: ClipEffects): string {
   );
 }
 
+/** Feature-detects whether this browser's Canvas 2D `context.filter` actually applies anything, rather
+ *  than assuming from a user-agent string. Confirmed live against caniuse's own compatibility data, not
+ *  assumed: Safari — desktop AND iOS, every browser there runs the same WebKit engine, "Brave"/"Chrome"
+ *  on an iPhone/iPad included — has shipped this API "disabled by default" through every version up to
+ *  and including its own latest release as of writing. `context.filter` is a completely silent no-op
+ *  there: brightness/contrast/saturation/blur simply never visually change anything, with no error or
+ *  console warning to notice it by — confirmed as the real, reported cause of "effects don't work on
+ *  mobile/tablet" (every device in that report runs Safari's engine under the hood), not a guess.
+ *  `drawTransformed` below falls back to `applyManualEffects`' own pixel-math implementation whenever
+ *  this returns `false`.
+ *
+ *  Draws one filled pixel with an easily-checked filter applied and reads the result back — memoized
+ *  (computed once; this can't meaningfully change mid-session) since a real canvas draw + readback
+ *  isn't free enough to repeat every frame. */
+let cachedFilterSupport: boolean | null = null;
+export function supportsCanvasFilter(): boolean {
+  if (cachedFilterSupport !== null) return cachedFilterSupport;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      cachedFilterSupport = false;
+      return false;
+    }
+    ctx.filter = "invert(1)";
+    ctx.fillStyle = "rgb(100, 100, 100)";
+    ctx.fillRect(0, 0, 1, 1);
+    const [r] = ctx.getImageData(0, 0, 1, 1).data;
+    // A real invert() flips 100 to 155; an ignored filter leaves the plain fill color, 100, in place.
+    cachedFilterSupport = r > 120;
+  } catch {
+    cachedFilterSupport = false;
+  }
+  return cachedFilterSupport;
+}
+
+/** A separable box blur (horizontal pass, then vertical) — not the true Gaussian FFmpeg's own `gblur`
+ *  produces (a real Gaussian needs a much wider, weighted kernel), but visually close enough at the
+ *  small radii `ClipEffects.blur` is actually used at in practice (this app's own presets top out at
+ *  3) — same "documented approximation, not an exact match" territory that field's own doc comment
+ *  already accepts for the CSS `blur()` path this replaces on a browser `supportsCanvasFilter` reports
+ *  `false` for. Separable (two 1D passes, not one 2D convolution) keeps the cost O(width×height×radius)
+ *  rather than squaring the radius term — still cheap at the radii this ever actually runs at. Edge
+ *  pixels clamp to the nearest real one (never sample past the frame) rather than wrapping or padding
+ *  with black, so a blurred edge fades toward its own edge color, not toward black. */
+function applyBoxBlur(imageData: ImageData, radius: number): void {
+  const r = Math.round(radius);
+  if (r <= 0) return;
+  const { width, height, data } = imageData;
+  const windowSize = r * 2 + 1;
+  const horizontal = new Float32Array(data.length);
+
+  for (let y = 0; y < height; y++) {
+    const rowOffset = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      for (let c = 0; c < 4; c++) {
+        let sum = 0;
+        for (let k = -r; k <= r; k++) {
+          const sx = Math.min(width - 1, Math.max(0, x + k));
+          sum += data[rowOffset + sx * 4 + c];
+        }
+        horizontal[rowOffset + x * 4 + c] = sum / windowSize;
+      }
+    }
+  }
+
+  for (let x = 0; x < width; x++) {
+    for (let y = 0; y < height; y++) {
+      for (let c = 0; c < 4; c++) {
+        let sum = 0;
+        for (let k = -r; k <= r; k++) {
+          const sy = Math.min(height - 1, Math.max(0, y + k));
+          sum += horizontal[(sy * width + x) * 4 + c];
+        }
+        data[(y * width + x) * 4 + c] = sum / windowSize;
+      }
+    }
+  }
+}
+
+/** Manual pixel-math equivalent of `buildCanvasFilterString`'s CSS filter — what `drawTransformed`
+ *  falls back to when `supportsCanvasFilter()` is `false` (Safari/WebKit, every version — see that
+ *  function's own doc comment). Implements FFmpeg's own `eq` filter formula directly on the STORED
+ *  additive/multiplicative values (see `ClipEffects.brightness`/`.contrast`/`.saturation`'s own doc
+ *  comments) rather than going through the CSS conversion `buildCanvasFilterString` needs — actually a
+ *  slightly closer match to what export produces than the CSS path this replaces ever was, not just an
+ *  equivalent. Contrast pivots around the frame's own midpoint (0.5 in normalized space) with brightness
+ *  added afterward, matching `eq`'s own order; saturation blends each channel toward the pixel's own
+ *  BT.601 luma (the same weights FFmpeg's `eq` filter uses for its saturation control — a straight R/G/B
+ *  average would shift the perceived brightness of already-saturated colors). Blur is applied last, via
+ *  `applyBoxBlur` above, matching `buildCanvasFilterString`'s own function order (brightness → contrast
+ *  → saturate → blur). Assigning into a `Uint8ClampedArray` already clamps/rounds to a valid byte on its
+ *  own; nothing here needs its own explicit clamp. */
+export function applyManualEffects(imageData: ImageData, effects: ClipEffects): void {
+  const { data } = imageData;
+  const { brightness, contrast, saturation } = effects;
+  for (let i = 0; i < data.length; i += 4) {
+    let r = data[i] / 255;
+    let g = data[i + 1] / 255;
+    let b = data[i + 2] / 255;
+
+    r = (r - 0.5) * contrast + 0.5 + brightness;
+    g = (g - 0.5) * contrast + 0.5 + brightness;
+    b = (b - 0.5) * contrast + 0.5 + brightness;
+
+    if (saturation !== 1) {
+      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+      r = gray + (r - gray) * saturation;
+      g = gray + (g - gray) * saturation;
+      b = gray + (b - gray) * saturation;
+    }
+
+    data[i] = r * 255;
+    data[i + 1] = g * 255;
+    data[i + 2] = b * 255;
+  }
+  if (effects.blur > 0) applyBoxBlur(imageData, effects.blur);
+}
+
 /** Mutates `imageData` in place, zeroing (or feathering) alpha on pixels near `settings.color` —
  *  Canvas2D has no native chroma-key filter, so this is a plain, unit-testable pixel loop rather than
  *  a `context.filter` string. Deliberately mirrors FFmpeg's own `colorkey` filter's algorithm (not just
@@ -1238,7 +1359,13 @@ export class PlaybackEngine {
     let source: CanvasImageSource = element;
     const needsColorGrading = colorGrading !== undefined && !isIdentityColorGrading(colorGrading);
     const needsLut = lutId !== undefined;
-    if (chromaKey || needsColorGrading || needsLut || pixelEffect) {
+    // A real, reported bug: on a browser where `context.filter` doesn't actually apply anything at all
+    // (Safari/WebKit, every version — see `supportsCanvasFilter`'s own doc comment), brightness/
+    // contrast/saturation/blur silently never showed up in the live preview, with nothing to notice the
+    // failure by. `applyManualEffects` is the pixel-math equivalent, run through this SAME readback
+    // pipeline rather than a separate one.
+    const needsManualEffects = !isIdentityEffects(effects) && !supportsCanvasFilter();
+    if (chromaKey || needsColorGrading || needsLut || pixelEffect || needsManualEffects) {
       const scratch = this.chromaKeyCanvas(sourceWidth, sourceHeight);
       if (scratch) {
         scratch.clearRect(0, 0, sourceWidth, sourceHeight);
@@ -1254,14 +1381,18 @@ export class PlaybackEngine {
           const lut = this.resolveLut(lutId!);
           if (lut) applyLut3D(imageData, lut);
         }
-        // Last: a spatial displacement, not a color operation — see `Clip.pixelEffect`'s own doc
-        // comment for why this isn't keyframeable, and `timeline/pixelEffects.ts` for the two pure
-        // functions themselves.
+        // A spatial displacement, not a color operation — see `Clip.pixelEffect`'s own doc comment for
+        // why this isn't keyframeable, and `timeline/pixelEffects.ts` for the two pure functions
+        // themselves.
         if (pixelEffect) {
           const speed = pixelEffect.speed ?? 1;
           if (pixelEffect.type === "glitch") applyGlitch(imageData, elapsedSeconds, speed);
           else applyWaterRipple(imageData, elapsedSeconds, speed);
         }
+        // Last — `context.filter` (when supported) applies at DRAW time, after this whole readback
+        // pipeline already finished and drew its result back via `putImageData`; running the manual
+        // fallback last too keeps the two paths visually consistent with each other.
+        if (needsManualEffects) applyManualEffects(imageData, effects);
         scratch.putImageData(imageData, 0, 0);
         source = scratch.canvas;
       }
@@ -1271,8 +1402,12 @@ export class PlaybackEngine {
     // `filter`/`globalAlpha` are both part of the state `save()`/`restore()` already bracket, so
     // there's no separate reset needed beyond the `restore()` this function already had — see
     // `ClipEffects`'s own doc comment for why `brightness`/`blur` are approximations here, not exact
-    // matches for what `buildExportPlan`'s `eq`/`gblur` filters produce.
-    context.filter = buildCanvasFilterString(effects);
+    // matches for what `buildExportPlan`'s `eq`/`gblur` filters produce. Explicitly "none" (not just
+    // left as `buildCanvasFilterString`'s own string, which would ALSO be a no-op on an unsupporting
+    // browser) once `needsManualEffects` already baked the effect into pixels above — a browser that
+    // silently ignores the WHOLE string today isn't guaranteed to keep ignoring every individual
+    // function within it forever, and double-applying would look wrong the moment that changes.
+    context.filter = needsManualEffects ? "none" : buildCanvasFilterString(effects);
     context.globalAlpha = effects.opacity * alphaMultiplier;
     context.translate(box.centerX, box.centerY);
     if (transform.rotationDeg !== 0) context.rotate((transform.rotationDeg * Math.PI) / 180);

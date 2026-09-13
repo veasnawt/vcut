@@ -433,7 +433,7 @@ function StatusBar({
           ? [
               {
                 key: "effects",
-                label: t("Effects"),
+                label: t("Filters"),
                 icon: <Filter size={15} />,
                 onClick: () => {
                   setPickerAnchorSource("contextMenu");
@@ -941,8 +941,8 @@ function StatusBar({
           <>
             <ToolbarButton
               ref={effectsButtonRef}
-              title={t("Effects")}
-              label={t("Effects")}
+              title={t("Filters")}
+              label={t("Filters")}
               active={effectsActive}
               onClick={() => {
                 setPickerAnchorSource("button");
