@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { fillTemplateSlot, buildProjectFromTemplate, sanitizeProjectForTemplate, templateSlots } from "../src/project/template.ts";
+import {
+  fillTemplateSlot,
+  buildProjectFromTemplate,
+  sanitizeProjectForTemplate,
+  templateAudioAssets,
+  templateSlots,
+} from "../src/project/template.ts";
 import { addClip, addTrack, setClipTransform } from "../src/timeline/operations.ts";
 import {
   audioAsset,
@@ -353,5 +359,63 @@ describe("templateSlots / fillTemplateSlot", () => {
     assert.equal(clip.assetId, "second");
     assert.equal(clip.sourceOut - clip.sourceIn, 5);
     assert.equal(secondFill.assets.some((a) => a.id === "first"), false, "the first pick should be gone, not left dangling");
+  });
+});
+
+describe("templateAudioAssets", () => {
+  it("returns the bundled audio asset behind a template's music track", () => {
+    const base = emptyProject([audioAsset("music", 30)]);
+    const project = addClip(base, audioTrackId(base), "music", 0);
+    const rows = templateAudioAssets(project);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, "music");
+  });
+
+  it("returns [] for a project with no audio clip at all", () => {
+    const base = emptyProject([videoAsset()]);
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    assert.deepEqual(templateAudioAssets(project), []);
+  });
+
+  it("groups a duplicated audio clip (same source asset placed twice) into one row, not two", () => {
+    const base = emptyProject([audioAsset("music", 30)]);
+    let project = addClip(base, audioTrackId(base), "music", 0);
+    project = addClip(project, audioTrackId(project), "music", 15);
+    const rows = templateAudioAssets(project);
+    assert.equal(rows.length, 1, "both clips share the same underlying asset, so only one row should show");
+  });
+
+  it("orders rows by each group's first clip's own timelineStart, not insertion order", () => {
+    const base = emptyProject([audioAsset("second", 10), audioAsset("first", 10)]);
+    // Placed in the OPPOSITE order from how they should be listed — "second" (added first, so it'd
+    // win on insertion order alone) actually starts LATER on the timeline than "first".
+    let project = addClip(base, audioTrackId(base), "second", 20);
+    project = addClip(project, audioTrackId(project), "first", 0);
+
+    const rows = templateAudioAssets(project);
+    assert.deepEqual(
+      rows.map((a) => a.id),
+      ["first", "second"],
+      "the clip starting at timelineStart 0 (\"first\") should be listed before the one starting at 20 (\"second\")"
+    );
+  });
+
+  it("reads the CURRENT asset a clip points at — reflects an audio replacement immediately, live", () => {
+    const base = emptyProject([audioAsset("music", 30)]);
+    const project = addClip(base, audioTrackId(base), "music", 0);
+
+    // `fillTemplateSlot` needs no dedicated audio-replace function of its own — reused exactly as a
+    // video/image slot pick would be, since it only requires SOME clip to currently reference the id
+    // being replaced (see that function's own doc comment).
+    const replaced = fillTemplateSlot(project, "music", audioAsset("newsong", 45));
+
+    const rows = templateAudioAssets(replaced);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, "newsong");
+    assert.equal(replaced.assets.some((a) => a.id === "music"), false, "the old audio asset should be gone, not left dangling");
+
+    const clip = clipsOf(replaced, audioTrackId(replaced))[0];
+    assert.equal(clip.assetId, "newsong");
+    assert.equal(clip.sourceOut - clip.sourceIn, 30, "capped to the ORIGINAL clip's own required length, not the new track's full 45s");
   });
 });

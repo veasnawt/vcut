@@ -1280,11 +1280,24 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   const [showMobileSignIn, setShowMobileSignIn] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showSaveAsTemplate, setShowSaveAsTemplate] = useState(false);
-  // Set only by `TemplateFillScreen`'s own "Preview" button — every slot being filled makes that
-  // button ENABLED, not an automatic jump to `TemplatePreviewScreen` the instant the last pick lands;
-  // the user still has to explicitly confirm they're done. See the `project.templateOrigin` branch
-  // below for how this combines with `templateSlots(project)`'s own live count.
+  // Set by `TemplateFillScreen`'s own "Preview" button — every slot being filled makes that button
+  // ENABLED, not an automatic jump to `TemplatePreviewScreen` the instant the last pick lands; the user
+  // still has to explicitly confirm they're done THIS session (see the `project.templateOrigin` branch
+  // below for how this combines with `templateSlots(project)`'s own live count). Also set, once, by the
+  // load effect right below, for a project that's already fully filled the moment it's OPENED — a real,
+  // reported bug otherwise: reopening a finished template project (nothing left to fill) landed back on
+  // `TemplateFillScreen` every time regardless, since this state starts `false` on every fresh mount
+  // with no way to know slots had already all been filled in some EARLIER session.
   const [confirmedTemplatePreview, setConfirmedTemplatePreview] = useState(false);
+  // Guards the one-time "already finished, skip straight to preview" check below from re-running on
+  // every subsequent project mutation (`project` is a fresh object on every edit) — only the very FIRST
+  // sighting of a loaded project this mount should ever decide this.
+  const checkedTemplatePreviewOnLoad = useRef(false);
+  useEffect(() => {
+    if (checkedTemplatePreviewOnLoad.current || !project?.templateOrigin) return;
+    checkedTemplatePreviewOnLoad.current = true;
+    if (templateSlots(project).length === 0) setConfirmedTemplatePreview(true);
+  }, [project]);
   const userMenuButtonRef = useRef<HTMLButtonElement>(null);
 
   // The desktop half of sign-in: `main.ts` extracts `access_token`/`refresh_token` from the

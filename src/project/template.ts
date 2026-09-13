@@ -280,6 +280,35 @@ export function fillTemplateSlot(project: Project, currentAssetId: string, realA
   return { ...project, assets, sequence: { ...project.sequence, tracks } };
 }
 
+/** Every distinct real audio asset currently playing in a template-origin project — what
+ *  `TemplatePreviewScreen.tsx` shows a "Replace" row for, one row per clip GROUP the same way
+ *  `sanitizeProjectForTemplate` grouped duplicated video/image clips into one slot: a duplicated audio
+ *  clip (the same bundled track placed more than once) surfaces as one row, not two, since replacing
+ *  "the music" should replace every copy of it at once. Ordered by each group's first clip's own
+ *  `timelineStart`, matching `templateSlots`'s own chronological convention.
+ *
+ *  Unlike `templateSlots`, there's no separate "still open" state to track here — audio never becomes a
+ *  placeholder (see `Asset.templateBundledAudio`'s own doc comment), so this is read LIVE off whatever
+ *  `project.assets`/clips currently are, and a replacement is visible on the very next call rather than
+ *  needing anything like `TemplateFillScreen.tsx`'s own `filledBySlotId` to track across picks.
+ *  `fillTemplateSlot` (its own doc comment covers why) needs no dedicated audio-replace function of its
+ *  own — passing one of these rows' own `id` as `currentAssetId` already does the right thing. */
+export function templateAudioAssets(project: Project): Asset[] {
+  const seen = new Set<string>();
+  const rows: Asset[] = [];
+  project.sequence.tracks
+    .flatMap((track) => track.clips.map((clip) => ({ track, clip })))
+    .filter(({ track }) => track.kind === "audio")
+    .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart)
+    .forEach(({ clip }) => {
+      if (seen.has(clip.assetId)) return;
+      seen.add(clip.assetId);
+      const asset = project.assets.find((a) => a.id === clip.assetId);
+      if (asset) rows.push(asset);
+    });
+  return rows;
+}
+
 /** A fresh, app-generated id for a template row — same shape `newId` already gives everything else
  *  in a project, reused here rather than a raw `crypto.randomUUID()` so a template id is
  *  self-describing the same way. */
