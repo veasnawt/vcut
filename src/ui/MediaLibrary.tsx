@@ -721,7 +721,16 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                       </span>
                     ) : (
                       <button
-                        onClick={() => addLibraryAssetToProject(item)}
+                        onClick={() => {
+                          // Reported directly: picking something from "All my media" used to just add
+                          // it to this project's own library, sitting there until a separate manual
+                          // drag/double-click actually put it on the timeline — landing back in the
+                          // editor with nothing to show for the pick. Placing it at the playhead right
+                          // away (same as double-clicking a "This project" tile already does) is the
+                          // one-step "use this" a deliberate library pick is actually asking for.
+                          const asset = addLibraryAssetToProject(item);
+                          if (asset) addAssetAtPlayhead(asset.id);
+                        }}
                         title={t("Add to this project")}
                         aria-label={t("Add {name} to this project", { name: item.name })}
                         className="flex h-6 w-6 items-center justify-center rounded bg-sky-500/20 text-sky-300 transition hover:bg-sky-500/30"
