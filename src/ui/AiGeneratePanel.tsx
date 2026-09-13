@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Play } from "@veasnawt/vicons";
 import {
   AI_ASPECT_RATIOS,
   AI_IMAGE_MODELS,
@@ -16,6 +17,7 @@ import { AI_IMAGE_CREDITS, AI_VIDEO_CREDITS_PER_GENERATION, startCheckout } from
 import { useTranslation } from "../i18n/useTranslation.ts";
 import type { Asset } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
+import { formatDuration } from "../timeline/time.ts";
 import { Dropdown } from "./Dropdown.tsx";
 import { pickAssetForPlacement } from "./pickPlacement.ts";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
@@ -467,12 +469,31 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                     >
                       {item.status === "done" && item.asset ? (
                         thumbnailUrl(projectId, item.asset) ? (
-                          <img
-                            src={thumbnailUrl(projectId, item.asset)!}
-                            alt=""
-                            className="absolute inset-0 h-full w-full object-cover"
-                            draggable={false}
-                          />
+                          <>
+                            <img
+                              src={thumbnailUrl(projectId, item.asset)!}
+                              alt=""
+                              className="absolute inset-0 h-full w-full object-cover"
+                              draggable={false}
+                            />
+                            {/* `thumbnailUrl` is always a single static frame, video included — with
+                                nothing else on the tile, a generated VIDEO was indistinguishable from a
+                                generated IMAGE at a glance (a real, reported confusion: "the thumbnail
+                                looks like a still image"). Same plain, non-interactive Play badge +
+                                duration `StockSearchPanel.tsx`'s own tiles already use for the identical
+                                situation (there too, clicking the tile places it — there's no separate
+                                inline preview to open, so a clickable button here would be misleading). */}
+                            {item.kind === "video" && (
+                              <>
+                                <span className="absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white">
+                                  <Play size={11} />
+                                </span>
+                                <span className="absolute bottom-1 right-1 rounded bg-black/75 px-1 text-[10px] tabular-nums text-white/90">
+                                  {formatDuration(item.asset.duration)}
+                                </span>
+                              </>
+                            )}
+                          </>
                         ) : (
                           // A video whose thumbnail failed to generate server-side (or hasn't yet) has
                           // no URL to show at all — `thumbnailUrl` returns `null`, not a broken one.
