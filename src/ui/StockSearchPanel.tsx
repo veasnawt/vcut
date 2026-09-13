@@ -7,17 +7,19 @@ import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { pickAssetForPlacement } from "./pickPlacement.ts";
 
-/** How long to wait after the user stops typing before actually searching — Wikimedia asks (its own API
- *  etiquette, not a hard-enforced key/quota the way Pixabay's own key was) for reasonable request rates,
- *  so firing one per keystroke would still be needlessly chatty even with no quota to burn through. */
+/** How long to wait after the user stops typing before actually searching — Pexels' free tier has a
+ *  real, hard rate limit (200 requests/hour, unlike Commons' own soft "please be reasonable" etiquette
+ *  this app briefly ran on), so firing one search per keystroke is a real quota risk here, not just
+ *  needless chatter. */
 const SEARCH_DEBOUNCE_MS = 500;
 
-/** Stock photo/video search (Wikimedia Commons — see `stock/route.ts`'s own doc comment for why it
- *  replaced Pixabay) — a self-contained panel, not woven into `MediaLibrary.tsx`'s own already-intricate
- *  drag/touch/native-picker logic, so this stays simple to reason about and can't destabilize the
- *  existing library behavior. Rendered as a sibling MODE of the library (a tab) by `MediaPanel.tsx`,
- *  which owns the tab strip itself — this component starts straight at its own search row, with no
- *  title header of its own, since the tab strip already names it. */
+/** Stock photo/video search (Pexels — see `stock/route.ts`'s own doc comment for why it replaced
+ *  Wikimedia Commons, which itself had replaced Pixabay) — a self-contained panel, not woven into
+ *  `MediaLibrary.tsx`'s own already-intricate drag/touch/native-picker logic, so this stays simple to
+ *  reason about and can't destabilize the existing library behavior. Rendered as a sibling MODE of the
+ *  library (a tab) by `MediaPanel.tsx`, which owns the tab strip itself — this component starts
+ *  straight at its own search row, with no title header of its own, since the tab strip already
+ *  names it. */
 export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void } = {}) {
   const t = useTranslation();
   const projectId = useEditorStore((s) => s.projectId);
@@ -149,7 +151,7 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-2">
         {!query.trim() ? (
           <p className="px-2 py-8 text-center text-xs leading-relaxed text-white/40">
-            {t("Search openly-licensed photos and videos from Wikimedia Commons.")}
+            {t("Search free stock photos and videos from Pexels.")}
           </p>
         ) : error ? (
           <p className="px-2 py-8 text-center text-xs leading-relaxed text-rose-300">{error}</p>
@@ -167,7 +169,7 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
                       title={`${result.title}${result.license ? ` · ${result.license}` : ""}`}
                       className="group relative flex w-full flex-col overflow-hidden rounded-lg bg-black/40 text-left transition hover:ring-1 hover:ring-sky-400/60 disabled:cursor-default disabled:opacity-60"
                     >
-                      {/* Natural aspect ratio, not a fixed 16:9 crop — Commons results span everything
+                      {/* Natural aspect ratio, not a fixed 16:9 crop — Pexels results span everything
                           from tall portrait photos to wide landscape video, and forcing all of them into
                           one shape either crops the interesting part out or leaves large letterboxed
                           bars. No `max-h-*` cap (there used to be one, same as `AiGeneratePanel`'s own
@@ -180,11 +182,10 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
                         className="relative w-full overflow-hidden bg-black"
                         style={{ aspectRatio: `${result.width} / ${result.height}` }}
                       >
-                        {/* Always an `<img>`, never `<video>` — unlike Pixabay's own tiny preview
-                            clips, Commons' `previewUrl` for a VIDEO result is a static poster-frame
-                            JPEG Commons itself generates (`thumburl` via `iiurlwidth`, same field a
-                            photo result's own preview comes from), not a playable file; the real video
-                            only exists at `downloadUrl`, fetched once a result is actually picked. */}
+                        {/* Always an `<img>`, never `<video>` — `previewUrl` for a VIDEO result is
+                            Pexels' own `image` screenshot, a static JPEG, not a playable file; the real
+                            video only exists at `downloadUrl`, fetched once a result is actually
+                            picked. */}
                         <img src={result.previewUrl} alt="" className="absolute inset-0 h-full w-full object-cover" draggable={false} />
                         {/* Since the tile above is always a static image now (even for a video
                             result), this is the only visual cue telling the two kinds apart at a
@@ -200,9 +201,10 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
                           </div>
                         )}
                         {/* Title + attribution overlaid directly on the tile (a bottom gradient scrim,
-                            not a separate caption row below it) — Commons' own license terms require
-                            crediting the source wherever a result is SHOWN, not just on import, so this
-                            can't be hover-only or it wouldn't be visible on touch at all. */}
+                            not a separate caption row below it) — Pexels' own license doesn't actually
+                            REQUIRE this the way Commons' per-file CC terms once did, but crediting the
+                            photographer/videographer is still the honest thing to do, and it's not
+                            hover-only so it's visible on touch too. */}
                         <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-1.5 pb-1 pt-4">
                           <p className="truncate text-[10px] font-medium text-white/90">{result.title}</p>
                           <p className="truncate text-[9px] text-white/60">
