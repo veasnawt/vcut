@@ -51,14 +51,22 @@ export interface TemplateSlot {
  *  `templatePlaceholder` marker. `slotIndex` is assigned across the WHOLE timeline in chronological
  *  order (by `clip.timelineStart`, tracks considered together) — not per-track — since that's the
  *  order a person filling in slots would actually expect ("the first thing that happens," not "every
- *  video-track clip, then every other track's own"). Each CLIP gets its OWN placeholder asset even when
- *  two clips originally shared one real asset (the same file used twice): asking a user to pick media
- *  for "slot 3" twice is a simpler, more predictable contract than tracking which slots secretly need
- *  to stay linked. An AUDIO asset is never turned into a slot at all — it carries over marked
- *  `templateBundledAudio: true`, its real `relPath` left UNCHANGED (still relative to the SOURCE
- *  project's own `mediaDir` at this point) specifically so `templates/route.ts`'s own POST handler,
- *  which calls this function, knows exactly which file to actually copy into the template's own
- *  storage next — this function itself never touches the filesystem. */
+ *  video-track clip, then every other track's own").
+ *
+ *  One slot per ORIGINAL asset, not per clip — asked for directly: a DUPLICATED clip (the same source
+ *  footage placed more than once, however differently each copy has since been styled/effects/trimmed
+ *  — a common way to build a before/after or split-screen look) shares ONE slot, rather than asking the
+ *  user to pick the same footage over again for every copy. `requiredDuration` on a shared slot is the
+ *  LONGEST of every clip using it (so a pick long enough for every one of them gets asked for up front)
+ *  — `fillTemplateSlot` still gives each individual clip its OWN correctly-sized trim off of whatever
+ *  actually gets picked, using that clip's own current duration rather than this shared, display-only
+ *  number, so two copies needing different lengths of the new footage both still come out right.
+ *
+ *  An AUDIO asset is never turned into a slot at all — it carries over marked `templateBundledAudio:
+ *  true`, its real `relPath` left UNCHANGED (still relative to the SOURCE project's own `mediaDir` at
+ *  this point) specifically so `templates/route.ts`'s own POST handler, which calls this function,
+ *  knows exactly which file to actually copy into the template's own storage next — this function
+ *  itself never touches the filesystem. */
 export function sanitizeProjectForTemplate(project: Project): TemplateProjectData {
   const mediaClipOrder = project.sequence.tracks
     .flatMap((track) => track.clips.map((clip) => ({ track, clip })))
@@ -68,12 +76,19 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
     })
     .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
 
-  // Keyed by the clip's own id (not assetId — see the doc comment above on why each clip gets its own
-  // placeholder rather than sharing one across clips that originally pointed at the same real asset).
-  const placeholderAssetByClipId = new Map<string, Asset>();
-  mediaClipOrder.forEach(({ clip }, slotIndex) => {
+  // Keyed by the ORIGINAL asset's own id — see this function's own doc comment on why duplicated clips
+  // share one slot instead of getting their own. `slotIndex` is fixed at each id's FIRST occurrence
+  // (insertion order into this Map, which follows `mediaClipOrder`'s own chronological sort);
+  // `requiredDuration` grows to the longest clip seen so far for that same asset on every later one.
+  const placeholderByOriginalAssetId = new Map<string, Asset>();
+  for (const { clip } of mediaClipOrder) {
     const original = project.assets.find((a) => a.id === clip.assetId)!;
-    placeholderAssetByClipId.set(clip.id, {
+    const existing = placeholderByOriginalAssetId.get(original.id);
+    if (existing) {
+      existing.templatePlaceholder!.requiredDuration = Math.max(existing.templatePlaceholder!.requiredDuration, clipDuration(clip));
+      continue;
+    }
+    placeholderByOriginalAssetId.set(original.id, {
       id: newId("tplasset"),
       kind: original.kind as "video" | "image",
       name: original.name,
@@ -85,9 +100,9 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
       hasAudio: original.hasAudio,
       sizeBytes: 0,
       importedAt: 0,
-      templatePlaceholder: { slotIndex, requiredDuration: clipDuration(clip) },
+      templatePlaceholder: { slotIndex: placeholderByOriginalAssetId.size, requiredDuration: clipDuration(clip) },
     });
-  });
+  }
 
   // Covers text/color (carried over verbatim) AND audio (carried over as a real, still-to-be-bundled
   // file — see this function's own doc comment) — everything that ISN'T becoming a placeholder slot.
@@ -95,7 +110,8 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
   const tracks: Track[] = project.sequence.tracks.map((track) => ({
     ...track,
     clips: track.clips.map((clip): Clip => {
-      const placeholder = placeholderAssetByClipId.get(clip.id);
+      const asset = project.assets.find((a) => a.id === clip.assetId);
+      const placeholder = asset && placeholderByOriginalAssetId.get(asset.id);
       if (placeholder) return { ...clip, assetId: placeholder.id };
       keptAssetIds.add(clip.assetId);
       return { ...clip };
@@ -106,7 +122,7 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
     ...project.assets
       .filter((a) => keptAssetIds.has(a.id))
       .map((a) => (a.kind === "audio" ? { ...a, templateBundledAudio: true as const } : a)),
-    ...placeholderAssetByClipId.values(),
+    ...placeholderByOriginalAssetId.values(),
   ];
 
   return { width: project.sequence.width, height: project.sequence.height, fps: project.sequence.fps, tracks, assets };
@@ -208,16 +224,24 @@ export function templateSlots(project: Project): TemplateSlot[] {
 }
 
 /** Binds a real, already-imported/generated/downloaded `Asset` into one open template slot, replacing
- *  the placeholder — every clip that referenced `placeholderAssetId` is repointed at `realAsset.id`
- *  instead, with its trim window reset to start from the real media's own beginning.
+ *  the placeholder — EVERY clip that referenced `placeholderAssetId` is repointed at `realAsset.id`
+ *  instead (see `sanitizeProjectForTemplate`'s own doc comment: more than one clip shares a slot when
+ *  the original was a duplicated clip), each with its own trim window reset to start from the real
+ *  media's own beginning.
  *
- *  A picked IMAGE always fully satisfies the slot at its exact `requiredDuration` — a still frame has
- *  no real length of its own to run short on, unlike video/audio, which use only as much of the real
- *  file as it actually has (`Math.min`): asked for directly — auto-trimming from the start is the
- *  simplest, most predictable behavior, and a source shorter than required is used in full (the
- *  clip's own timeline length shrinks to match) rather than looped or held on its last frame, the same
- *  "never synthesize frames that were never really there" reasoning every other trim operation in this
- *  app already follows. The caller (a "fill in your media" UI) is what decides whether to warn about a
+ *  Each clip's OWN required length comes from ITS OWN current `sourceOut - sourceIn` — not the
+ *  placeholder's single, shared `requiredDuration` (which only reflects the LONGEST clip in the group,
+ *  for display purposes) — so two duplicated clips that originally used different lengths of the same
+ *  source footage both still come out correctly sized from whatever gets picked, rather than both
+ *  being forced to the same, longer length.
+ *
+ *  A picked IMAGE always fully satisfies a clip's own required length — a still frame has no real
+ *  length of its own to run short on, unlike video/audio, which uses only as much of the real file as
+ *  it actually has (`Math.min`): asked for directly — auto-trimming from the start is the simplest,
+ *  most predictable behavior, and a source shorter than required is used in full (the clip's own
+ *  timeline length shrinks to match) rather than looped or held on its last frame, the same "never
+ *  synthesize frames that were never really there" reasoning every other trim operation in this app
+ *  already follows. The caller (a "fill in your media" UI) is what decides whether to warn about a
  *  short pick before calling this — this function just does the bind unconditionally.
  *
  *  `realAsset` is added to `project.assets` if it isn't already there (the common case — a fresh
@@ -226,17 +250,18 @@ export function templateSlots(project: Project): TemplateSlot[] {
 export function fillTemplateSlot(project: Project, placeholderAssetId: string, realAsset: Asset): Project {
   const placeholder = project.assets.find((a) => a.id === placeholderAssetId);
   if (!placeholder?.templatePlaceholder) return project;
-  const requiredDuration = placeholder.templatePlaceholder.requiredDuration;
-  const sourceOut = realAsset.kind === "image" ? requiredDuration : Math.min(requiredDuration, realAsset.duration);
 
   const assets = project.assets.filter((a) => a.id !== placeholderAssetId);
   if (!assets.some((a) => a.id === realAsset.id)) assets.push(realAsset);
 
   const tracks = project.sequence.tracks.map((track) => ({
     ...track,
-    clips: track.clips.map((clip) =>
-      clip.assetId === placeholderAssetId ? { ...clip, assetId: realAsset.id, sourceIn: 0, sourceOut } : clip
-    ),
+    clips: track.clips.map((clip) => {
+      if (clip.assetId !== placeholderAssetId) return clip;
+      const neededDuration = clip.sourceOut - clip.sourceIn;
+      const sourceOut = realAsset.kind === "image" ? neededDuration : Math.min(neededDuration, realAsset.duration);
+      return { ...clip, assetId: realAsset.id, sourceIn: 0, sourceOut };
+    }),
   }));
 
   return { ...project, assets, sequence: { ...project.sequence, tracks } };

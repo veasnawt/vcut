@@ -75,6 +75,54 @@ describe("sanitizeProjectForTemplate", () => {
     assert.ok(built.assets.some((a) => a.kind === "audio"));
   });
 
+  it("groups a duplicated clip (same source asset, different trims) into ONE shared slot", () => {
+    const base = emptyProject([videoAsset("v1", 10)]);
+    let project = addClip(base, videoTrackId(base), "v1", 0);
+    project = addClip(project, videoTrackId(project), "v1", 20);
+    // Give the two copies different trim lengths off the SAME source asset — a 3s clip and a 6s clip,
+    // as if someone duplicated a clip and re-trimmed the copy.
+    project = {
+      ...project,
+      sequence: {
+        ...project.sequence,
+        tracks: project.sequence.tracks.map((t) =>
+          t.id === videoTrackId(project)
+            ? {
+                ...t,
+                clips: t.clips.map((c, i) => (i === 0 ? { ...c, sourceIn: 0, sourceOut: 3 } : { ...c, sourceIn: 0, sourceOut: 6 })),
+              }
+            : t
+        ),
+      },
+    };
+
+    const template = sanitizeProjectForTemplate(project);
+
+    // Only ONE placeholder for both clips, not two.
+    const placeholders = template.assets.filter((a) => a.templatePlaceholder);
+    assert.equal(placeholders.length, 1);
+    // The shared slot's requiredDuration is the LONGER of the two (display-only — see this asset's own
+    // doc comment; each clip still gets its own correctly-sized trim when the slot is actually filled).
+    assert.equal(placeholders[0].templatePlaceholder!.requiredDuration, 6);
+
+    const built = buildProjectFromTemplate("bp-dup", "Duplicate", template);
+    const slots = templateSlots(built);
+    assert.equal(slots.length, 1, "both clips should share one slot");
+
+    const bothClipsBefore = clipsOf(built, videoTrackId(built));
+    assert.equal(bothClipsBefore[0].assetId, bothClipsBefore[1].assetId, "both clips should reference the SAME placeholder");
+
+    // Filling the one shared slot with a video only 4s long: the first clip (originally 3s) fits fully;
+    // the second (originally 6s) gets clamped to the 4s actually available — each independently, off
+    // its OWN original length, not the shared 6s requiredDuration.
+    const filled = fillTemplateSlot(built, slots[0].assetId, videoAsset("real1", 4));
+    const [clipA, clipB] = clipsOf(filled, videoTrackId(filled));
+    assert.equal(clipA.assetId, "real1");
+    assert.equal(clipB.assetId, "real1");
+    assert.equal(clipA.sourceOut - clipA.sourceIn, 3, "the originally-3s clip should stay 3s");
+    assert.equal(clipB.sourceOut - clipB.sourceIn, 4, "the originally-6s clip should clamp to the 4s available");
+  });
+
   it("captures each clip's own trim length as requiredDuration", () => {
     const base = emptyProject([videoAsset("v1", 10)]);
     // A 4-second trim out of a 10-second source.
