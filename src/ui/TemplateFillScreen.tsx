@@ -54,7 +54,13 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
   const allFilled = allSlots.every((s) => filledBySlotId[s.assetId]);
 
   function assign(slot: TemplateSlot, asset: Asset) {
-    fillTemplateSlotAction(slot.assetId, asset);
+    // On a first pick, the slot's own placeholder (`slot.assetId`) is still what every clip in the
+    // group actually references — `fillTemplateSlot` matches on that. On a CHANGE OF MIND (this slot
+    // already has a pick — clicking its own chip again re-activates it, same as any other), the
+    // placeholder is long gone; the clips now reference THAT earlier pick's own asset id instead, so
+    // that's what has to be passed as the thing being replaced this time.
+    const currentAssetId = filledBySlotId[slot.assetId]?.id ?? slot.assetId;
+    fillTemplateSlotAction(currentAssetId, asset);
     setFilledBySlotId((prev) => {
       const next = { ...prev, [slot.assetId]: asset };
       // Auto-advance to the next still-empty slot, computed off the just-updated map (not `prev`,

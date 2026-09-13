@@ -325,10 +325,33 @@ describe("templateSlots / fillTemplateSlot", () => {
     assert.equal(clip.sourceOut - clip.sourceIn, 10, "an image has no real length limit to run short on");
   });
 
-  it("does nothing when the given id isn't an open placeholder", () => {
+  it("does nothing when no clip references the given id at all", () => {
     const base = emptyProject([videoAsset("v1")]);
     const project = addClip(base, videoTrackId(base), "v1", 0);
-    const filled = fillTemplateSlot(project, "v1", videoAsset("real1"));
+    const filled = fillTemplateSlot(project, "nonexistent-id", videoAsset("real1"));
     assert.deepEqual(filled, project);
+  });
+
+  it("lets a slot's pick be changed after the fact, not just filled once", () => {
+    const base = emptyProject([videoAsset("v1", 10)]);
+    const project = addClip(base, videoTrackId(base), "v1", 0);
+    const built = buildProjectFromTemplate("bp-redo", "Redo", sanitizeProjectForTemplate(project));
+    const [slot] = templateSlots(built);
+
+    // First pick.
+    const firstFill = fillTemplateSlot(built, slot.assetId, videoAsset("first", 8));
+    let clip = clipsOf(firstFill, videoTrackId(firstFill))[0];
+    assert.equal(clip.assetId, "first");
+
+    // Change of mind — asked for directly: `TemplateFillScreen.tsx`'s own slot chips let you click an
+    // already-filled one and pick something else, so this has to actually work, not silently no-op the
+    // way it used to (this function only ever accepted a still-open placeholder before). Re-targeting
+    // by the FIRST pick's own asset id (not the long-gone original placeholder id) is what the caller
+    // is responsible for — see `TemplateFillScreen.tsx`'s own `assign()`.
+    const secondFill = fillTemplateSlot(firstFill, "first", videoAsset("second", 5));
+    clip = clipsOf(secondFill, videoTrackId(secondFill))[0];
+    assert.equal(clip.assetId, "second");
+    assert.equal(clip.sourceOut - clip.sourceIn, 5);
+    assert.equal(secondFill.assets.some((a) => a.id === "first"), false, "the first pick should be gone, not left dangling");
   });
 });

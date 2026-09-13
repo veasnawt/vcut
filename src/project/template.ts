@@ -223,17 +223,27 @@ export function templateSlots(project: Project): TemplateSlot[] {
     .sort((a, b) => a.slotIndex - b.slotIndex);
 }
 
-/** Binds a real, already-imported/generated/downloaded `Asset` into one open template slot, replacing
- *  the placeholder — EVERY clip that referenced `placeholderAssetId` is repointed at `realAsset.id`
- *  instead (see `sanitizeProjectForTemplate`'s own doc comment: more than one clip shares a slot when
- *  the original was a duplicated clip), each with its own trim window reset to start from the real
- *  media's own beginning.
+/** Binds a real, already-imported/generated/downloaded `Asset` into one template slot — EVERY clip
+ *  that referenced `currentAssetId` is repointed at `realAsset.id` instead (see
+ *  `sanitizeProjectForTemplate`'s own doc comment: more than one clip shares a slot when the original
+ *  was a duplicated clip), each with its own trim window reset to start from the real media's own
+ *  beginning.
  *
- *  Each clip's OWN required length comes from ITS OWN current `sourceOut - sourceIn` — not the
- *  placeholder's single, shared `requiredDuration` (which only reflects the LONGEST clip in the group,
- *  for display purposes) — so two duplicated clips that originally used different lengths of the same
- *  source footage both still come out correctly sized from whatever gets picked, rather than both
- *  being forced to the same, longer length.
+ *  Works whether `currentAssetId` is still an open PLACEHOLDER or already a REAL asset from an earlier
+ *  pick — a real, reported gap otherwise: `TemplateFillScreen.tsx`'s own slot chips let you click an
+ *  already-filled one and pick something else, but this function used to silently refuse to do
+ *  anything unless the target still had `templatePlaceholder` set, so a change-of-mind pick looked
+ *  like it worked (the grid closed, nothing else complained) while actually doing nothing at all. There
+ *  simply needs to be at least one clip CURRENTLY pointing at `currentAssetId` — this function doesn't
+ *  care why.
+ *
+ *  Each clip's OWN required length comes from ITS OWN current `sourceOut - sourceIn` — not a
+ *  placeholder's single, shared `requiredDuration` (which only ever reflected the LONGEST clip in the
+ *  group, for display purposes) — so two duplicated clips that originally used different lengths of
+ *  the same source footage both still come out correctly sized from whatever gets picked, rather than
+ *  both being forced to the same, longer length; the same logic naturally also re-derives the right
+ *  length on a SECOND pick, since it always reads the clip's OWN current trim, not anything from the
+ *  first pick.
  *
  *  A picked IMAGE always fully satisfies a clip's own required length — a still frame has no real
  *  length of its own to run short on, unlike video/audio, which uses only as much of the real file as
@@ -246,18 +256,21 @@ export function templateSlots(project: Project): TemplateSlot[] {
  *
  *  `realAsset` is added to `project.assets` if it isn't already there (the common case — a fresh
  *  import/generation/stock download made specifically to fill this slot); already-present is handled
- *  too (picking something already in the project's own library elsewhere) without duplicating it. */
-export function fillTemplateSlot(project: Project, placeholderAssetId: string, realAsset: Asset): Project {
-  const placeholder = project.assets.find((a) => a.id === placeholderAssetId);
-  if (!placeholder?.templatePlaceholder) return project;
+ *  too (picking something already in the project's own library elsewhere) without duplicating it. The
+ *  asset previously at `currentAssetId` is dropped from `project.assets` if nothing else references it
+ *  — for a library-backed one, this only ever unlinks it from THIS project; the real file stays exactly
+ *  where it was, same as removing any other library-backed asset. */
+export function fillTemplateSlot(project: Project, currentAssetId: string, realAsset: Asset): Project {
+  const hasMatchingClip = project.sequence.tracks.some((t) => t.clips.some((c) => c.assetId === currentAssetId));
+  if (!hasMatchingClip) return project;
 
-  const assets = project.assets.filter((a) => a.id !== placeholderAssetId);
+  const assets = project.assets.filter((a) => a.id !== currentAssetId);
   if (!assets.some((a) => a.id === realAsset.id)) assets.push(realAsset);
 
   const tracks = project.sequence.tracks.map((track) => ({
     ...track,
     clips: track.clips.map((clip) => {
-      if (clip.assetId !== placeholderAssetId) return clip;
+      if (clip.assetId !== currentAssetId) return clip;
       const neededDuration = clip.sourceOut - clip.sourceIn;
       const sourceOut = realAsset.kind === "image" ? neededDuration : Math.min(neededDuration, realAsset.duration);
       return { ...clip, assetId: realAsset.id, sourceIn: 0, sourceOut };
