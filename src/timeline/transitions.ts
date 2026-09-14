@@ -2,10 +2,11 @@ import { clipDuration, clipEnd } from "../project/createProject.ts";
 import type { Clip, Track, TransitionType } from "../project/types.ts";
 
 /** Every `TransitionType`, in the order shown in both the Inspector's "Transition In" dropdown and the
- *  toolbar's picker grid — grouped by family (dissolve, wipe, slide, circle) matching
- *  `PlaybackEngine.transitionFamily`'s own grouping, so the list reads as four short runs rather than
- *  an arbitrary order. One shared source of truth (not a separately-maintained list per UI), since a
- *  video and a text clip transition through the exact same `TransitionType` union. */
+ *  toolbar's picker grid — grouped by family (dissolve, wipe, slide, circle, glitch/water-ripple,
+ *  zoom blur, whip pan) matching `PlaybackEngine.transitionFamily`'s own grouping, so the list reads
+ *  as short runs rather than an arbitrary order. One shared source of truth (not a separately-
+ *  maintained list per UI), since a video and a text clip transition through the exact same
+ *  `TransitionType` union. */
 export const TRANSITION_TYPE_OPTIONS: TransitionType[] = [
   "crossfade",
   "dissolve",
@@ -21,7 +22,18 @@ export const TRANSITION_TYPE_OPTIONS: TransitionType[] = [
   "circleClose",
   "glitchCut",
   "waterRippleCut",
+  "zoomBlur",
+  "whipPanLeft",
+  "whipPanRight",
 ];
+
+/** The subset of `TransitionType` that renders via a per-pixel corruption/blur pre-pass rather than a
+ *  plain `xfade` geometry (see that type's own doc comment) — `drawtext` has no equivalent pre-pass,
+ *  so `TransitionPickerMenu`'s own `isTextTrack` grid excludes exactly this set. A named export
+ *  (rather than each caller re-listing the five names) so a future sixth addition can't be added to
+ *  `TransitionType` and `TRANSITION_XFADE_NAME`/`applyTransitionCorruptionPass` while forgetting this
+ *  one exclusion list. */
+export const VIDEO_ONLY_TRANSITION_TYPES: TransitionType[] = ["glitchCut", "waterRippleCut", "zoomBlur", "whipPanLeft", "whipPanRight"];
 
 export const TRANSITION_TYPE_LABEL: Record<TransitionType, string> = {
   crossfade: "Crossfade",
@@ -38,6 +50,9 @@ export const TRANSITION_TYPE_LABEL: Record<TransitionType, string> = {
   circleClose: "Circle Close",
   glitchCut: "Glitch Cut",
   waterRippleCut: "Water Ripple",
+  zoomBlur: "Zoom Blur",
+  whipPanLeft: "Whip Pan Left",
+  whipPanRight: "Whip Pan Right",
 };
 
 /** What a freshly-enabled transition starts at — half a second is a reasonable default crossfade

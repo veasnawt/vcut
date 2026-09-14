@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { Close } from "@veasnawt/vicons";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import type { TransitionType } from "../project/types.ts";
-import { TRANSITION_TYPE_LABEL, TRANSITION_TYPE_OPTIONS } from "../timeline/transitions.ts";
+import { TRANSITION_TYPE_LABEL, TRANSITION_TYPE_OPTIONS, VIDEO_ONLY_TRANSITION_TYPES } from "../timeline/transitions.ts";
 import { TransitionPreviewTile } from "./TransitionPreviewTile.tsx";
 
 const MENU_WIDTH = 320;
@@ -43,10 +43,11 @@ export function TransitionPickerMenu({
    *  crossfade anyway — the same "duration only, no style choice" treatment the Inspector's own
    *  Transitions tab already gives an audio clip. */
   isAudioTrack: boolean;
-  /** Glitch/water-ripple are video/image-only — see `TransitionType`'s own doc comment on why (export
-   *  has no equivalent corruption pre-pass for the `drawtext`-based text-blend filter graph, so
-   *  offering them here would let the canvas preview show something export can't reproduce). Narrows
-   *  the grid to exclude just those two, unlike `isAudioTrack` above which narrows to one tile total. */
+  /** Glitch/water-ripple/zoom-blur/whip-pan are video/image-only — see `TransitionType`'s own doc
+   *  comment on why (export has no equivalent corruption/blur pre-pass for the `drawtext`-based
+   *  text-blend filter graph, so offering them here would let the canvas preview show something
+   *  export can't reproduce). Narrows the grid to exclude `VIDEO_ONLY_TRANSITION_TYPES`, unlike
+   *  `isAudioTrack` above which narrows to one tile total. */
   isTextTrack: boolean;
   activeIn: TransitionType | null;
   activeOut: TransitionType | null;
@@ -84,7 +85,7 @@ export function TransitionPickerMenu({
   const gridOptions = isAudioTrack
     ? (["crossfade"] as TransitionType[])
     : isTextTrack
-      ? TRANSITION_TYPE_OPTIONS.filter((option) => option !== "glitchCut" && option !== "waterRippleCut")
+      ? TRANSITION_TYPE_OPTIONS.filter((option) => !VIDEO_ONLY_TRANSITION_TYPES.includes(option))
       : TRANSITION_TYPE_OPTIONS;
 
   return createPortal(

@@ -2582,11 +2582,17 @@ describe("buildExportPlan with transitions", () => {
       slideDown: "slidedown",
       circleOpen: "circleopen",
       circleClose: "circleclose",
-      // Not real xfade names — a corruption pre-pass runs first, then always blends with a plain
-      // "fade" underneath (see the dedicated "glitch/water-ripple transition" describe block below for
-      // the pre-pass's own assertions); this loop only checks the FINAL xfade call's own name.
+      // Not real xfade names — a corruption/blur pre-pass runs first, then always blends with a plain
+      // "fade" underneath (see the dedicated "glitch/water-ripple/zoom-blur/whip-pan transition"
+      // describe block below for the pre-pass's own assertions); this loop only checks the FINAL
+      // xfade call's own name.
       glitchCut: "fade",
       waterRippleCut: "fade",
+      zoomBlur: "fade",
+      // whipPanLeft/Right ARE real xfade names underneath their own blur pre-pass — the pan motion
+      // itself comes from an ordinary, always-safe slide, unlike the three "fade" ones above.
+      whipPanLeft: "slideleft",
+      whipPanRight: "slideright",
     };
 
     for (const type of TRANSITION_TYPE_OPTIONS) {
@@ -2810,7 +2816,7 @@ describe("buildExportPlan's two different text fade-out timings: solo vs. a real
   });
 });
 
-describe("buildExportPlan with a glitch/water-ripple transition", () => {
+describe("buildExportPlan with a glitch/water-ripple/zoom-blur/whip-pan transition", () => {
   it("waterRippleCut runs a ramped geq= corruption pass on both sides before a plain xfade=fade", () => {
     const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
     let project = addClip(base, videoTrackId(base), "a", 0);
@@ -2847,9 +2853,46 @@ describe("buildExportPlan with a glitch/water-ripple transition", () => {
     assert.match(graph, /\[v0_1_from_fx\]\[v0_1_to_fx\]xfade=transition=fade:duration=1\.000000:offset=0/);
   });
 
+  it("zoomBlur runs a fixed scale=+crop=+gblur= corruption pass on both sides before a plain xfade=fade", () => {
+    const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
+    let project = addClip(base, videoTrackId(base), "a", 0);
+    const [clipA] = clipsOf(project, videoTrackId(project));
+    project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
+    const [, clipB] = clipsOf(project, videoTrackId(project));
+    project = setClipTransitionIn(project, clipB.id, { duration: 1, type: "zoomBlur" });
+
+    const graph = filterGraph(plan(project).args);
+
+    assert.match(graph, /\[v0_1_from\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+\[v0_1_from_fx\]/);
+    assert.match(graph, /\[v0_1_to\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+\[v0_1_to_fx\]/);
+    assert.match(graph, /\[v0_1_from_fx\]\[v0_1_to_fx\]xfade=transition=fade:duration=1\.000000:offset=0/);
+  });
+
+  it("whipPanLeft/whipPanRight run a fixed horizontal boxblur= corruption pass on both sides before a real slideleft/slideright xfade", () => {
+    for (const [type, xfadeName] of [
+      ["whipPanLeft", "slideleft"],
+      ["whipPanRight", "slideright"],
+    ] as const) {
+      const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
+      let project = addClip(base, videoTrackId(base), "a", 0);
+      const [clipA] = clipsOf(project, videoTrackId(project));
+      project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
+      const [, clipB] = clipsOf(project, videoTrackId(project));
+      project = setClipTransitionIn(project, clipB.id, { duration: 1, type });
+
+      const graph = filterGraph(plan(project).args);
+
+      // Vertical radius/power both 0 (only luma_radius/chroma_radius are set) is what makes this
+      // read as DIRECTIONAL motion blur rather than a plain uniform one.
+      assert.match(graph, /\[v0_1_from\]boxblur=luma_radius=\d+:luma_power=1:chroma_radius=\d+:chroma_power=1\[v0_1_from_fx\]/);
+      assert.match(graph, /\[v0_1_to\]boxblur=luma_radius=\d+:luma_power=1:chroma_radius=\d+:chroma_power=1\[v0_1_to_fx\]/);
+      assert.match(graph, new RegExp(`\\[v0_1_from_fx\\]\\[v0_1_to_fx\\]xfade=transition=${xfadeName}:duration=1\\.000000:offset=0`));
+    }
+  });
+
   it("every OTHER transition type is unaffected — no corruption fragment, raw labels feed xfade directly (regression)", () => {
     for (const type of TRANSITION_TYPE_OPTIONS) {
-      if (type === "glitchCut" || type === "waterRippleCut") continue;
+      if (type === "glitchCut" || type === "waterRippleCut" || type === "zoomBlur" || type === "whipPanLeft" || type === "whipPanRight") continue;
 
       const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
       let project = addClip(base, videoTrackId(base), "a", 0);

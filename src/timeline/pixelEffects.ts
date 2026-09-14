@@ -25,6 +25,17 @@ export const GLITCH_NOISE_DENSITY = 0.06;
 export const GLITCH_SLICE_COUNT = 2;
 export const GLITCH_SLICE_BAND_HEIGHT_FRACTION = 0.08;
 
+// `zoomBlur`/`whipPanLeft`/`whipPanRight` are TRANSITION-only (see `TransitionType`'s own doc
+// comment) — unlike glitch/waterRipple there's no continuous per-clip "Pixel FX" version of either,
+// so these constants exist purely for `export/buildExportPlan.ts`'s `applyTransitionCorruptionPass`
+// and this file's own `applyHorizontalBlur` (zoomBlur's own blur is omnidirectional, so its PREVIEW
+// uses a native Canvas2D `filter: blur()` directly in `PlaybackEngine.ts` instead of a pure function
+// here — only whipPan's DIRECTIONAL blur needs real pixel math, since CSS/Canvas2D's `blur()` can't
+// express "horizontal only").
+export const ZOOM_BLUR_SCALE = 0.22;
+export const ZOOM_BLUR_SIGMA_PX = 18;
+export const WHIP_PAN_BLUR_RADIUS_PX = 22;
+
 /** A deterministic, seedable pseudo-random value in `[0, 1)` — the classic GLSL-shader hash trick
  *  (`sin(seed * big-irrational) * big-number`, fractional part). NOT `Math.random()`: a pixel effect
  *  must be a pure function of `elapsedSeconds` alone (same "scrubbing backward looks identical to
@@ -133,6 +144,60 @@ export function applyGlitch(imageData: ImageData, elapsedSeconds: number, speed 
         data[to + 1] = Math.min(255, Math.max(0, data[to + 1] + jitter));
         data[to + 2] = Math.min(255, Math.max(0, data[to + 2] + jitter));
       }
+    }
+  }
+}
+
+/** Mutates `imageData` in place with a HORIZONTAL-only box blur — the "motion smear" a fast camera
+ *  pan leaves behind, used by the `whipPanLeft`/`whipPanRight` TRANSITION style
+ *  (`PlaybackEngine.compositeTransitionFrame`/`compositeSoloReveal`) rather than a continuous per-clip
+ *  Pixel FX — there's no whip-pan hold-still look to want outside of a transition, unlike glitch/
+ *  waterRipple. Direct port of `applyTransitionCorruptionPass`'s own `boxblur=luma_radius=...`
+ *  recipe — vertical-only radius zero in THAT filter is what makes it read as directional motion blur
+ *  rather than a plain uniform one, which a CSS/Canvas2D `filter: blur()` can't express (that's
+ *  isotropic only — see `zoomBlur`'s own preview, which uses exactly that native filter instead,
+ *  since ITS blur genuinely is omnidirectional).
+ *
+ *  A sliding-window running sum (not a fresh sum per output pixel) keeps this O(width×height)
+ *  regardless of radius — a naive nested loop would be O(width×height×radius), and
+ *  `WHIP_PAN_BLUR_RADIUS_PX` is large enough for that difference to matter on a full-resolution
+ *  preview canvas. Edges are clamped, not wrapped — same "stretch the nearest real edge pixel rather
+ *  than smear the opposite edge in" convention `applyWaterRipple` already uses. `intensity` (0..1)
+ *  scales the effective radius — `0` is an exact no-op, `1` is the full `WHIP_PAN_BLUR_RADIUS_PX`, the
+ *  same "ramps across the blend window" contract `applyGlitch`'s/`applyWaterRipple`'s own `intensity`
+ *  parameter already establishes for their transition use. */
+export function applyHorizontalBlur(imageData: ImageData, intensity = 1): void {
+  const { width, height, data } = imageData;
+  const radius = Math.round(WHIP_PAN_BLUR_RADIUS_PX * Math.max(0, Math.min(1, intensity)));
+  if (radius <= 0) return;
+  const source = data.slice();
+  const windowSize = radius * 2 + 1;
+  const clampX = (x: number) => Math.min(width - 1, Math.max(0, x));
+  for (let y = 0; y < height; y++) {
+    const rowStart = y * width * 4;
+    let sr = 0;
+    let sg = 0;
+    let sb = 0;
+    let sa = 0;
+    for (let dx = -radius; dx <= radius; dx++) {
+      const idx = rowStart + clampX(dx) * 4;
+      sr += source[idx];
+      sg += source[idx + 1];
+      sb += source[idx + 2];
+      sa += source[idx + 3];
+    }
+    for (let x = 0; x < width; x++) {
+      const to = rowStart + x * 4;
+      data[to] = sr / windowSize;
+      data[to + 1] = sg / windowSize;
+      data[to + 2] = sb / windowSize;
+      data[to + 3] = sa / windowSize;
+      const leaveIdx = rowStart + clampX(x - radius) * 4;
+      const enterIdx = rowStart + clampX(x + radius + 1) * 4;
+      sr += source[enterIdx] - source[leaveIdx];
+      sg += source[enterIdx + 1] - source[leaveIdx + 1];
+      sb += source[enterIdx + 2] - source[leaveIdx + 2];
+      sa += source[enterIdx + 3] - source[leaveIdx + 3];
     }
   }
 }

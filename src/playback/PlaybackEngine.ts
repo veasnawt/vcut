@@ -6,7 +6,7 @@ import { applyColorGrading, buildCurveLut, composeLuts } from "../timeline/color
 import { resolveClipColorGrading, resolveClipEffects, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
 import { applyLut3D, parseCubeLut } from "../timeline/lut.ts";
 import type { Lut3D } from "../timeline/lut.ts";
-import { applyGlitch, applyWaterRipple } from "../timeline/pixelEffects.ts";
+import { applyGlitch, applyHorizontalBlur, applyWaterRipple, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
 import { audibleClips, clipAtTime, visibleVideoClips } from "../timeline/queries.ts";
 import { findTransitionOut, findTransitionPartner, resolveAudioTransitionGain } from "../timeline/transitions.ts";
 import { AudioMixEngine } from "./AudioMixEngine.ts";
@@ -21,8 +21,8 @@ const AUDIO_PREFETCH_LOOKAHEAD_SECONDS = 5;
  *  every single frame for a decision that only matters on a several-second timescale anyway. */
 const AUDIO_PREFETCH_SCAN_INTERVAL_MS = 1000;
 
-/** Groups `TransitionType`'s ten styles into the four shapes the canvas preview actually knows how to
- *  render — exported (not a private switch inline) so it's directly unit-testable without a canvas.
+/** Groups `TransitionType`'s styles into the shapes the canvas preview actually knows how to render —
+ *  exported (not a private switch inline) so it's directly unit-testable without a canvas.
  *  `compositeTransitionFrame` is what turns one of these into real pixels; `export/buildExportPlan.ts`
  *  never calls this at all — FFmpeg gets the exact distinct filter name for every type regardless of
  *  which family it maps to here (see `TRANSITION_XFADE_NAME` there). */
@@ -32,7 +32,9 @@ export type TransitionFamily =
   | { kind: "slide"; edge: "left" | "right" | "up" | "down" }
   | { kind: "circle"; opening: boolean }
   | { kind: "glitch" }
-  | { kind: "waterRipple" };
+  | { kind: "waterRipple" }
+  | { kind: "zoomBlur" }
+  | { kind: "whipPan"; edge: "left" | "right" };
 
 export function transitionFamily(type: TransitionType): TransitionFamily {
   switch (type) {
@@ -60,6 +62,12 @@ export function transitionFamily(type: TransitionType): TransitionFamily {
       return { kind: "glitch" };
     case "waterRippleCut":
       return { kind: "waterRipple" };
+    case "zoomBlur":
+      return { kind: "zoomBlur" };
+    case "whipPanLeft":
+      return { kind: "whipPan", edge: "left" };
+    case "whipPanRight":
+      return { kind: "whipPan", edge: "right" };
     case "crossfade":
     case "dissolve":
     default:
@@ -96,18 +104,23 @@ function getPixelFxScratchCanvas(which: "a" | "b", width: number, height: number
 /** Draws `source` into one of the two scratch canvases above, runs `apply` over its raw pixels via the
  *  same `getImageData`/`putImageData` round trip `drawTransformed` already uses for chroma-key/color-
  *  grading/LUT/pixel-effect, and returns that canvas (now holding the processed result) ready to
- *  `drawImage` elsewhere. */
+ *  `drawImage` elsewhere. `dx` offsets the initial draw horizontally before the effect runs — used by
+ *  the whip-pan transition family, which needs its own slide offset baked in BEFORE the directional
+ *  blur samples neighboring pixels (blurring first and sliding after would blur in now-empty/wrong
+ *  pixels at the frame edge the slide reveals). Every other caller omits it, defaulting to the
+ *  original no-offset behavior. */
 function applyPixelFxToImage(
   which: "a" | "b",
   source: CanvasImageSource,
   width: number,
   height: number,
-  apply: (imageData: ImageData) => void
+  apply: (imageData: ImageData) => void,
+  dx = 0
 ): CanvasImageSource {
   const canvas = getPixelFxScratchCanvas(which, width, height);
   const ctx = canvas.getContext("2d")!;
   ctx.clearRect(0, 0, width, height);
-  ctx.drawImage(source, 0, 0, width, height);
+  ctx.drawImage(source, dx, 0, width, height);
   const imageData = ctx.getImageData(0, 0, width, height);
   apply(imageData);
   ctx.putImageData(imageData, 0, 0);
@@ -220,6 +233,55 @@ export function compositeTransitionFrame(
     return;
   }
 
+  if (family.kind === "zoomBlur") {
+    // A centered zoom-in plus blur on BOTH sides, ramped by the same parabola (0 at both edges,
+    // peaking at the midpoint) glitch/waterRipple already use — a genuine `context.filter =
+    // "blur(...)"` since this blur is omnidirectional (unlike whipPan below, which needs its own
+    // directional pixel math). `save()`/`restore()` around each draw scope the transform+filter to
+    // just that one call, matching the wipe/circle branches' own local save/restore convention.
+    const intensity = 4 * progress * (1 - progress);
+    const scale = 1 + ZOOM_BLUR_SCALE * intensity;
+    const blurPx = ZOOM_BLUR_SIGMA_PX * intensity;
+    const priorFilter = context.filter;
+    context.filter = blurPx > 0.05 ? `blur(${blurPx}px)` : "none";
+    context.save();
+    context.translate(frameWidth / 2, frameHeight / 2);
+    context.scale(scale, scale);
+    context.translate(-frameWidth / 2, -frameHeight / 2);
+    context.drawImage(outgoing, 0, 0, frameWidth, frameHeight);
+    context.restore();
+    context.globalAlpha = progress;
+    context.save();
+    context.translate(frameWidth / 2, frameHeight / 2);
+    context.scale(scale, scale);
+    context.translate(-frameWidth / 2, -frameHeight / 2);
+    context.drawImage(incoming, 0, 0, frameWidth, frameHeight);
+    context.restore();
+    context.globalAlpha = 1;
+    context.filter = priorFilter;
+    return;
+  }
+
+  if (family.kind === "whipPan") {
+    // The same whole-frame "push" geometry `slide` above uses, plus a horizontal-only blur ramped by
+    // the same midpoint-peaking parabola — the "motion smear" of a fast camera pan. Needs real pixel
+    // math (`applyHorizontalBlur`), not `context.filter`, since a directional blur is anisotropic and
+    // CSS/Canvas2D's `blur()` isn't. The slide offset is baked into the scratch-canvas draw itself
+    // (via `dx`) so the blur samples the ALREADY-slid frame, not the stationary source.
+    const intensity = 4 * progress * (1 - progress);
+    const sign = family.edge === "left" ? -1 : 1;
+    const outgoingDx = sign * frameWidth * progress;
+    const incomingDx = -sign * frameWidth * (1 - progress);
+    const apply = (imageData: ImageData) => applyHorizontalBlur(imageData, intensity);
+    const processedOutgoing = applyPixelFxToImage("a", outgoing, frameWidth, frameHeight, apply, outgoingDx);
+    const processedIncoming = applyPixelFxToImage("b", incoming, frameWidth, frameHeight, apply, incomingDx);
+    context.drawImage(processedOutgoing, 0, 0, frameWidth, frameHeight);
+    context.globalAlpha = progress;
+    context.drawImage(processedIncoming, 0, 0, frameWidth, frameHeight);
+    context.globalAlpha = 1;
+    return;
+  }
+
   // dissolve (and crossfade, the default) — a plain alpha cross-dissolve. FFmpeg's real `dissolve`
   // xfade type is a per-pixel randomized reveal rather than a uniform blend; a flat alpha blend is
   // this canvas approximation's stand-in for it, the same "preview approximates, export is exact"
@@ -317,6 +379,40 @@ function compositeSoloReveal(
     // (this function's own, at the very end, paired with its `save()` at the top) reverts this along
     // with every other state change this branch makes, so there's nothing to manually reset here.
     context.imageSmoothingEnabled = false;
+    context.drawImage(scratch, 0, 0, frameWidth, frameHeight);
+  } else if (family.kind === "zoomBlur") {
+    // A pure transform+filter, no scratch canvas needed — `draw()`'s own coordinate system already
+    // assumes frame-space drawing, so scaling about the frame's own center before calling it (rather
+    // than redirecting onto an offscreen canvas the way glitch/waterRipple above need to) is enough.
+    // `intensity` peaks at the disappearing/appearing instant (`reveal` at 0) and fades to 0 by fully
+    // visible/stable (`reveal` at 1) — same one-formula-covers-both-directions shape the glitch/
+    // waterRipple branch above already uses.
+    const intensity = 1 - reveal;
+    const scale = 1 + ZOOM_BLUR_SCALE * intensity;
+    const blurPx = ZOOM_BLUR_SIGMA_PX * intensity;
+    context.filter = blurPx > 0.05 ? `blur(${blurPx}px)` : "none";
+    context.globalAlpha = reveal;
+    context.translate(frameWidth / 2, frameHeight / 2);
+    context.scale(scale, scale);
+    context.translate(-frameWidth / 2, -frameHeight / 2);
+    draw(1);
+  } else if (family.kind === "whipPan") {
+    // Same "no partner to push out of frame" solo shape `slide` above uses, plus the directional blur
+    // ramped by the disappearing/appearing-instant intensity `zoomBlur`'s own branch here uses.
+    const intensity = 1 - reveal;
+    const sign = family.edge === "left" ? -1 : 1;
+    const dx = -sign * frameWidth * (1 - reveal);
+    const scratch = getPixelFxScratchCanvas("a", frameWidth, frameHeight);
+    const scratchContext = scratch.getContext("2d")!;
+    scratchContext.clearRect(0, 0, frameWidth, frameHeight);
+    scratchContext.save();
+    scratchContext.translate(dx, 0);
+    draw(1, scratchContext);
+    scratchContext.restore();
+    const imageData = scratchContext.getImageData(0, 0, frameWidth, frameHeight);
+    applyHorizontalBlur(imageData, intensity);
+    scratchContext.putImageData(imageData, 0, 0);
+    context.globalAlpha = reveal;
     context.drawImage(scratch, 0, 0, frameWidth, frameHeight);
   } else {
     // dissolve (and crossfade, the default) — a plain alpha reveal.

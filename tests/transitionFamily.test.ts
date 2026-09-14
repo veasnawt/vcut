@@ -20,6 +20,9 @@ describe("transitionFamily", () => {
       circleClose: { kind: "circle", opening: false },
       glitchCut: { kind: "glitch" },
       waterRippleCut: { kind: "waterRipple" },
+      zoomBlur: { kind: "zoomBlur" },
+      whipPanLeft: { kind: "whipPan", edge: "left" },
+      whipPanRight: { kind: "whipPan", edge: "right" },
     };
 
     for (const [type, family] of Object.entries(expected) as [TransitionType, ReturnType<typeof transitionFamily>][]) {
