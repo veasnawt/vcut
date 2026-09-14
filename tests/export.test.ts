@@ -2582,15 +2582,16 @@ describe("buildExportPlan with transitions", () => {
       slideDown: "slidedown",
       circleOpen: "circleopen",
       circleClose: "circleclose",
-      // Not real xfade names — a corruption/blur pre-pass runs first, then always blends with a plain
-      // "fade" underneath (see the dedicated "glitch/water-ripple/zoom-blur/whip-pan transition"
-      // describe block below for the pre-pass's own assertions); this loop only checks the FINAL
-      // xfade call's own name.
+      // Not real xfade names — a corruption/blur/flash pre-pass runs first, then always blends with a
+      // plain "fade" underneath (see the dedicated "glitch/water-ripple/zoom-blur/whip-pan/flash-zoom
+      // transition" describe block below for the pre-pass's own assertions); this loop only checks the
+      // FINAL xfade call's own name.
       glitchCut: "fade",
       waterRippleCut: "fade",
       zoomBlur: "fade",
+      flashZoom: "fade",
       // whipPanLeft/Right ARE real xfade names underneath their own blur pre-pass — the pan motion
-      // itself comes from an ordinary, always-safe slide, unlike the three "fade" ones above.
+      // itself comes from an ordinary, always-safe slide, unlike the four "fade" ones above.
       whipPanLeft: "slideleft",
       whipPanRight: "slideright",
     };
@@ -2816,7 +2817,7 @@ describe("buildExportPlan's two different text fade-out timings: solo vs. a real
   });
 });
 
-describe("buildExportPlan with a glitch/water-ripple/zoom-blur/whip-pan transition", () => {
+describe("buildExportPlan with a glitch/water-ripple/zoom-blur/whip-pan/flash-zoom transition", () => {
   it("waterRippleCut runs a ramped geq= corruption pass on both sides before a plain xfade=fade", () => {
     const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
     let project = addClip(base, videoTrackId(base), "a", 0);
@@ -2868,6 +2869,35 @@ describe("buildExportPlan with a glitch/water-ripple/zoom-blur/whip-pan transiti
     assert.match(graph, /\[v0_1_from_fx\]\[v0_1_to_fx\]xfade=transition=fade:duration=1\.000000:offset=0/);
   });
 
+  it("flashZoom runs the same zoom+blur pre-pass as zoomBlur, then a ramped flash-to-white geq=, before a plain xfade=fade", () => {
+    const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
+    let project = addClip(base, videoTrackId(base), "a", 0);
+    const [clipA] = clipsOf(project, videoTrackId(project));
+    project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
+    const [, clipB] = clipsOf(project, videoTrackId(project));
+    project = setClipTransitionIn(project, clipB.id, { duration: 1, type: "flashZoom" });
+
+    const graph = filterGraph(plan(project).args);
+
+    // The zoom+blur stage first, chained straight into a SECOND geq= stage on the SAME `_fx` label
+    // (not a separate one) -- both sides get the identical two-stage chain.
+    assert.match(
+      graph,
+      /\[v0_1_from\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+,geq=lum='[^']+':cb='[^']+':cr='[^']+'\[v0_1_from_fx\]/
+    );
+    assert.match(
+      graph,
+      /\[v0_1_to\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+,geq=lum='[^']+':cb='[^']+':cr='[^']+'\[v0_1_to_fx\]/
+    );
+    assert.match(graph, /\[v0_1_from_fx\]\[v0_1_to_fx\]xfade=transition=fade:duration=1\.000000:offset=0/);
+    // A real T-varying ramp (0 at both ends of the 1s window, peaking at the midpoint), same shape
+    // waterRippleCut's own ramp uses -- not a flat, constant flash for the whole duration.
+    assert.match(graph, /\(T\/1\.000000\)\*\(1-T\/1\.000000\)/);
+    // Blends toward white (255 luma, 128 neutral chroma) — not some other fixed target color.
+    assert.match(graph, /\+255\*\(/);
+    assert.match(graph, /\+128\*\(/);
+  });
+
   it("whipPanLeft/whipPanRight run a fixed horizontal boxblur= corruption pass on both sides before a real slideleft/slideright xfade", () => {
     for (const [type, xfadeName] of [
       ["whipPanLeft", "slideleft"],
@@ -2892,7 +2922,16 @@ describe("buildExportPlan with a glitch/water-ripple/zoom-blur/whip-pan transiti
 
   it("every OTHER transition type is unaffected — no corruption fragment, raw labels feed xfade directly (regression)", () => {
     for (const type of TRANSITION_TYPE_OPTIONS) {
-      if (type === "glitchCut" || type === "waterRippleCut" || type === "zoomBlur" || type === "whipPanLeft" || type === "whipPanRight") continue;
+      if (
+        type === "glitchCut" ||
+        type === "waterRippleCut" ||
+        type === "zoomBlur" ||
+        type === "whipPanLeft" ||
+        type === "whipPanRight" ||
+        type === "flashZoom"
+      ) {
+        continue;
+      }
 
       const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
       let project = addClip(base, videoTrackId(base), "a", 0);

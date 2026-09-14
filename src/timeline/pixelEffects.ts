@@ -25,16 +25,22 @@ export const GLITCH_NOISE_DENSITY = 0.06;
 export const GLITCH_SLICE_COUNT = 2;
 export const GLITCH_SLICE_BAND_HEIGHT_FRACTION = 0.08;
 
-// `zoomBlur`/`whipPanLeft`/`whipPanRight` are TRANSITION-only (see `TransitionType`'s own doc
-// comment) — unlike glitch/waterRipple there's no continuous per-clip "Pixel FX" version of either,
-// so these constants exist purely for `export/buildExportPlan.ts`'s `applyTransitionCorruptionPass`
-// and this file's own `applyHorizontalBlur` (zoomBlur's own blur is omnidirectional, so its PREVIEW
-// uses a native Canvas2D `filter: blur()` directly in `PlaybackEngine.ts` instead of a pure function
-// here — only whipPan's DIRECTIONAL blur needs real pixel math, since CSS/Canvas2D's `blur()` can't
-// express "horizontal only").
+// `zoomBlur`/`whipPanLeft`/`whipPanRight`/`flashZoom` are TRANSITION-only (see `TransitionType`'s own
+// doc comment) — unlike glitch/waterRipple there's no continuous per-clip "Pixel FX" version of any of
+// these, so these constants exist purely for `export/buildExportPlan.ts`'s
+// `applyTransitionCorruptionPass` and this file's own `applyHorizontalBlur` (zoomBlur's/flashZoom's
+// own blur is omnidirectional, so their PREVIEW uses a native Canvas2D `filter: blur()` directly in
+// `PlaybackEngine.ts` instead of a pure function here — only whipPan's DIRECTIONAL blur needs real
+// pixel math, since CSS/Canvas2D's `blur()` can't express "horizontal only").
 export const ZOOM_BLUR_SCALE = 0.22;
 export const ZOOM_BLUR_SIGMA_PX = 18;
 export const WHIP_PAN_BLUR_RADIUS_PX = 22;
+
+/** `flashZoom` reuses `zoomBlur`'s own scale/blur exactly, layering a brief flash-to-white pulse on
+ *  top that peaks right at the cut — `0.88`, not `1.0`, so the peak frame still shows a hint of the
+ *  underlying content (a full `1.0` would blend to a dead, briefly-blank white frame, reading as a
+ *  glitch rather than a snappy flash). */
+export const FLASH_ZOOM_PEAK = 0.88;
 
 /** A deterministic, seedable pseudo-random value in `[0, 1)` — the classic GLSL-shader hash trick
  *  (`sin(seed * big-irrational) * big-number`, fractional part). NOT `Math.random()`: a pixel effect

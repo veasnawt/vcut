@@ -25,15 +25,23 @@ export const TRANSITION_TYPE_OPTIONS: TransitionType[] = [
   "zoomBlur",
   "whipPanLeft",
   "whipPanRight",
+  "flashZoom",
 ];
 
-/** The subset of `TransitionType` that renders via a per-pixel corruption/blur pre-pass rather than a
- *  plain `xfade` geometry (see that type's own doc comment) — `drawtext` has no equivalent pre-pass,
- *  so `TransitionPickerMenu`'s own `isTextTrack` grid excludes exactly this set. A named export
- *  (rather than each caller re-listing the five names) so a future sixth addition can't be added to
- *  `TransitionType` and `TRANSITION_XFADE_NAME`/`applyTransitionCorruptionPass` while forgetting this
- *  one exclusion list. */
-export const VIDEO_ONLY_TRANSITION_TYPES: TransitionType[] = ["glitchCut", "waterRippleCut", "zoomBlur", "whipPanLeft", "whipPanRight"];
+/** The subset of `TransitionType` that renders via a per-pixel corruption/blur/flash pre-pass rather
+ *  than a plain `xfade` geometry (see that type's own doc comment) — `drawtext` has no equivalent
+ *  pre-pass, so `TransitionPickerMenu`'s own `isTextTrack` grid excludes exactly this set. A named
+ *  export (rather than each caller re-listing the six names) so a future seventh addition can't be
+ *  added to `TransitionType` and `TRANSITION_XFADE_NAME`/`applyTransitionCorruptionPass` while
+ *  forgetting this one exclusion list. */
+export const VIDEO_ONLY_TRANSITION_TYPES: TransitionType[] = [
+  "glitchCut",
+  "waterRippleCut",
+  "zoomBlur",
+  "whipPanLeft",
+  "whipPanRight",
+  "flashZoom",
+];
 
 export const TRANSITION_TYPE_LABEL: Record<TransitionType, string> = {
   crossfade: "Crossfade",
@@ -53,6 +61,7 @@ export const TRANSITION_TYPE_LABEL: Record<TransitionType, string> = {
   zoomBlur: "Zoom Blur",
   whipPanLeft: "Whip Pan Left",
   whipPanRight: "Whip Pan Right",
+  flashZoom: "Flash Zoom",
 };
 
 /** What a freshly-enabled transition starts at — half a second is a reasonable default crossfade

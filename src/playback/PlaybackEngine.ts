@@ -6,7 +6,7 @@ import { applyColorGrading, buildCurveLut, composeLuts } from "../timeline/color
 import { resolveClipColorGrading, resolveClipEffects, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
 import { applyLut3D, parseCubeLut } from "../timeline/lut.ts";
 import type { Lut3D } from "../timeline/lut.ts";
-import { applyGlitch, applyHorizontalBlur, applyWaterRipple, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
+import { applyGlitch, applyHorizontalBlur, applyWaterRipple, FLASH_ZOOM_PEAK, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
 import { audibleClips, clipAtTime, visibleVideoClips } from "../timeline/queries.ts";
 import { findTransitionOut, findTransitionPartner, resolveAudioTransitionGain } from "../timeline/transitions.ts";
 import { AudioMixEngine } from "./AudioMixEngine.ts";
@@ -34,7 +34,8 @@ export type TransitionFamily =
   | { kind: "glitch" }
   | { kind: "waterRipple" }
   | { kind: "zoomBlur" }
-  | { kind: "whipPan"; edge: "left" | "right" };
+  | { kind: "whipPan"; edge: "left" | "right" }
+  | { kind: "flashZoom" };
 
 export function transitionFamily(type: TransitionType): TransitionFamily {
   switch (type) {
@@ -68,6 +69,8 @@ export function transitionFamily(type: TransitionType): TransitionFamily {
       return { kind: "whipPan", edge: "left" };
     case "whipPanRight":
       return { kind: "whipPan", edge: "right" };
+    case "flashZoom":
+      return { kind: "flashZoom" };
     case "crossfade":
     case "dissolve":
     default:
@@ -233,12 +236,14 @@ export function compositeTransitionFrame(
     return;
   }
 
-  if (family.kind === "zoomBlur") {
+  if (family.kind === "zoomBlur" || family.kind === "flashZoom") {
     // A centered zoom-in plus blur on BOTH sides, ramped by the same parabola (0 at both edges,
     // peaking at the midpoint) glitch/waterRipple already use — a genuine `context.filter =
     // "blur(...)"` since this blur is omnidirectional (unlike whipPan below, which needs its own
     // directional pixel math). `save()`/`restore()` around each draw scope the transform+filter to
     // just that one call, matching the wipe/circle branches' own local save/restore convention.
+    // `flashZoom` layers a plain white overlay on top of the already-blended result afterward — the
+    // same order the export side's own zoom+blur-then-flash `geq=` chain uses.
     const intensity = 4 * progress * (1 - progress);
     const scale = 1 + ZOOM_BLUR_SCALE * intensity;
     const blurPx = ZOOM_BLUR_SIGMA_PX * intensity;
@@ -259,6 +264,12 @@ export function compositeTransitionFrame(
     context.restore();
     context.globalAlpha = 1;
     context.filter = priorFilter;
+    if (family.kind === "flashZoom") {
+      context.fillStyle = "#ffffff";
+      context.globalAlpha = FLASH_ZOOM_PEAK * intensity;
+      context.fillRect(0, 0, frameWidth, frameHeight);
+      context.globalAlpha = 1;
+    }
     return;
   }
 
@@ -396,6 +407,25 @@ function compositeSoloReveal(
     context.scale(scale, scale);
     context.translate(-frameWidth / 2, -frameHeight / 2);
     draw(1);
+  } else if (family.kind === "flashZoom") {
+    // Same zoom+blur draw as the `zoomBlur` branch above, scoped in its own `save()`/`restore()` (not
+    // relying on this function's own top-level one) so the zoom transform is undone BEFORE the flat
+    // white overlay below — that overlay must cover the frame at its normal scale, not zoomed in too.
+    const intensity = 1 - reveal;
+    const scale = 1 + ZOOM_BLUR_SCALE * intensity;
+    const blurPx = ZOOM_BLUR_SIGMA_PX * intensity;
+    context.filter = blurPx > 0.05 ? `blur(${blurPx}px)` : "none";
+    context.globalAlpha = reveal;
+    context.save();
+    context.translate(frameWidth / 2, frameHeight / 2);
+    context.scale(scale, scale);
+    context.translate(-frameWidth / 2, -frameHeight / 2);
+    draw(1);
+    context.restore();
+    context.filter = "none";
+    context.fillStyle = "#ffffff";
+    context.globalAlpha = FLASH_ZOOM_PEAK * intensity;
+    context.fillRect(0, 0, frameWidth, frameHeight);
   } else if (family.kind === "whipPan") {
     // Same "no partner to push out of frame" solo shape `slide` above uses, plus the directional blur
     // ramped by the disappearing/appearing-instant intensity `zoomBlur`'s own branch here uses.

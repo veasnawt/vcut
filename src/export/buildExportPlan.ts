@@ -18,6 +18,7 @@ import {
 } from "../timeline/textAnimation.ts";
 import { hasColorGradingKeyframes, hasEffectsKeyframes, hasTextCropKeyframes, hasTextStyleKeyframes, hasTransformKeyframes, resolveClipColorGrading, resolveClipEffects, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
 import {
+  FLASH_ZOOM_PEAK,
   GLITCH_NOISE_AMOUNT,
   GLITCH_SHIFT_PX,
   WATER_RIPPLE_AMPLITUDE_PX,
@@ -54,20 +55,21 @@ const TRANSITION_XFADE_NAME: Record<TransitionType, string> = {
   slideDown: "slidedown",
   circleOpen: "circleopen",
   circleClose: "circleclose",
-  // Not real xfade names — three of the deliberate exceptions to the "every value here is a real
+  // Not real xfade names — four of the deliberate exceptions to the "every value here is a real
   // xfade name" rule above. A corruption pre-pass filter stage (`geq=`/`rgbashift=`+`noise=`/
   // `scale=`+`crop=`+`gblur=`, applied to both sides before the transition) runs first, then this
   // plain "fade" is what actually blends the two now-corrupted streams underneath it — the
-  // corruption itself, not the blend math, is what makes it read as "glitch"/"ripple"/"zoom blur"
-  // rather than a plain dissolve. See `applyTransitionCorruptionPass` below for where that stage is
-  // built.
+  // corruption itself, not the blend math, is what makes it read as "glitch"/"ripple"/"zoom blur"/
+  // "flash" rather than a plain dissolve. See `applyTransitionCorruptionPass` below for where that
+  // stage is built.
   glitchCut: "fade",
   waterRippleCut: "fade",
   zoomBlur: "fade",
+  flashZoom: "fade",
   // whipPanLeft/Right are the OTHER kind of exception: a real, always-safe `slideleft`/`slideright`
   // blend (not "fade") with a directional-blur pre-pass layered on top of it — the pan motion IS the
-  // xfade geometry here, unlike glitch/waterRipple/zoomBlur where the pre-pass is the whole visual
-  // and the blend underneath is deliberately plain.
+  // xfade geometry here, unlike glitch/waterRipple/zoomBlur/flashZoom where the pre-pass is the whole
+  // visual and the blend underneath is deliberately plain.
   whipPanLeft: "slideleft",
   whipPanRight: "slideright",
 };
@@ -2029,11 +2031,11 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
   // the way every other transition type does. Returns `label` UNCHANGED for every other type — the raw
   // `_from`/`_to` streams feed `xfade` directly, exactly as before this feature existed.
   //
-  // `waterRippleCut` ramps the displacement's own amplitude across the blend window (zero at both
-  // edges, peaking at the midpoint) via a plain quadratic in `T` — `4*(T/D)*(1-T/D)` is 0 at T=0 and
-  // T=D, 1 at T=D/2 — instead of `applyWaterRipple`'s continuous per-clip effect's flat full-strength
-  // wobble, matching `compositeTransitionFrame`'s own "ramp up then back down across the blend window"
-  // shape for this transition family specifically. `glitchCut`/`zoomBlur`/`whipPanLeft`/`whipPanRight`
+  // `waterRippleCut`/`flashZoom` ramp their own effect across the blend window (zero at both edges,
+  // peaking at the midpoint) via a plain quadratic in `T` — `4*(T/D)*(1-T/D)` is 0 at T=0 and T=D, 1 at
+  // T=D/2 — instead of `applyWaterRipple`'s continuous per-clip effect's flat full-strength wobble,
+  // matching `compositeTransitionFrame`'s own "ramp up then back down across the blend window" shape
+  // for these transition families specifically. `glitchCut`/`zoomBlur`/`whipPanLeft`/`whipPanRight`
   // have no equivalent ramp — none of `rgbashift=`/`noise=`/`scale=`/`crop=`/`gblur=`/`boxblur=` can be
   // driven by a `T` expression the way `geq=` can (the same limitation `pixelEffectFilter` above
   // already documents) — so each is a FIXED corruption/blur pass for the transition's whole duration.
@@ -2043,7 +2045,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       transitionType !== "waterRippleCut" &&
       transitionType !== "zoomBlur" &&
       transitionType !== "whipPanLeft" &&
-      transitionType !== "whipPanRight"
+      transitionType !== "whipPanRight" &&
+      transitionType !== "flashZoom"
     ) {
       return label;
     }
@@ -2055,7 +2058,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       filters.push(`[${label}]geq=lum='${expr}':cb='${expr}':cr='${expr}'[${fxLabel}]`);
     } else if (transitionType === "glitchCut") {
       filters.push(`[${label}]rgbashift=rh=${GLITCH_SHIFT_PX}:bv=${-GLITCH_SHIFT_PX},noise=alls=${n(GLITCH_NOISE_AMOUNT)}:allf=t[${fxLabel}]`);
-    } else if (transitionType === "zoomBlur") {
+    } else if (transitionType === "zoomBlur" || transitionType === "flashZoom") {
       // A centered zoom-in (scale up, then crop back down to the original frame size — `crop`'s own
       // default x/y IS centered) plus a fixed gaussian blur — the "zoom punch" look popular in short-
       // form templates. Fixed, not T-ramped (see this function's own doc comment on why), which still
@@ -2072,9 +2075,23 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // bundled ffmpeg) — pixel-identical size wasn't enough on its own, `concat` rejects a SAR
       // mismatch just as hard as a dimension one.
       const zoomFactor = n(1 + ZOOM_BLUR_SCALE);
-      filters.push(
-        `[${label}]scale=w='iw*${zoomFactor}':h='ih*${zoomFactor}',crop=w=${width}:h=${height},setsar=1,gblur=sigma=${n(ZOOM_BLUR_SIGMA_PX)}[${fxLabel}]`
-      );
+      const zoomStage = `scale=w='iw*${zoomFactor}':h='ih*${zoomFactor}',crop=w=${width}:h=${height},setsar=1,gblur=sigma=${n(ZOOM_BLUR_SIGMA_PX)}`;
+      if (transitionType === "zoomBlur") {
+        filters.push(`[${label}]${zoomStage}[${fxLabel}]`);
+      } else {
+        // flashZoom: the exact same zoom+blur pre-pass as zoomBlur, with a SECOND, T-ramped `geq=`
+        // stage chained on afterward — blending every pixel toward white (luma toward 255, chroma
+        // toward neutral 128) proportional to the same 0→1→0 parabola `waterRippleCut` uses, peaking
+        // at `FLASH_ZOOM_PEAK` (not `1.0`) right at the cut so the flash reads as a bright pulse
+        // rather than a dead blank frame. `p(X,Y)` samples the CURRENT plane (lum/cb/cr respectively)
+        // at its own coordinate, exactly like `waterRippleCut`'s own `expr` above — the only
+        // difference is this doesn't offset the sample coordinate at all (no spatial displacement),
+        // it only rewrites the sampled value itself.
+        const k = `${n(FLASH_ZOOM_PEAK)}*4*(T/${t(transitionDuration)})*(1-T/${t(transitionDuration)})`;
+        filters.push(
+          `[${label}]${zoomStage},geq=lum='p(X,Y)*(1-(${k}))+255*(${k})':cb='p(X,Y)*(1-(${k}))+128*(${k})':cr='p(X,Y)*(1-(${k}))+128*(${k})'[${fxLabel}]`
+        );
+      }
     } else {
       // whipPanLeft/whipPanRight — a HORIZONTAL-only box blur (vertical radius 0), the directional
       // "motion smear" a fast camera pan leaves behind; the actual pan motion comes from the real

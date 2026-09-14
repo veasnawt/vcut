@@ -472,23 +472,25 @@ export type TextCropKeyframe = Keyframe<TextCrop>;
  *  `export/buildExportPlan.ts`) that's been part of that filter since its ORIGINAL introduction
  *  (FFmpeg 4.3) — a newer name risks failing export outright against an older ffmpeg build, which a
  *  name this old can't. `PlaybackEngine`'s canvas preview groups these into rendering families
- *  (dissolve, wipe, slide, circle, glitch, waterRipple, zoomBlur, whipPan — see its own
+ *  (dissolve, wipe, slide, circle, glitch, waterRipple, zoomBlur, whipPan, flashZoom — see its own
  *  `transitionFamily`), not one independent implementation per value; export always renders the exact
  *  distinct FFmpeg filter regardless of which family the preview approximated it with.
  *
- *  `glitchCut`/`waterRippleCut`/`zoomBlur`/`whipPanLeft`/`whipPanRight` are the exceptions to the
- *  "real xfade name" rule above — each renders as a genuine PRE-PASS filter (`rgbashift=`+`noise=` for
- *  glitch, a ramped `geq=` pixel-displacement for water-ripple, `scale=`+`crop=`+`gblur=` for
- *  zoomBlur, a directional `boxblur=` for whipPan — see `applyTransitionCorruptionPass` in
- *  `export/buildExportPlan.ts`, which reuses the exact same amplitude/scale/radius constants
+ *  `glitchCut`/`waterRippleCut`/`zoomBlur`/`whipPanLeft`/`whipPanRight`/`flashZoom` are the exceptions
+ *  to the "real xfade name" rule above — each renders as a genuine PRE-PASS filter (`rgbashift=`+
+ *  `noise=` for glitch, a ramped `geq=` pixel-displacement for water-ripple, `scale=`+`crop=`+`gblur=`
+ *  for zoomBlur, a directional `boxblur=` for whipPan, `zoomBlur`'s own pre-pass plus a SECOND ramped
+ *  `geq=` flash-to-white pass for flashZoom — see `applyTransitionCorruptionPass` in
+ *  `export/buildExportPlan.ts`, which reuses the exact same amplitude/scale/radius/peak constants
  *  `timeline/pixelEffects.ts` defines) applied to BOTH sides of the cut, THEN blended underneath —
- *  `glitchCut`/`waterRippleCut`/`zoomBlur` with a plain `xfade=transition=fade` (`TRANSITION_XFADE_NAME`
- *  maps all three to `"fade"` — the pre-pass corruption/blur is what makes each read as distinct, not
- *  the blend math), `whipPanLeft`/`whipPanRight` with a real `slideleft`/`slideright` (the blur is
- *  layered on top of an ordinary, always-safe slide rather than needing its own fade-blend geometry).
- *  All five are video/image clips only — see `TransitionPickerMenu`'s own `isTextTrack` doc comment for
- *  why a text clip's transition grid excludes them: `drawtext` has no per-pixel corruption/blur
- *  pre-pass equivalent, so export would have no way to reproduce what preview shows. */
+ *  `glitchCut`/`waterRippleCut`/`zoomBlur`/`flashZoom` with a plain `xfade=transition=fade`
+ *  (`TRANSITION_XFADE_NAME` maps all four to `"fade"` — the pre-pass corruption/blur/flash is what
+ *  makes each read as distinct, not the blend math), `whipPanLeft`/`whipPanRight` with a real
+ *  `slideleft`/`slideright` (the blur is layered on top of an ordinary, always-safe slide rather than
+ *  needing its own fade-blend geometry). All six are video/image clips only — see
+ *  `TransitionPickerMenu`'s own `isTextTrack` doc comment for why a text clip's transition grid
+ *  excludes them: `drawtext` has no per-pixel corruption/blur/flash pre-pass equivalent, so export
+ *  would have no way to reproduce what preview shows. */
 export type TransitionType =
   | "crossfade"
   | "dissolve"
@@ -506,7 +508,8 @@ export type TransitionType =
   | "waterRippleCut"
   | "zoomBlur"
   | "whipPanLeft"
-  | "whipPanRight";
+  | "whipPanRight"
+  | "flashZoom";
 
 /** A continuous MOTION effect for a text clip, distinct from `transitionIn`/`transitionOut` — those
  *  are one-shot events at a clip's own edges (a cut blended/wiped/dissolved into or out of), rendered
