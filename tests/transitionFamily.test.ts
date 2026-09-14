@@ -16,6 +16,8 @@ describe("transitionFamily", () => {
       slideRight: { kind: "slide", edge: "right" },
       slideUp: { kind: "slide", edge: "up" },
       slideDown: { kind: "slide", edge: "down" },
+      sliceUp: { kind: "slice", direction: "up" },
+      sliceDown: { kind: "slice", direction: "down" },
       circleOpen: { kind: "circle", opening: true },
       circleClose: { kind: "circle", opening: false },
       glitchCut: { kind: "glitch" },

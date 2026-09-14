@@ -53,6 +53,13 @@ const TRANSITION_XFADE_NAME: Record<TransitionType, string> = {
   slideRight: "slideright",
   slideUp: "slideup",
   slideDown: "slidedown",
+  // Also real, always-safe xfade names — part of the same original 4.3 introduction as everything
+  // above, confirmed directly against both the bundled desktop ffmpeg and the hosted deployment's own
+  // build before being added (see `TransitionType`'s own doc comment). The frame divides into vertical
+  // strips, each sliding away with its own slight time offset from its neighbor — a "venetian blind"
+  // cascade, not a uniform whole-frame slide.
+  sliceUp: "vuslice",
+  sliceDown: "vdslice",
   circleOpen: "circleopen",
   circleClose: "circleclose",
   // Not real xfade names — four of the deliberate exceptions to the "every value here is a real

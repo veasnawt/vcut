@@ -467,14 +467,18 @@ export type ColorGradingKeyframe = Keyframe<ColorGrading>;
 /** LERP-interpolated between keyframes, like `TransformKeyframe` — see `TextCrop`'s own doc comment. */
 export type TextCropKeyframe = Keyframe<TextCrop>;
 
-/** Every transition style either renderer can produce. The first twelve are kept to the subset of
+/** Every transition style either renderer can produce. The first fourteen are kept to the subset of
  *  FFmpeg's own `xfade` filter's transition names (see `TRANSITION_XFADE_NAME` in
  *  `export/buildExportPlan.ts`) that's been part of that filter since its ORIGINAL introduction
  *  (FFmpeg 4.3) — a newer name risks failing export outright against an older ffmpeg build, which a
- *  name this old can't. `PlaybackEngine`'s canvas preview groups these into rendering families
- *  (dissolve, wipe, slide, circle, glitch, waterRipple, zoomBlur, whipPan, flashZoom — see its own
- *  `transitionFamily`), not one independent implementation per value; export always renders the exact
- *  distinct FFmpeg filter regardless of which family the preview approximated it with.
+ *  name this old can't. `sliceUp`/`sliceDown` (→ xfade's own `vuslice`/`vdslice`) are part of that
+ *  same original set, confirmed directly against both this repo's bundled desktop ffmpeg AND the
+ *  hosted deployment's own custom build before being added — not assumed safe just because the
+ *  original PR that introduced `xfade` happened to include them. `PlaybackEngine`'s canvas preview
+ *  groups these into rendering families (dissolve, wipe, slide, circle, slice, glitch, waterRipple,
+ *  zoomBlur, whipPan, flashZoom — see its own `transitionFamily`), not one independent implementation
+ *  per value; export always renders the exact distinct FFmpeg filter regardless of which family the
+ *  preview approximated it with.
  *
  *  `glitchCut`/`waterRippleCut`/`zoomBlur`/`whipPanLeft`/`whipPanRight`/`flashZoom` are the exceptions
  *  to the "real xfade name" rule above — each renders as a genuine PRE-PASS filter (`rgbashift=`+
@@ -502,6 +506,8 @@ export type TransitionType =
   | "slideRight"
   | "slideUp"
   | "slideDown"
+  | "sliceUp"
+  | "sliceDown"
   | "circleOpen"
   | "circleClose"
   | "glitchCut"

@@ -2580,6 +2580,8 @@ describe("buildExportPlan with transitions", () => {
       slideRight: "slideright",
       slideUp: "slideup",
       slideDown: "slidedown",
+      sliceUp: "vuslice",
+      sliceDown: "vdslice",
       circleOpen: "circleopen",
       circleClose: "circleclose",
       // Not real xfade names — a corruption/blur/flash pre-pass runs first, then always blends with a

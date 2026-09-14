@@ -2,10 +2,10 @@ import { clipDuration, clipEnd } from "../project/createProject.ts";
 import type { Clip, Track, TransitionType } from "../project/types.ts";
 
 /** Every `TransitionType`, in the order shown in both the Inspector's "Transition In" dropdown and the
- *  toolbar's picker grid — grouped by family (dissolve, wipe, slide, circle, glitch/water-ripple,
- *  zoom blur, whip pan) matching `PlaybackEngine.transitionFamily`'s own grouping, so the list reads
- *  as short runs rather than an arbitrary order. One shared source of truth (not a separately-
- *  maintained list per UI), since a video and a text clip transition through the exact same
+ *  toolbar's picker grid — grouped by family (dissolve, wipe, slide, slice, circle, glitch/water-
+ *  ripple, zoom blur, whip pan, flash zoom) matching `PlaybackEngine.transitionFamily`'s own grouping,
+ *  so the list reads as short runs rather than an arbitrary order. One shared source of truth (not a
+ *  separately-maintained list per UI), since a video and a text clip transition through the exact same
  *  `TransitionType` union. */
 export const TRANSITION_TYPE_OPTIONS: TransitionType[] = [
   "crossfade",
@@ -18,6 +18,8 @@ export const TRANSITION_TYPE_OPTIONS: TransitionType[] = [
   "slideRight",
   "slideUp",
   "slideDown",
+  "sliceUp",
+  "sliceDown",
   "circleOpen",
   "circleClose",
   "glitchCut",
@@ -54,6 +56,8 @@ export const TRANSITION_TYPE_LABEL: Record<TransitionType, string> = {
   slideRight: "Slide Right",
   slideUp: "Slide Up",
   slideDown: "Slide Down",
+  sliceUp: "Slice Up",
+  sliceDown: "Slice Down",
   circleOpen: "Circle Open",
   circleClose: "Circle Close",
   glitchCut: "Glitch Cut",

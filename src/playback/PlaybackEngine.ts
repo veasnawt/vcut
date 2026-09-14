@@ -21,6 +21,29 @@ const AUDIO_PREFETCH_LOOKAHEAD_SECONDS = 5;
  *  every single frame for a decision that only matters on a several-second timescale anyway. */
 const AUDIO_PREFETCH_SCAN_INTERVAL_MS = 1000;
 
+/** How many vertical strips the "slice" transition family divides the frame into — a stand-in for
+ *  FFmpeg's own `vuslice`/`vdslice` xfade filters, which this canvas preview can't call directly (no
+ *  FFmpeg in the browser). Each strip is a whole-frame "push" like the `slide` family above, just
+ *  confined to its own column and started a little later than the strip to its left — that per-strip
+ *  stagger (not a uniform whole-frame slide) is what makes this read as a "venetian blind" cascade.
+ *  `SLICE_WIPE_FRACTION` is how much of the total transition duration any ONE strip's own slide takes
+ *  (the rest is spent staggered, waiting for its turn) — the LAST strip's own slide always finishes
+ *  exactly at `progress = 1` by construction (see `sliceStripProgress` below), regardless of either
+ *  constant's value. */
+const SLICE_STRIP_COUNT = 10;
+const SLICE_WIPE_FRACTION = 0.5;
+
+/** `progress` (or `reveal`) for the transition as a whole → this ONE strip's own local progress,
+ *  0..1 — strip 0 starts immediately, each later strip starts a little after the one before it, and
+ *  the last strip's own window ends exactly at the overall transition's own end. Shared by
+ *  `compositeTransitionFrame` and `compositeSoloReveal`'s own "slice" branches so the two can never
+ *  silently diverge on the stagger math. */
+function sliceStripProgress(overallProgress: number, stripIndex: number): number {
+  const staggerStep = SLICE_STRIP_COUNT > 1 ? (1 - SLICE_WIPE_FRACTION) / (SLICE_STRIP_COUNT - 1) : 0;
+  const local = (overallProgress - stripIndex * staggerStep) / SLICE_WIPE_FRACTION;
+  return Math.min(1, Math.max(0, local));
+}
+
 /** Groups `TransitionType`'s styles into the shapes the canvas preview actually knows how to render —
  *  exported (not a private switch inline) so it's directly unit-testable without a canvas.
  *  `compositeTransitionFrame` is what turns one of these into real pixels; `export/buildExportPlan.ts`
@@ -30,6 +53,7 @@ export type TransitionFamily =
   | { kind: "dissolve" }
   | { kind: "wipe"; edge: "left" | "right" | "up" | "down" }
   | { kind: "slide"; edge: "left" | "right" | "up" | "down" }
+  | { kind: "slice"; direction: "up" | "down" }
   | { kind: "circle"; opening: boolean }
   | { kind: "glitch" }
   | { kind: "waterRipple" }
@@ -55,6 +79,10 @@ export function transitionFamily(type: TransitionType): TransitionFamily {
       return { kind: "slide", edge: "up" };
     case "slideDown":
       return { kind: "slide", edge: "down" };
+    case "sliceUp":
+      return { kind: "slice", direction: "up" };
+    case "sliceDown":
+      return { kind: "slice", direction: "down" };
     case "circleOpen":
       return { kind: "circle", opening: true };
     case "circleClose":
@@ -181,6 +209,30 @@ export function compositeTransitionFrame(
     const incomingDy = horizontal ? 0 : -sign * frameHeight * (1 - progress);
     context.drawImage(outgoing, outgoingDx, outgoingDy, frameWidth, frameHeight);
     context.drawImage(incoming, incomingDx, incomingDy, frameWidth, frameHeight);
+    return;
+  }
+
+  if (family.kind === "slice") {
+    // Same vertical "push" math the `slide` family above uses (`sign` negative for "up" — the
+    // outgoing side exits upward, the incoming side enters from below), just run once per STRIP with
+    // that strip's own staggered `sliceStripProgress` instead of the transition's overall `progress` —
+    // see `SLICE_STRIP_COUNT`'s own doc comment for why that reads as a cascade rather than a uniform
+    // slide. `stripWidth + 1` (not an exact `stripWidth`) avoids a visible hairline seam between
+    // strips from sub-pixel clip-region rounding.
+    const sign = family.direction === "up" ? -1 : 1;
+    const stripWidth = frameWidth / SLICE_STRIP_COUNT;
+    for (let i = 0; i < SLICE_STRIP_COUNT; i++) {
+      const localProgress = sliceStripProgress(progress, i);
+      const outgoingDy = sign * frameHeight * localProgress;
+      const incomingDy = -sign * frameHeight * (1 - localProgress);
+      context.save();
+      context.beginPath();
+      context.rect(i * stripWidth, 0, stripWidth + 1, frameHeight);
+      context.clip();
+      context.drawImage(outgoing, 0, outgoingDy, frameWidth, frameHeight);
+      context.drawImage(incoming, 0, incomingDy, frameWidth, frameHeight);
+      context.restore();
+    }
     return;
   }
 
@@ -357,6 +409,22 @@ function compositeSoloReveal(
     const sign = family.edge === "left" || family.edge === "up" ? -1 : 1;
     context.translate(horizontal ? -sign * frameWidth * (1 - reveal) : 0, horizontal ? 0 : -sign * frameHeight * (1 - reveal));
     draw(1);
+  } else if (family.kind === "slice") {
+    // Same per-strip staggered translate `compositeTransitionFrame`'s own "slice" branch uses, just
+    // solo (no second image, `draw()` painted once per strip inside its own clip region) — same "no
+    // partner to push out of frame" shape the plain `slide` branch above already takes.
+    const sign = family.direction === "up" ? -1 : 1;
+    const stripWidth = frameWidth / SLICE_STRIP_COUNT;
+    for (let i = 0; i < SLICE_STRIP_COUNT; i++) {
+      const localReveal = sliceStripProgress(reveal, i);
+      context.save();
+      context.beginPath();
+      context.rect(i * stripWidth, 0, stripWidth + 1, frameHeight);
+      context.clip();
+      context.translate(0, -sign * frameHeight * (1 - localReveal));
+      draw(1);
+      context.restore();
+    }
   } else if (family.kind === "circle") {
     // `circleOpen`/`circleClose` collapse to the same growing-circle-from-center reveal here — the
     // real two-image distinction between them (which side is the base vs. which shrinks away) has no
