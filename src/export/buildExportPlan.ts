@@ -1965,22 +1965,33 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
   // doc comment for why Khmer routes through browser-rendered PNGs instead of `drawtext=`/`subtitles=`
   // at all) onto `videoOut`, entirely replacing that clip's own drawtext/rotated/wordHighlight branches.
   //
-  // The composited stream (`txt0_stream` etc.) is built to span the FULL sequence duration, not just
-  // this clip's own — a transparent `color=...@0` leg fills [0, clip start) when the clip doesn't start
-  // at t=0, each real window is held for its own [startOffset, endOffset) via `-loop 1 -framerate`, and
-  // a second transparent leg fills [clip end, sequence duration) when the clip ends before the sequence
-  // does. All three leg kinds are just `concat`-ed together (`,fps=` renormalizes each leg's own
-  // timebase first — the same fix `buildSegments`' own segment concat needed for `xfade` compatibility
-  // applies here too, since a `-loop`'d image input and a `lavfi color=` input don't share one natively).
-  // Doing it this way means the FINAL overlay step needs no `enable='between(t,...)'` gate at all — the
-  // stream is already correctly "on" only where content should show, unlike every drawtext path above
-  // which draws onto a clip-duration-only buffer and relies on `enable=` to place it in time.
+  // Each window becomes its own `-itsoffset`-shifted input, chained onto `videoOut` via a sequence of
+  // `overlay=...:enable='between(t,...)'` steps — the same per-slice chained-overlay shape the
+  // `cropSlices` path below already uses, reused here rather than reinvented. `-itsoffset` shifts an
+  // input's OWN timestamps to start at its absolute timeline position (the standard FFmpeg idiom for a
+  // later-starting overlay input), which is what lets `enable=` — evaluated against `videoOut`'s own
+  // absolute time — and each fade's `st=` line up correctly with no manual `setpts=PTS+offset/TB`
+  // expression, and (unlike a plain `setpts=PTS-STARTPTS`, which resets to 0 and would fight the
+  // offset) is why NO `setpts` filter runs on these inputs at all.
   //
-  // Fades use the plain raster-layer `fade=...:alpha=1` filter (same shape `pushClipVideoFilters` uses
-  // for a video/image clip's own solo fade), not `buildTextFadeParams`'s `drawtext`-specific `:alpha=`
-  // expression term — there's no `drawtext` call here for that term to attach to. Only `enableEnd` is
-  // reused from it, since the crossfade-vs-solo timing distinction `TextFadeOut` documents applies
-  // identically to a raster fade's own ramp window.
+  // A previous version of this function instead built ONE synthetic transparent `color=...@0` leg to
+  // fill [0, clip start) and another for (clip end, sequence end], `concat`-ing those together with
+  // every window image into one full-sequence-duration stream so the final overlay needed no `enable=`
+  // gate at all. That traded two extra `-i` inputs per Khmer clip to avoid `enable=` — a trade that
+  // broke down at real project scale: a real, reported hosted export (a 10-track project with 36 Khmer
+  // caption clips) failed with a cascading `[dec:h264] pthread_create() failed: Resource temporarily
+  // unavailable` → `Could not open encoder before EOF` → `-22 (Invalid argument)` on BOTH the video and
+  // audio encoders. Confirmed via a live container-side `/sys/fs/cgroup/pids.current` trace (idle ~21,
+  // spiking to 990 — one short of this container's cgroup `pids.max` of 1000, the WHOLE container's
+  // total process/thread budget — then collapsing, all within the same one-second window FFmpeg's own
+  // graph-init ran) that FFmpeg's scheduler spawns roughly one thread per pipeline task (decoders AND
+  // demuxers) essentially all at once at startup, independent of any `-threads` cap (which only bounds a
+  // given codec's own INTERNAL worker count, not the scheduler's per-task overhead). The two filler legs
+  // per clip were the single largest contributor to this project's own 271 total inputs — 36 clips × 2
+  // legs ≈ 72, ahead of even the 128 real per-window images — so removing them is what actually shrinks
+  // the pipeline back under budget; capping decoder threads (`capDecoderThreads`, in the hosted server's
+  // own `ffmpeg.ts`) was a real, separately-necessary fix for a smaller-scale case, but insufficient on
+  // its own for a project built this large.
   function pushKhmerTextOverlay(
     videoOut: string,
     outputLabel: string,
@@ -1989,46 +2000,73 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     fadeIn: number | undefined,
     fadeOut: TextFadeOut | undefined
   ): void {
-    const start = clip.timelineStart;
-    const end = clipEnd(clip);
-    const streamLabel = `${outputLabel}_stream`;
-    const legLabels: string[] = [];
-
-    function pushColorLeg(legDuration: number): void {
-      const idx = inputIndex++;
-      inputs.push("-f", "lavfi", "-t", t(legDuration), "-i", `color=c=black@0:s=${width}x${height}:r=${fps},format=rgba`);
-      const legLabel = `${streamLabel}_leg${legLabels.length}`;
-      filters.push(`[${idx}:v]setpts=PTS-STARTPTS[${legLabel}]`);
-      legLabels.push(`[${legLabel}]`);
-    }
-
-    function pushImageLeg(imagePath: string, legDuration: number): void {
-      const idx = inputIndex++;
-      inputs.push("-loop", "1", "-framerate", String(fps), "-t", t(legDuration), "-i", imagePath);
-      const legLabel = `${streamLabel}_leg${legLabels.length}`;
-      filters.push(`[${idx}:v]format=rgba,setpts=PTS-STARTPTS[${legLabel}]`);
-      legLabels.push(`[${legLabel}]`);
-    }
-
-    if (start > 1e-9) pushColorLeg(start);
-    for (const w of windows) pushImageLeg(w.imagePath, w.endOffset - w.startOffset);
-    if (duration - end > 1e-9) pushColorLeg(duration - end);
-
-    filters.push(`${legLabels.join("")}concat=n=${legLabels.length}:v=1:a=0,fps=${fps}[${streamLabel}]`);
-
+    const clipStart = clip.timelineStart;
     const { enableEnd } = buildTextFadeParams(clip, fadeIn, fadeOut);
-    const fadeStages: string[] = [];
-    if (fadeIn) fadeStages.push(`fade=t=in:st=${t(start)}:d=${t(fadeIn)}:alpha=1`);
-    if (fadeOut) fadeStages.push(`fade=t=out:st=${t(enableEnd - fadeOut.duration)}:d=${t(fadeOut.duration)}:alpha=1`);
 
-    let overlayInputLabel = `[${streamLabel}]`;
-    if (fadeStages.length > 0) {
-      const fadedLabel = `${streamLabel}_faded`;
-      filters.push(`[${streamLabel}]${fadeStages.join(",")}[${fadedLabel}]`);
-      overlayInputLabel = `[${fadedLabel}]`;
-    }
+    let chainInput = videoOut;
+    windows.forEach((w, i) => {
+      const isFirst = i === 0;
+      const isLast = i === windows.length - 1;
+      const absStart = clipStart + w.startOffset;
+      const hasFade = (isFirst && fadeIn) || (isLast && fadeOut);
 
-    filters.push(`${videoOut}${overlayInputLabel}overlay=format=auto[${outputLabel}]`);
+      const idx = inputIndex++;
+      // A window's own image never changes across its window — no animation lives inside a single
+      // `KhmerTextWindow`, only the plain `fade=` ramp a clip's edge windows can carry (below). Decoding
+      // it at the real sequence framerate for its own full duration is pure waste UNLESS that ramp is
+      // actually running here: a real, reported hosted export (36 Khmer clips, ~190 window inputs after
+      // the filler-leg removal above) confirmed this waste is what actually exhausts the container —
+      // every `-i` here starts decoding at real wall-clock process start (`-itsoffset` only shifts a
+      // stream's own TIMESTAMPS, not when FFmpeg actually opens/reads it), so a window whose `enable=`
+      // gate doesn't open until deep into the timeline still immediately decodes and buffers its own
+      // `duration * fps` worth of full-frame RGBA copies (1080×1920 RGBA ≈ 8.3MB EACH) with nothing to
+      // throttle it until its overlay step is finally reached — confirmed via a live container-side
+      // `/sys/fs/cgroup/memory.current` trace climbing ~300MB/s straight to this container's 8GB
+      // `memory.max` (`oom_kill: 1`) within ~11 seconds of encoding actually starting.
+      //
+      // A non-fading window needs exactly ONE decoded frame, full stop — not `duration * fps` of them,
+      // and not even `duration * 1fps`. `overlay`'s own `eof_action` defaults to `repeat`: once this
+      // short secondary stream reaches EOF, the filter keeps reusing its last (only) frame for every
+      // later output frame for as long as `enable=` stays open, which is indistinguishable on screen
+      // from a "real" full-duration source for content that never changes. `-t "1.000000"` here is
+      // independent of the window's OWN real duration (which can run several seconds for a plain,
+      // non-animated caption) specifically so a long static caption doesn't cost any more than a short
+      // one. Confirmed via the same live memory trace this dropped the real reported export's peak
+      // enough to finish — three OTHER, differently-shaped mitigations tried first (a small
+      // `-thread_queue_size`, `-re` native-rate reading, and raising `-filter_threads`/
+      // `-filter_complex_threads`) each made no measurable difference or, in the filter-threads case,
+      // made it WORSE (crashed the whole container, not just the ffmpeg process) — only reducing actual
+      // frame volume moved the real failure point at all, which is why this goes further in that same
+      // direction rather than trying a fourth throttling knob. A fading window keeps the real duration
+      // AND real framerate: the ramp below needs actual per-frame alpha samples spread across its own
+      // window to look smooth, not one flat value repeated for the whole thing.
+      const loopFramerate = hasFade ? fps : 1;
+      const loopDuration = hasFade ? t(w.endOffset - w.startOffset) : "1.000000";
+      inputs.push("-itsoffset", t(absStart), "-loop", "1", "-framerate", String(loopFramerate), "-t", loopDuration, "-i", w.imagePath);
+      const winLabel = `${outputLabel}_win${i}`;
+
+      // Only the FIRST window carries a fade-in and only the LAST carries a fade-out — a clip's fade is
+      // one ramp across its own edge, not something every individual window repeats. `enableEnd`
+      // (rather than this window's own nominal `endOffset`) is what the fade-out's `st=` is measured
+      // against, same "extends past the clip's own end for a crossfade" reasoning `TextFadeOut` and
+      // `buildTextFadeParams` already document for every other text path here.
+      const fadeStages: string[] = [];
+      if (isFirst && fadeIn) fadeStages.push(`fade=t=in:st=${t(clipStart)}:d=${t(fadeIn)}:alpha=1`);
+      if (isLast && fadeOut) fadeStages.push(`fade=t=out:st=${t(enableEnd - fadeOut.duration)}:d=${t(fadeOut.duration)}:alpha=1`);
+      const fadeStage = fadeStages.length > 0 ? `,${fadeStages.join(",")}` : "";
+      filters.push(`[${idx}:v]format=rgba${fadeStage}[${winLabel}]`);
+
+      // The last window's own gate extends to `enableEnd`, not just its own `endOffset` — same
+      // "last slice reaches the real fade-adjusted end" shape the `cropSlices` chain below uses, needed
+      // so a crossfade-extended fade-out stays visible for its own full ramp instead of being cut off
+      // exactly at the clip's nominal end.
+      const stepLabel = isLast ? outputLabel : `${outputLabel}_ov${i}`;
+      const gateEnd = isLast ? enableEnd : clipStart + w.endOffset;
+      filters.push(
+        `${chainInput}[${winLabel}]overlay=format=auto:enable='between(t\\,${t(absStart)}\\,${t(gateEnd)})'[${stepLabel}]`
+      );
+      chainInput = `[${stepLabel}]`;
+    });
   }
 
   // Five transition types render with a pre-pass filter stage on EACH side's own stream before the

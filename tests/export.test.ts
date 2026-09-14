@@ -2301,7 +2301,7 @@ describe("buildExportPlan Khmer static text (browser-rendered images — every F
 
     assert.ok(!graph.includes("drawtext="), "Khmer content must never reach drawtext, which fails to shape certain subscript clusters");
     assert.ok(!graph.includes("subtitles="), "Khmer content must never reach libass either — same shaping failure, confirmed empirically");
-    assert.match(graph, /overlay=format=auto\[txt0\]/);
+    assert.match(graph, /overlay=format=auto:enable=.*\[txt0\]/);
     assert.ok(args.includes("/tmp/khmer-win0.png"), "the pre-rendered window image is fed in as a real -i input");
   });
 
@@ -2344,7 +2344,7 @@ describe("buildExportPlan Khmer static text (browser-rendered images — every F
     assert.match(graph, /drawtext=/);
   });
 
-  it("a single-window clip composites exactly one input image, held for the clip's own whole duration", () => {
+  it("a single-window clip is placed via -itsoffset and overlaid directly with an enable= gate — no filler legs", () => {
     let base = emptyProject([videoAsset(), textAsset("text1", "អរគុណច្រើន សម្រាប់ជំនួយ")]);
     base = addTrack(base, "text");
     let project = addClip(base, videoTrackId(base), "asset1", 3); // starts at t=3s
@@ -2355,9 +2355,14 @@ describe("buildExportPlan Khmer static text (browser-rendered images — every F
     const graph = filterGraph(args);
 
     assert.equal(args.filter((a) => a === "-loop").length, 1, "exactly one image held via -loop for the whole window");
-    // Lead-in (transparent, [0,3)) + the one real window + trail-out (the sequence's own total duration,
-    // set by the video clip underneath, runs past this text clip's own end) — 3 legs concatenated.
-    assert.match(graph, /concat=n=3:v=1:a=0,fps=\d+\[txt0_stream\]/);
+    assert.ok(
+      !graph.includes("txt0_stream"),
+      "no filler-leg concat — a window is placed directly via -itsoffset + enable=, not a full-sequence-duration stream"
+    );
+    const itsoffsetIndex = args.indexOf("-itsoffset");
+    assert.ok(itsoffsetIndex >= 0, "the window image is placed at its absolute timeline position via -itsoffset, not left to start at PTS 0");
+    assert.equal(args[itsoffsetIndex + 1], "3.000000", "shifted to the clip's own absolute start (t=3), not 0");
+    assert.match(graph, /overlay=format=auto:enable='between\(t\\,3\.000000\\,[\d.]+\)'\[txt0\]/);
     void textClip;
   });
 
@@ -2390,7 +2395,7 @@ describe("buildExportPlan Khmer static text (browser-rendered images — every F
     const graph = filterGraph(args);
 
     assert.ok(!graph.includes("subtitles="), "a Khmer wordHighlight clip must not use the ASS path when pre-rendered windows exist");
-    assert.match(graph, /overlay=format=auto\[txt0\]/);
+    assert.match(graph, /overlay=format=auto:enable=.*\[txt0\]/);
   });
 
   it("a Khmer wordHighlight clip WITHOUT pre-rendered windows still falls back to the existing ASS path — unchanged, non-Khmer behavior", () => {
@@ -2423,7 +2428,7 @@ describe("buildExportPlan Khmer static text (browser-rendered images — every F
     const graph = filterGraph(args);
 
     assert.ok(!graph.includes("drawtext="));
-    assert.match(graph, /overlay=format=auto\[txt0\]/);
+    assert.match(graph, /overlay=format=auto:enable=.*\[txt0\]/);
   });
 
   it("a Khmer clip with keyframed text style still falls back to drawtext — not yet covered by the render harness", () => {
