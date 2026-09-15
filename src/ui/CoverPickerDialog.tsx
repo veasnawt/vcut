@@ -79,6 +79,9 @@ export function CoverPickerDialog({ onClose }: { onClose: () => void }) {
       getLiveMasterGainPreview: () => null,
       onTimeUpdate: () => {},
       onEnded: () => {},
+      // `isPlaying` above always reports `false`, so `syncMedia` never calls `element.play()` here at
+      // all — nothing for this to ever recover from, just satisfying `PlaybackHost`'s interface.
+      onPlaybackBlocked: () => {},
       mediaUrlFor: (assetId) => {
         const state = useEditorStore.getState();
         const asset = state.project?.assets.find((a) => a.id === assetId);

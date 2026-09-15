@@ -10,6 +10,7 @@ import { buildOutroPreviewProject } from "../playback/outroPreview.ts";
 import { PlaybackEngine } from "../playback/PlaybackEngine.ts";
 import { computeVisibleClipBoxes, hitTestClip } from "../playback/visibleClips.ts";
 import { useEditorStore } from "../store/editorStore.ts";
+import { translateText } from "../i18n/translations.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 import { useIsMobile } from "./useIsMobile.ts";
@@ -226,6 +227,14 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
       getLiveMasterGainPreview: () => (useEditorStore.getState().previewMuted ? 0 : useEditorStore.getState().livePreviewMasterGain),
       onTimeUpdate: (seconds) => useEditorStore.getState().setPlayhead(seconds),
       onEnded: () => useEditorStore.getState().setPlaying(false),
+      // See `PlaybackHost.onPlaybackBlocked`'s own doc comment for the real bug this recovers from —
+      // `translateText` (not the render-scoped `t` above) since this effect runs once on mount and
+      // would otherwise close over whatever `language` was current at that moment forever.
+      onPlaybackBlocked: () => {
+        const state = useEditorStore.getState();
+        state.setPlaying(false);
+        state.setStatus(translateText(state.language, "Playback stopped — tap Play to resume"));
+      },
       mediaUrlFor: (assetId) => {
         // Same two fixed ids `export/route.ts`'s own `inputPathFor` special-cases server-side —
         // these synthetic assets (`buildOutroPreviewProject`) have no real project `relPath` to look

@@ -862,6 +862,16 @@ export interface PlaybackHost {
   onTimeUpdate: (seconds: number) => void;
   /** Called when playback runs off the end of the timeline. */
   onEnded: () => void;
+  /** Called when a media element's own `element.play()` call is REJECTED by the browser's autoplay
+   *  policy — see `syncMedia`'s own doc comment for the real, confirmed bug this exists to recover
+   *  from: without it, a rejected `play()` silently retries and silently fails forever (every tick
+   *  calls it again, and every one of those calls is just as gesture-less as the last, so nothing ever
+   *  self-heals), while the master clock keeps advancing regardless — "the timeline moves but the
+   *  video never plays," a real, reported symptom, not a hypothetical one. This is the recovery path:
+   *  stop the WHOLE transport (matching what `onEnded` already does) so the UI's own Play button
+   *  reflects reality and the user's very next tap is a genuine, fresh gesture — which autoplay policy
+   *  DOES allow — instead of the clock and the picture silently drifting apart forever. */
+  onPlaybackBlocked: () => void;
   /** Resolves an asset to a streamable URL — injected so this class needs no knowledge of the API. */
   mediaUrlFor: (assetId: string) => string | null;
   /** Resolves a `LutAsset.id` to a fetchable URL for its raw `.cube` text — mirrors `mediaUrlFor`'s
@@ -1157,10 +1167,21 @@ export class PlaybackEngine {
     }
 
     if (playing) {
-      // `play()` rejects if the browser blocks autoplay before a user gesture. Playback here always
-      // follows a real click, but the rejection still has to be swallowed or it surfaces as an
-      // unhandled promise rejection in the console.
-      if (element.paused) void element.play().catch(() => {});
+      // `play()` rejects if the browser blocks autoplay before a user gesture. The transport button's
+      // own click IS a real gesture, but a clip cut deep into a long, uninterrupted play session can
+      // create/activate a video element well outside that gesture's own window — "transient
+      // activation" is time-boxed (a handful of seconds on most browsers, confirmed strictest on
+      // Safari/WebKit, which is the reported case) and page-wide, not tied to any one element, so a
+      // FRESH element attached long after the original click can legitimately fall outside it even
+      // though the click itself was completely genuine. A bare `.catch(() => {})` here used to just
+      // swallow that — the video silently stayed paused, retried (just as gesture-lessly) every later
+      // tick, and NEVER recovered on its own, while the master clock (independent of any one element,
+      // see this class's own top doc comment) kept advancing regardless: "the timeline moves but the
+      // video never plays," a real, reported symptom, not a hypothetical one. `onPlaybackBlocked` is
+      // what actually recovers — it stops the whole transport, so the UI honestly reflects "paused"
+      // and the user's very next tap is a genuine, fresh, definitely-allowed gesture instead of the
+      // clock and the picture silently drifting apart forever.
+      if (element.paused) void element.play().catch(() => this.host.onPlaybackBlocked());
     } else if (!element.paused) {
       element.pause();
     }

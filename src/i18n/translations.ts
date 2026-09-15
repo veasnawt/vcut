@@ -223,6 +223,7 @@ export const KM_TRANSLATIONS: Record<string, string> = {
   "Upload an image": "ផ្ទុករូបភាពឡើង",
   "Change image": "ប្តូររូបភាព",
   "Uploading…": "កំពុងផ្ទុកឡើង…",
+  "Playback stopped — tap Play to resume": "ការចាក់បានឈប់ — ចុចលេងម្ដងទៀត",
   "Rendering… {percent}%": "កំពុងបង្កើត… {percent}%",
   "Export complete": "នាំចេញបានសម្រេច",
   "Export cancelled": "បានបោះបង់ការនាំចេញ",
