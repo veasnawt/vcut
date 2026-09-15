@@ -2024,24 +2024,34 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // `/sys/fs/cgroup/memory.current` trace climbing ~300MB/s straight to this container's 8GB
       // `memory.max` (`oom_kill: 1`) within ~11 seconds of encoding actually starting.
       //
-      // A non-fading window needs exactly ONE decoded frame, full stop — not `duration * fps` of them,
-      // and not even `duration * 1fps`. `overlay`'s own `eof_action` defaults to `repeat`: once this
-      // short secondary stream reaches EOF, the filter keeps reusing its last (only) frame for every
-      // later output frame for as long as `enable=` stays open, which is indistinguishable on screen
-      // from a "real" full-duration source for content that never changes. `-t "1.000000"` here is
-      // independent of the window's OWN real duration (which can run several seconds for a plain,
-      // non-animated caption) specifically so a long static caption doesn't cost any more than a short
-      // one. Confirmed via the same live memory trace this dropped the real reported export's peak
-      // enough to finish — three OTHER, differently-shaped mitigations tried first (a small
-      // `-thread_queue_size`, `-re` native-rate reading, and raising `-filter_threads`/
-      // `-filter_complex_threads`) each made no measurable difference or, in the filter-threads case,
-      // made it WORSE (crashed the whole container, not just the ffmpeg process) — only reducing actual
-      // frame volume moved the real failure point at all, which is why this goes further in that same
-      // direction rather than trying a fourth throttling knob. A fading window keeps the real duration
-      // AND real framerate: the ramp below needs actual per-frame alpha samples spread across its own
-      // window to look smooth, not one flat value repeated for the whole thing.
+      // A non-fading window needs only 1 real frame per second, not the sequence's own full framerate
+      // — `overlay`'s own `eof_action` defaults to `repeat`: once this (now much shorter) secondary
+      // stream reaches EOF, the filter keeps reusing its last frame for every later output frame for as
+      // long as `enable=` stays open, indistinguishable on screen from a "real" full-duration source for
+      // content that never changes.
+      //
+      // TESTING: how long this window's own underlying input stream stays open is a real, still-being-
+      // tuned tradeoff, not a settled constant — confirmed on a real reported project with a fast,
+      // 8-window/~0.2s-per-window Khmer word-highlight clip:
+      //   - A flat, artificial "always 1.0 second" duration (an earlier version of this line) reliably
+      //     avoided this container's memory ceiling, but caused several NEIGHBORING windows' own
+      //     decoders to all be "alive" (not yet at EOF) at the same real wall-clock moment for a clip
+      //     built from many short, back-to-back windows — the actual exported video showed a real
+      //     ~0.2s BLANK gap mid-clip even though every `enable=between(...)` gate in the real filter
+      //     graph was independently confirmed mathematically gap-free, i.e. the padding was corrupting
+      //     the render, not the gating.
+      //   - The window's own bare REAL duration (no padding at all) removed that overlap, but brought
+      //     back the SAME memory failure the padding was added to fix in the first place — for this
+      //     exact clip specifically, meaning the "successful" padded version was never fully reliable
+      //     either, just failing a different, quieter way (a dropped frame) instead of a hard crash.
+      // `Math.max(realDuration, 0.5)` is a middle ground being verified against the real project now:
+      // enough headroom to avoid the worst of the memory pressure without the FULL second of overlap
+      // that produced the confirmed visual gap. If this doesn't hold up, the real fix likely isn't a
+      // duration number at all — it's reducing how many short-lived windows a fast word-highlight clip
+      // opens as SEPARATE inputs in the first place (merging/batching them upstream in
+      // `khmerTextRenderer.ts`, not tuning this one line).
       const loopFramerate = hasFade ? fps : 1;
-      const loopDuration = hasFade ? t(w.endOffset - w.startOffset) : "1.000000";
+      const loopDuration = t(Math.max(w.endOffset - w.startOffset, 0.5));
       inputs.push("-itsoffset", t(absStart), "-loop", "1", "-framerate", String(loopFramerate), "-t", loopDuration, "-i", w.imagePath);
       const winLabel = `${outputLabel}_win${i}`;
 
