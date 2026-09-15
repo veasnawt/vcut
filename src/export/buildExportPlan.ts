@@ -2080,7 +2080,19 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // word-highlight clip opens (batching several windows' images into one input, e.g. via a
       // concat-demuxer slideshow) rather than reaching for a padding value again.
       const loopFramerate = hasFade ? fps : 1;
-      const loopDuration = t(w.endOffset - w.startOffset);
+      // Floored at ONE real output frame's own duration (`1 / fps` — a hard technical minimum, not a
+      // tuning guess the way the earlier 0.5s/1.0s memory-pressure paddings were): real per-word timing
+      // (`clip.wordTimings`) can legitimately produce a window well under 1 frame long for a genuinely
+      // short spoken word (a short function word/particle), and `-loop 1 -framerate 1 -t <duration>`
+      // with a `-t` shorter than that framerate's own frame interval risks FFmpeg emitting NO frame at
+      // all for that one window — a real, reported symptom: "blank blip between words, even on the same
+      // clip, at only a few spots" (not systematically, matching how only UNUSUALLY short real words
+      // would ever trip this, not every word the way the old even `duration / wordCount` split with no
+      // real timing data never could). At `1 / fps` (≈0.033s at 30fps) this is roughly two orders of
+      // magnitude smaller than either padding value already tried and rejected for causing neighboring
+      // windows' decoders to overlap — far too small to reproduce that mechanism, since it only ever
+      // raises a window's own declared duration up to what one real frame already needs regardless.
+      const loopDuration = t(Math.max(w.endOffset - w.startOffset, 1 / fps));
       inputs.push("-itsoffset", t(absStart), "-loop", "1", "-framerate", String(loopFramerate), "-t", loopDuration, "-i", w.imagePath);
       const winLabel = `${outputLabel}_win${i}`;
 
