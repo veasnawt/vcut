@@ -38,17 +38,29 @@ describe("buildFilmstripArgs", () => {
     assert.ok(args.includes("/out.jpg"));
   });
 
-  it("samples FILMSTRIP_FRAME_COUNT frames spaced across the real duration", () => {
+  it("seeks FILMSTRIP_FRAME_COUNT times, once per evenly-spaced sample point, instead of decoding the whole source", () => {
     const args = buildFilmstripArgs("/in.mp4", "/out.jpg", 10);
-    const vf = args[args.indexOf("-vf") + 1];
-    assert.ok(vf.includes(`fps=${FILMSTRIP_FRAME_COUNT}/10`));
-    assert.ok(vf.includes(`tile=${FILMSTRIP_FRAME_COUNT}x1`));
+    const seekTimes = args.reduce<string[]>((acc, arg, i) => (arg === "-ss" ? [...acc, args[i + 1]] : acc), []);
+    assert.equal(seekTimes.length, FILMSTRIP_FRAME_COUNT, "one fast -ss seek per sampled frame, not a single full-decode pass");
+    // Midpoint-of-each-slice placement: for a 10s source split into FILMSTRIP_FRAME_COUNT slices, the
+    // first sample sits at half a slice-width, the last at 10 minus half a slice-width.
+    const sliceWidth = 10 / FILMSTRIP_FRAME_COUNT;
+    assert.equal(Number(seekTimes[0]), sliceWidth / 2);
+    assert.equal(Number(seekTimes[seekTimes.length - 1]), 10 - sliceWidth / 2);
+
+    const filterComplex = args[args.indexOf("-filter_complex") + 1];
+    assert.ok(filterComplex.includes(`tile=${FILMSTRIP_FRAME_COUNT}x1`));
+    // Every seeked stream ([0:v]..[N-1:v]) feeds the tile, not just one.
+    for (let i = 0; i < FILMSTRIP_FRAME_COUNT; i++) assert.ok(filterComplex.includes(`[${i}:v]`), `missing stream [${i}:v]`);
   });
 
-  it("floors a zero/negative duration to a small positive value instead of dividing by zero", () => {
+  it("floors a zero/negative duration to a small positive value instead of every seek landing on 0", () => {
     const args = buildFilmstripArgs("/in.mp4", "/out.jpg", 0);
-    const vf = args[args.indexOf("-vf") + 1];
-    assert.ok(!vf.includes("/0,"), `filter graph should not contain a literal /0,: ${vf}`);
+    const seekTimes = args.reduce<string[]>((acc, arg, i) => (arg === "-ss" ? [...acc, args[i + 1]] : acc), []);
+    assert.ok(
+      seekTimes.every((t) => Number(t) > 0),
+      `every seek time should be a small positive offset, not 0: ${seekTimes}`
+    );
   });
 });
 

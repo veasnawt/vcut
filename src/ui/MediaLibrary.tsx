@@ -275,6 +275,12 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
   const projectId = useEditorStore((s) => s.projectId);
   const project = useEditorStore((s) => s.project);
   const importing = useEditorStore((s) => s.importing);
+  const importProgress = useEditorStore((s) => s.importProgress);
+  // Real upload percentage when there is one (a file actively uploading — see `importFiles`'s own doc
+  // comment) — `importing` alone can also be true with `importProgress` still `null` (between files in
+  // a multi-file import, or a non-upload import like a stock/AI result), where the plain "Importing…"
+  // text is the honest thing to show instead of a stale or misleading number.
+  const importLabel = importing ? (importProgress != null ? `${t("Importing…")} ${Math.round(importProgress * 100)}%` : t("Importing…")) : t("Import");
   const importFiles = useEditorStore((s) => s.importFiles);
   const removeAsset = useEditorStore((s) => s.removeAsset);
   const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
@@ -635,13 +641,25 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
                     className="flex w-full shrink-0 flex-col items-center justify-center gap-1 overflow-hidden rounded-lg border border-dashed border-white/25 bg-white/5 p-1 transition group-hover:border-sky-400/50 group-hover:bg-white/10 lg:h-11 lg:w-16 lg:rounded"
                     style={{ aspectRatio: "1 / 1" }}
                   >
-                    <Add size={22} className="text-white/50 transition group-hover:text-white/80" />
+                    {importing ? (
+                      // A real spinner, not a static "+" — the label swapping to "Importing…" alone was
+                      // easy to miss (a real, reported complaint: the screen "should show it's [doing
+                      // something] instead of being silent"), and import genuinely can take several
+                      // seconds (probe, an occasional remux, thumbnail/filmstrip or waveform generation —
+                      // see `importMediaBytes`) with nothing else on screen changing in the meantime.
+                      <div
+                        aria-hidden
+                        className="h-[22px] w-[22px] animate-spin rounded-full border-2 border-white/25 border-t-white/70"
+                      />
+                    ) : (
+                      <Add size={22} className="text-white/50 transition group-hover:text-white/80" />
+                    )}
                     <p className="truncate text-center text-[11px] font-medium text-white/70 transition group-hover:text-white/90 lg:hidden">
-                      {importing ? t("Importing…") : t("Import")}
+                      {importLabel}
                     </p>
                   </div>
                   <div className="hidden min-w-0 lg:block lg:flex-1">
-                    <p className="truncate text-xs font-medium text-white/90">{importing ? t("Importing…") : t("Import")}</p>
+                    <p className="truncate text-xs font-medium text-white/90">{importLabel}</p>
                     <p className="truncate text-[11px] text-white/45">{t("Video, audio, or image")}</p>
                   </div>
                 </button>

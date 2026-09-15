@@ -113,6 +113,62 @@ export async function unwrap<T>(response: Response): Promise<T> {
   throw new ApiRequestError(message, response.status, code);
 }
 
+/** Uploads `form` to `url` via `XMLHttpRequest` instead of `fetch`, reporting real upload progress
+ *  through `onProgress` — the Fetch API has no request-body progress event at all (only a response-body
+ *  `ReadableStream`, no use for an UPLOAD), so `apiFetch`'s plain `fetch()` is a dead end for this; XHR's
+ *  `upload.onprogress` is the only standard browser API that exposes it. Used by `importMedia` below so
+ *  a large video's own upload shows a real percentage instead of the import UI just sitting on
+ *  "Importing…" for as long as a slow connection's own transfer takes — asked for directly, the same
+ *  spirit `runFfmpeg`'s server-side progress callback already serves for export/captions/inpaint, just
+ *  for the OTHER slow, silent phase of an import (the client→server transfer, not the server-side
+ *  processing after it arrives). `onProgress` receives a 0–1 fraction, called only when the browser
+ *  reports `lengthComputable` (always true for a `FormData` body carrying one `File`, which has a known
+ *  byte length up front — never true for a chunked/streaming body, not a shape this ever sends).
+ *
+ *  Deliberately NOT a full `apiFetch` replacement: skips that function's own 401-then-refresh-and-retry
+ *  dance (see its own doc comment) for a single XHR request — a real but rare edge case (a token going
+ *  stale mid-upload) degrades to a normal failed-import error here instead of silently recovering, an
+ *  acceptable simplification for what's already a manual retry (re-picking the file) either way, not
+ *  worth re-implementing that retry logic a second time against a completely different HTTP API. */
+function uploadFormWithProgress<T>(url: string, form: FormData, onProgress?: (fraction: number) => void): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    void (async () => {
+      if (HOSTED) {
+        const token = await getAccessToken();
+        if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+      }
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress?.(event.loaded / event.total);
+      };
+      xhr.onerror = () => reject(new ApiRequestError("Network error", 0));
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText) as T);
+          } catch {
+            reject(new ApiRequestError("Could not read the server's response", xhr.status));
+          }
+          return;
+        }
+        let message = `Request failed (${xhr.status})`;
+        let code: string | undefined;
+        try {
+          const body = JSON.parse(xhr.responseText) as { error?: string; code?: string };
+          if (body?.error) message = body.error;
+          code = body?.code;
+        } catch {
+          /* keep the status-based message */
+        }
+        if (xhr.status === 401) sessionExpiredHandler?.();
+        reject(new ApiRequestError(message, xhr.status, code));
+      };
+      xhr.send(form);
+    })();
+  });
+}
+
 /** `projectName` is only ever CONSULTED server-side when no project exists yet at this id — it seeds
  *  the real `project.name` on first creation (see the route's own comment for why that matters: a
  *  host app's title would otherwise never make it past a display-only prop). Ignored entirely for an
@@ -145,16 +201,20 @@ export async function saveProject(projectId: string, project: Project): Promise<
  *  without this the clip stayed invisible in ITS OWN project's Media tab while still cluttering "All my
  *  media" account-wide, forever). Not sent at all for a plain user upload — `undefined`/`false` both
  *  mean "a normal import," visible in the library exactly as it always has been. */
-export async function importMedia(projectId: string, file: File, options?: { hiddenFromLibrary?: boolean }): Promise<Asset> {
+export async function importMedia(
+  projectId: string,
+  file: File,
+  options?: { hiddenFromLibrary?: boolean; onProgress?: (fraction: number) => void }
+): Promise<Asset> {
   if (isNative) return nativeImportMedia(projectId, file);
   const form = new FormData();
   form.append("file", file);
   if (options?.hiddenFromLibrary) form.append("hidden", "1");
-  const response = await apiFetch(`${BASE}/media?projectId=${encodeURIComponent(projectId)}`, {
-    method: "POST",
-    body: form,
-  });
-  const body = await unwrap<{ asset: Asset }>(response);
+  const body = await uploadFormWithProgress<{ asset: Asset }>(
+    `${BASE}/media?projectId=${encodeURIComponent(projectId)}`,
+    form,
+    options?.onProgress
+  );
   return body.asset;
 }
 

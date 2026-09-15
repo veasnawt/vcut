@@ -199,6 +199,16 @@ export interface EditorState {
 
   status: { message: string; tone: StatusTone } | null;
   importing: boolean;
+  /** 0–1 upload progress for the file `importFiles` is CURRENTLY uploading, or `null` whenever nothing
+   *  is (including while `importing` is true but the CURRENT file's own upload hasn't started reporting
+   *  yet, or between files in a multi-file import). Only ever set by `importFiles`'s own real file
+   *  upload — `importStockResult`/AI generation also set `importing` but have no client-side upload to
+   *  report progress for (their own slow part is a server-side fetch from an external URL), so they
+   *  leave this at `null` throughout. Real byte-level progress via `api.importMedia`'s own
+   *  `onProgress` (see `client.ts`'s `uploadFormWithProgress`) — asked for directly, since a large
+   *  video's own upload could otherwise sit on a static "Importing…" for as long as a slow
+   *  connection's transfer takes with no visible sign of how much longer. */
+  importProgress: number | null;
   /** Every AI image/video generation this session, newest first — lives HERE rather than as local
    *  `AiGeneratePanel` state because that component can genuinely unmount mid-generation: on mobile,
    *  the "AI" tab only exists inside the bottom media SHEET (`VCutApp.tsx`'s own `mobileSheet`), which
@@ -704,6 +714,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     status: null,
     language: readStoredLanguage(),
     importing: false,
+    importProgress: null,
     aiGenerations: [],
     importingSfx: false,
     importingLut: false,
@@ -1036,19 +1047,57 @@ export const useEditorStore = create<EditorState>((set, get) => {
       if (!projectId || !project || files.length === 0) return [];
 
       set({ importing: true });
+      // Import runs several ffprobe/ffmpeg passes per file server-side (probe, an occasional remux,
+      // thumbnail/filmstrip or waveform generation — see `importMediaBytes`) and is awaited sequentially
+      // below, so a multi-second video can leave the screen looking completely unchanged with no visible
+      // sign anything is happening — confirmed a real, reported UX complaint, not a hypothetical. The
+      // `importing` flag already disables/relabels the Media panel's own Import button for the whole
+      // operation (see `MediaLibrary.tsx`), but that's easy to miss if the panel isn't in view; this toast
+      // is the same immediate, hard-to-miss signal every OTHER action in this file already gives via
+      // `setStatus` — it just gets naturally replaced by the real success/failure status below once the
+      // import actually finishes, same as any other `setStatus` call here.
+      get().setStatus(translateText(get().language, "Importing {n} file(s)…", { n: files.length }));
       const imported: Asset[] = [];
       const failures: string[] = [];
 
       // Sequential rather than parallel: each import copies a file and runs ffprobe/ffmpeg, and
       // firing a dozen of those at once would thrash the disk and spawn a dozen processes.
-      for (const file of files) {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        set({ importProgress: 0 });
+        let lastReportedPercent = -1;
         try {
-          const asset = await api.importMedia(projectId, file, options);
+          const asset = await api.importMedia(projectId, file, {
+            ...options,
+            onProgress: (fraction) => {
+              set({ importProgress: fraction });
+              // Also updates the SAME toast this function's own doc comment above already fires —
+              // that toast is visible regardless of which panel the editor has open (the Media tab's
+              // own percentage, `MediaLibrary.tsx`'s `importLabel`, only shows if that specific panel
+              // happens to be in view), a real, reported gap: importing from elsewhere in the editor
+              // — the timeline, a drag-drop onto a track — left no visible sign of progress at all
+              // once this toast's own initial "Importing…" text had been showing statically the whole
+              // time. Rounds to a whole percent and skips a redundant call when it hasn't moved,
+              // rather than firing on every single progress event XHR can produce — each REAL call
+              // still resets the toast's own 3-second auto-dismiss timer (`VCutApp.tsx`'s own
+              // `[status, setStatus]` effect), so the toast stays visible for as long as upload
+              // progress keeps arriving, not just the first three seconds.
+              const percent = Math.round(fraction * 100);
+              if (percent === lastReportedPercent) return;
+              lastReportedPercent = percent;
+              const label =
+                files.length > 1
+                  ? `${translateText(get().language, "Importing {n} file(s)…", { n: files.length })} (${i + 1}/${files.length}) ${percent}%`
+                  : `${translateText(get().language, "Importing {n} file(s)…", { n: files.length })} ${percent}%`;
+              get().setStatus(label);
+            },
+          });
           imported.push(options?.hiddenFromLibrary ? { ...asset, hiddenFromLibrary: true } : asset);
         } catch (err) {
           failures.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
+      set({ importProgress: null });
 
       if (imported.length > 0) {
         const current = get().project;

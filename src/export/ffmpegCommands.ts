@@ -40,23 +40,39 @@ const FILMSTRIP_TILE_HEIGHT = 90;
  *  clip's own height" styling naturally shows frame 1, 2, ... N, 1, 2, ... as it repeats, with no
  *  frontend tiling-index logic needed at all — the image data alone is what makes the difference.
  *
- *  `fps=N/duration` (not `select`+specific timestamps) is what makes ONE filter expression produce
- *  evenly-spaced samples regardless of the source's own frame rate or duration, including sources
- *  shorter than `FILMSTRIP_FRAME_COUNT` seconds — `fps` duplicates frames as needed to hit the target
- *  rate rather than requiring the source to already contain that many distinct frames. `scale=...:
- *  force_original_aspect_ratio=increase,crop=...` is a fixed-size "cover" crop (fill the tile, crop the
- *  overflow) so every source aspect ratio still produces uniformly-sized tiles for `tile` to grid. */
+ *  `FILMSTRIP_FRAME_COUNT` separate `-ss <t> -i input` seeks (same fast keyframe-seek
+ *  `buildThumbnailArgs` already uses, just once per target timestamp) — NOT the `fps=N/duration`
+ *  single-pass filter this used before, which forces FFmpeg to sequentially DECODE the entire source
+ *  from start to finish just to keep 8 of those frames. That cost scales with the source's own full
+ *  duration regardless of how few frames are actually needed, confirmed as the dominant cost of
+ *  importing a long video (a real, reported slow-import complaint) — the single thumbnail already
+ *  imports near-instantly via a seek, while the filmstrip alone could take minutes on a long file.
+ *  Seeking to each of the 8 target points directly, same as the thumbnail, turns that into ~8 fast
+ *  keyframe jumps independent of source length. Each seek reopens `input` as its own numbered stream
+ *  (`[0:v]`...`[7:v]`), scaled/cropped identically to before, then tiled via `filter_complex` instead
+ *  of a plain `-vf` chain (one input stream isn't enough for `-vf` to address 8 separately-seeked
+ *  reads). Placing each sample at the MIDPOINT of its own 1/N slice of the duration (rather than
+ *  exactly `i/N`) keeps the same "evenly spaced across the whole source" coverage `fps=N/duration`
+ *  gave, including for a source shorter than `FILMSTRIP_FRAME_COUNT` seconds — 8 distinct nearby
+ *  points rather than the old approach's literal duplicate frames in that case, a strictly better (if
+ *  incidental) result, not a regression. */
 export function buildFilmstripArgs(input: string, output: string, durationSeconds: number): string[] {
   const safeDuration = Math.max(0.1, durationSeconds);
-  return [
-    "-i", input,
-    "-frames:v", "1",
-    "-vf",
-    `fps=${FILMSTRIP_FRAME_COUNT}/${safeDuration},` +
-      `scale=${FILMSTRIP_TILE_WIDTH}:${FILMSTRIP_TILE_HEIGHT}:force_original_aspect_ratio=increase,` +
-      `crop=${FILMSTRIP_TILE_WIDTH}:${FILMSTRIP_TILE_HEIGHT},tile=${FILMSTRIP_FRAME_COUNT}x1`,
-    "-y", output,
-  ];
+  const args: string[] = [];
+  for (let i = 0; i < FILMSTRIP_FRAME_COUNT; i++) {
+    const at = (safeDuration * (i + 0.5)) / FILMSTRIP_FRAME_COUNT;
+    args.push("-ss", at.toFixed(3), "-i", input);
+  }
+  const scaleCropSteps = Array.from(
+    { length: FILMSTRIP_FRAME_COUNT },
+    (_, i) =>
+      `[${i}:v]scale=${FILMSTRIP_TILE_WIDTH}:${FILMSTRIP_TILE_HEIGHT}:force_original_aspect_ratio=increase,` +
+      `crop=${FILMSTRIP_TILE_WIDTH}:${FILMSTRIP_TILE_HEIGHT}[f${i}]`
+  );
+  const tileInputs = Array.from({ length: FILMSTRIP_FRAME_COUNT }, (_, i) => `[f${i}]`).join("");
+  const filterComplex = [...scaleCropSteps, `${tileInputs}tile=${FILMSTRIP_FRAME_COUNT}x1[out]`].join(";");
+  args.push("-filter_complex", filterComplex, "-map", "[out]", "-frames:v", "1", "-y", output);
+  return args;
 }
 
 /** Fixed size (pixels) for the waveform PNG — like `FILMSTRIP_TILE_WIDTH/HEIGHT`, not proportional to
