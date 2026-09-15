@@ -1757,10 +1757,18 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
 
     if (fadeIn || fadeOut) {
       const alphaParam = transparent ? ":alpha=1" : "";
+      // See `applySoloCorruptionPass`'s own doc comment — this is what makes a solo `glitchCut`/
+      // `waterRippleCut`/`whipPanLeft`/`whipPanRight` on a track's first/last clip actually render on
+      // export instead of silently downgrading to a plain fade. Chained (not just the first that
+      // applies) since a single very short clip can legitimately have BOTH a solo fade-in AND a solo
+      // fade-out at once.
+      let preFadeLabel = label;
+      if (fadeIn) preFadeLabel = applySoloCorruptionPass(preFadeLabel, clip.transitionIn?.type ?? "crossfade", 0, fadeIn);
+      if (fadeOut) preFadeLabel = applySoloCorruptionPass(preFadeLabel, clip.transitionOut?.type ?? "crossfade", sliceDuration - fadeOut, fadeOut);
       const stages: string[] = [];
       if (fadeIn) stages.push(`fade=t=in:st=0:d=${t(fadeIn)}${alphaParam}`);
       if (fadeOut) stages.push(`fade=t=out:st=${t(sliceDuration - fadeOut)}:d=${t(fadeOut)}${alphaParam}`);
-      filters.push(`[${label}]${stages.join(",")}[${outputLabel}]`);
+      filters.push(`[${preFadeLabel}]${stages.join(",")}[${outputLabel}]`);
     }
   }
 
@@ -1886,10 +1894,15 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
 
     if (fadeIn || fadeOut) {
       const alphaParam = transparent ? ":alpha=1" : "";
+      // See `applySoloCorruptionPass`'s own doc comment — same fix `pushClipVideoFilters` above
+      // applies, needed here too since a keyframed clip can equally be the first/last one on its track.
+      let preFadeLabel = label;
+      if (fadeIn) preFadeLabel = applySoloCorruptionPass(preFadeLabel, clip.transitionIn?.type ?? "crossfade", 0, fadeIn);
+      if (fadeOut) preFadeLabel = applySoloCorruptionPass(preFadeLabel, clip.transitionOut?.type ?? "crossfade", sliceDuration - fadeOut, fadeOut);
       const stages: string[] = [];
       if (fadeIn) stages.push(`fade=t=in:st=0:d=${t(fadeIn)}${alphaParam}`);
       if (fadeOut) stages.push(`fade=t=out:st=${t(sliceDuration - fadeOut)}:d=${t(fadeOut)}${alphaParam}`);
-      filters.push(`[${label}]${stages.join(",")}[${outputLabel}]`);
+      filters.push(`[${preFadeLabel}]${stages.join(",")}[${outputLabel}]`);
     }
   }
 
@@ -2154,6 +2167,62 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // anything in this pre-pass itself.
       filters.push(
         `[${label}]boxblur=luma_radius=${WHIP_PAN_BLUR_RADIUS_PX}:luma_power=1:chroma_radius=${WHIP_PAN_BLUR_RADIUS_PX}:chroma_power=1[${fxLabel}]`
+      );
+    }
+    return fxLabel;
+  }
+
+  /** The solo-fade counterpart of `applyTransitionCorruptionPass` above — a real, confirmed bug fix,
+   *  not a defensive addition: `pushClipVideoFilters`/`pushKeyframedClipVideoFilters`'s own solo
+   *  `fadeIn`/`fadeOut` (a clip with no adjacent partner — the FIRST clip's own fade-in, or the LAST
+   *  clip's own fade-out on a track, see `Segment["clip"]["fadeIn"/"fadeOut"]`'s own doc comments)
+   *  never called `applyTransitionCorruptionPass` at all, so a `glitchCut`/`waterRippleCut`/
+   *  `whipPanLeft`/`whipPanRight` transition landing on exactly that clip silently exported as a PLAIN
+   *  fade — looking right in the live preview (`compositeSoloReveal` genuinely renders the corruption
+   *  there) but not in the file a user actually gets.
+   *
+   *  Can't just reuse `applyTransitionCorruptionPass` unchanged: that function assumes the WHOLE input
+   *  IS the transition window, true only for the two-clip case (each side is already `-ss`/`-t`-trimmed
+   *  to exactly the transition's own duration before this ever runs). A solo fade instead runs as ONE
+   *  continuous filter chain over the clip's own FULL segment duration, with the fade confined to a
+   *  `[windowStart, windowStart+windowDuration)` sub-range — so gating via ffmpeg's own `enable=`
+   *  timeline-editing option (verified empirically against this repo's own bundled ffmpeg build) is
+   *  what confines the effect to just that edge instead of corrupting the whole clip.
+   *
+   *  Deliberately narrower than `applyTransitionCorruptionPass`: `zoomBlur`/`flashZoom` are NOT handled
+   *  here and their own solo-fade case stays a plain fade, unchanged — their pre-pass needs `crop=`,
+   *  and this ffmpeg build's `crop` filter does not support `enable=` AT ALL (confirmed directly:
+   *  ffmpeg refuses to even build the filtergraph, "Timeline ('enable' option) not supported with
+   *  filter 'crop'"), with no equivalent zoom-without-crop construction available to fall back to. A
+   *  known, narrower follow-up rather than an untested guess. `waterRippleCut`'s own ramp expression
+   *  uses `(T-windowStart)`, not raw `T` — `geq=`'s own `T` is elapsed time since the CLIP'S OWN
+   *  segment start, not the fade window's start, so without this the parabola would peak at the middle
+   *  of the whole clip instead of the middle of the fade window whenever `windowStart` isn't 0 (a
+   *  `fadeOut`, which always starts partway through the segment). */
+  function applySoloCorruptionPass(label: string, transitionType: TransitionType, windowStart: number, windowDuration: number): string {
+    if (
+      transitionType !== "glitchCut" &&
+      transitionType !== "waterRippleCut" &&
+      transitionType !== "whipPanLeft" &&
+      transitionType !== "whipPanRight"
+    ) {
+      return label;
+    }
+    const fxLabel = `${label}_fx`;
+    const enable = `enable='between(t,${t(windowStart)},${t(windowStart + windowDuration)})'`;
+    if (transitionType === "waterRippleCut") {
+      const rate = (2 * Math.PI) / WATER_RIPPLE_PERIOD_SECONDS;
+      const localT = `(T-${t(windowStart)})`;
+      const ramp = `4*(${localT}/${t(windowDuration)})*(1-${localT}/${t(windowDuration)})`;
+      const expr = `p(X+${n(WATER_RIPPLE_AMPLITUDE_PX)}*${ramp}*sin(Y/${n(WATER_RIPPLE_WAVELENGTH_PX)}+T*${n(rate)}),Y)`;
+      filters.push(`[${label}]geq=lum='${expr}':cb='${expr}':cr='${expr}':${enable}[${fxLabel}]`);
+    } else if (transitionType === "glitchCut") {
+      filters.push(
+        `[${label}]rgbashift=rh=${GLITCH_SHIFT_PX}:bv=${-GLITCH_SHIFT_PX}:${enable},noise=alls=${n(GLITCH_NOISE_AMOUNT)}:allf=t:${enable}[${fxLabel}]`
+      );
+    } else {
+      filters.push(
+        `[${label}]boxblur=luma_radius=${WHIP_PAN_BLUR_RADIUS_PX}:luma_power=1:chroma_radius=${WHIP_PAN_BLUR_RADIUS_PX}:chroma_power=1:${enable}[${fxLabel}]`
       );
     }
     return fxLabel;

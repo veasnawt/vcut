@@ -2957,6 +2957,81 @@ describe("buildExportPlan with a glitch/water-ripple/zoom-blur/whip-pan/flash-zo
       );
     }
   });
+
+  // A real, confirmed bug: a corruption-family transition on a clip with NO adjacent partner (the
+  // first clip's own fade-in, or the last clip's own fade-out) used to export as a PLAIN fade — the
+  // live preview (`compositeSoloReveal`) rendered the corruption, but the exported file never did.
+  // `applySoloCorruptionPass` fixes this for the four types whose ffmpeg filters actually support
+  // `enable=` timeline gating (verified directly against this repo's own bundled ffmpeg build).
+  describe("a solo fade (no adjacent partner) also gets the corruption pass, gated to just its own window", () => {
+    it("glitchCut: a solo fade-IN runs rgbashift=+noise= gated to [0, duration) via enable=", () => {
+      const base = emptyProject([videoAsset("a", 5)]);
+      let project = addClip(base, videoTrackId(base), "a", 0);
+      const [clipA] = clipsOf(project, videoTrackId(project));
+      project = setClipTransitionIn(project, clipA.id, { duration: 1, type: "glitchCut" });
+
+      const graph = filterGraph(plan(project).args);
+
+      assert.match(graph, /rgbashift=rh=-?\d+:bv=-?\d+:enable='between\(t,0\.000000,1\.000000\)',noise=alls=[\d.]+:allf=t:enable='between\(t,0\.000000,1\.000000\)'/);
+      assert.match(graph, /fade=t=in:st=0:d=1\.000000/);
+    });
+
+    it("glitchCut: a solo fade-OUT is gated to [end-duration, end), not the whole clip", () => {
+      const base = emptyProject([videoAsset("a", 5)]);
+      let project = addClip(base, videoTrackId(base), "a", 0);
+      const [clipA] = clipsOf(project, videoTrackId(project));
+      project = setClipTransitionOut(project, clipA.id, { duration: 1, type: "glitchCut" });
+
+      const graph = filterGraph(plan(project).args);
+
+      assert.match(graph, /rgbashift=rh=-?\d+:bv=-?\d+:enable='between\(t,4\.000000,5\.000000\)'/);
+      assert.match(graph, /fade=t=out:st=4\.000000:d=1\.000000/);
+    });
+
+    it("waterRippleCut: a solo fade-OUT ramps relative to the fade window's own start, not the clip's", () => {
+      const base = emptyProject([videoAsset("a", 5)]);
+      let project = addClip(base, videoTrackId(base), "a", 0);
+      const [clipA] = clipsOf(project, videoTrackId(project));
+      project = setClipTransitionOut(project, clipA.id, { duration: 1, type: "waterRippleCut" });
+
+      const graph = filterGraph(plan(project).args);
+
+      assert.match(graph, /geq=lum='[^']+':cb='[^']+':cr='[^']+':enable='between\(t,4\.000000,5\.000000\)'/);
+      // The ramp's own local time is `(T-4.000000)`, not raw `T` — it must peak at t=4.5 (the fade
+      // window's own midpoint), not at t=2.5 (the whole clip's midpoint).
+      assert.ok(graph.includes("(T-4.000000)"), "expected the ramp to rebase T against the fade window's own start");
+    });
+
+    it("whipPanLeft: a solo fade-IN runs the directional boxblur= gated to its own window", () => {
+      const base = emptyProject([videoAsset("a", 5)]);
+      let project = addClip(base, videoTrackId(base), "a", 0);
+      const [clipA] = clipsOf(project, videoTrackId(project));
+      project = setClipTransitionIn(project, clipA.id, { duration: 1, type: "whipPanLeft" });
+
+      const graph = filterGraph(plan(project).args);
+
+      assert.match(graph, /boxblur=luma_radius=\d+:luma_power=1:chroma_radius=\d+:chroma_power=1:enable='between\(t,0\.000000,1\.000000\)'/);
+    });
+
+    it("zoomBlur/flashZoom: a solo fade still exports as a PLAIN fade — a documented, narrower gap, not a regression", () => {
+      // `crop=` (part of both types' own zoom pre-pass) doesn't support ffmpeg's `enable=` timeline
+      // option at all on this build, so there's no equivalent windowed construction to fall back to
+      // yet — `applySoloCorruptionPass` deliberately leaves these two types untouched rather than
+      // shipping an untested workaround. Their own TWO-CLIP case is unaffected (see the describe block
+      // above) — this gap is solo-fades only.
+      for (const type of ["zoomBlur", "flashZoom"] as const) {
+        const base = emptyProject([videoAsset("a", 5)]);
+        let project = addClip(base, videoTrackId(base), "a", 0);
+        const [clipA] = clipsOf(project, videoTrackId(project));
+        project = setClipTransitionIn(project, clipA.id, { duration: 1, type });
+
+        const graph = filterGraph(plan(project).args);
+
+        assert.ok(!graph.includes("_fx]"), `"${type}"'s solo fade is a documented gap — no corruption pass yet`);
+        assert.match(graph, /fade=t=in:st=0:d=1\.000000/);
+      }
+    });
+  });
 });
 
 describe("buildExportPlan with audio-track transitions", () => {
