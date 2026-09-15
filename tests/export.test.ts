@@ -2045,6 +2045,50 @@ describe("buildExportPlan wordHighlight with ASS/libass capability", () => {
     assert.equal(end2, "0:00:" + clipEnd(clip).toFixed(2).padStart(5, "0"), "the LAST event extends to the clip's own end, not just one more word-width");
   });
 
+  it("uses real per-word timing (clip.wordTimings) instead of an even split when present — matches the live preview and khmerTextRenderer.ts exactly (regression: this ASS/libass path used to ignore wordTimings entirely)", () => {
+    let base = emptyProject([videoAsset(), textAsset("text1", "One Two Three")]);
+    base = addTrack(base, "text");
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    project = addClip(project, textTrackId(project), "text1", 2); // starts at t=2s, default TEXT_DEFAULT_DURATION (3s)
+    const [textClip] = clipsOf(project, textTrackId(project));
+    project = setClipTextAnimation(project, textClip.id, { type: "wordHighlight" });
+    // Real, deliberately UNEVEN per-word timing (clip-relative seconds, within the clip's real 3s
+    // duration) — nothing like the even 1s-per-word split the previous test exercises, so a test
+    // passing here can't be an accident of both paths happening to agree on a symmetric case.
+    const wordTimings = [
+      { start: 0, end: 0.3 },
+      { start: 0.3, end: 1.8 },
+      { start: 1.8, end: 3 },
+    ];
+    project = {
+      ...project,
+      sequence: {
+        ...project.sequence,
+        tracks: project.sequence.tracks.map((t) =>
+          t.clips.some((c) => c.id === textClip.id) ? { ...t, clips: t.clips.map((c) => (c.id === textClip.id ? { ...c, wordTimings } : c)) } : t
+        ),
+      },
+    };
+
+    const written: { content?: string } = {};
+    planWithAss(project, written);
+    const dialogueLines = written.content!.split("\n").filter((l) => l.startsWith("Dialogue:"));
+    assert.equal(dialogueLines.length, 3);
+
+    function startEndOf(line: string): [string, string] {
+      const parts = line.split(",");
+      return [parts[1], parts[2]];
+    }
+    const [start0, end0] = startEndOf(dialogueLines[0]);
+    const [, end1] = startEndOf(dialogueLines[1]);
+    const [, end2] = startEndOf(dialogueLines[2]);
+
+    assert.equal(start0, "0:00:02.00", "first event still starts at the clip's own head, not its real (zero) word-0 timestamp");
+    assert.equal(end0, "0:00:02.30", "word 0 -> word 1 boundary is word 1's REAL start (2 + 0.3), not the even 1s-per-word split");
+    assert.equal(end1, "0:00:03.80", "word 1 -> word 2 boundary is word 2's REAL start (2 + 1.8)");
+    assert.equal(end2, "0:00:05.00", "the LAST event still extends to the clip's own end (2 + 3), same rule as the even-split case");
+  });
+
   it("\\pos()'s own comma is NOT backslash-escaped — regression: an escaped comma makes libass silently fail to parse \\pos and fall back to default margin placement", () => {
     let base = emptyProject([videoAsset(), textAsset("text1", "Left Aligned")]);
     base = addTrack(base, "text");

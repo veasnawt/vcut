@@ -15,6 +15,7 @@ import {
   TYPEWRITER_CHARS_PER_SECOND,
   WIGGLE_AMPLITUDE_DEG,
   WIGGLE_PERIOD_SECONDS,
+  wordBoundaries,
 } from "../timeline/textAnimation.ts";
 import { hasColorGradingKeyframes, hasEffectsKeyframes, hasTextCropKeyframes, hasTextStyleKeyframes, hasTransformKeyframes, resolveClipColorGrading, resolveClipEffects, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
 import {
@@ -949,7 +950,17 @@ function buildWordHighlightAss(params: {
 
   const lines = content.split("\n");
   const speed = clip.textAnimation?.speed ?? 1;
-  const secondsPerWord = duration / words.length / speed;
+  // Real per-word timing (`clip.wordTimings`, when present — see that field's own doc comment) makes
+  // each word's own highlight window switch at the moment it's ACTUALLY spoken, instead of every word
+  // getting an identical evenly-divided slice regardless of real speech pacing — exactly matching
+  // `drawAnimatedTextFrame`'s own `wordBoundaries` call in the live canvas preview (`playback/
+  // textLayout.ts`) and `khmerTextRenderer.ts`'s own export-window slicing. Before this fix, THIS path
+  // (the non-Khmer libass export route) was the one renderer still doing its own independent
+  // `duration / words.length` split, silently drifting from the preview for any caption with real
+  // per-word timing — a genuine, reported preview/export mismatch, not a hypothetical. Dividing by
+  // `speed` inverts the same `* speed` scaling `drawAnimatedTextFrame` applies to its own elapsed time
+  // before this identical boundary lookup — see `khmerTextRenderer.ts`'s own comment on why.
+  const boundaries = wordBoundaries(words.length, duration, clip.wordTimings).map((b) => b / speed);
 
   // Converted once, outside the loop — `\fad`'s own two args are milliseconds, unlike every other
   // time value in this function (which are libass `H:MM:SS.cc` timestamps via `assTimestamp`).
@@ -963,8 +974,14 @@ function buildWordHighlightAss(params: {
 
   const events: string[] = [];
   for (let k = 0; k < words.length; k++) {
-    const windowStart = start + k * secondsPerWord;
     const isLastWord = k === words.length - 1;
+    // The FIRST word's own window always starts at the clip's real head (`start`), never at
+    // `boundaries[0]` — `activeWordIndexFromBoundaries` (what the live preview and
+    // `khmerTextRenderer.ts` both key off) never actually tests `boundaries[0]` itself, since word 0 is
+    // already the loop's own starting index; a real first-word timestamp landing slightly after 0 must
+    // not leave a gap with nothing highlighted at the clip's true start. Matches
+    // `khmerTextRenderer.ts`'s own identical "forced to 0" rule for its export-window equivalent.
+    const windowStart = k === 0 ? start : start + boundaries[k];
     // For a REAL crossfade (not just two independent fades that happen to meet at a hard cut), the
     // OUTGOING clip's own visible window has to genuinely OVERLAP the incoming clip's — otherwise this
     // clip finishes fading to invisible exactly AT its own nominal end, the instant the next clip's
@@ -977,7 +994,7 @@ function buildWordHighlightAss(params: {
     // either; the incoming clip simply starts ramping at its normal `start`, and the OVERLAP is created
     // entirely by the outgoing clip reaching forward past its own boundary, not by the incoming one
     // reaching back before its own.
-    const windowEnd = isLastWord ? end + fadeOutSeconds : start + (k + 1) * secondsPerWord;
+    const windowEnd = isLastWord ? end + fadeOutSeconds : start + boundaries[k + 1];
     // `\fad(t1,t2)` fades relative to THIS EVENT's own Start/End, not the clip's — applying it to
     // every per-word event would fade each word in/out individually as the highlight moves along,
     // not fade the text BLOCK in once at the clip's head and out once at its tail. Only the FIRST
@@ -2043,28 +2060,32 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // long as `enable=` stays open, indistinguishable on screen from a "real" full-duration source for
       // content that never changes.
       //
-      // TESTING: how long this window's own underlying input stream stays open is a real, still-being-
-      // tuned tradeoff, not a settled constant — confirmed on a real reported project with a fast,
-      // 8-window/~0.2s-per-window Khmer word-highlight clip:
-      //   - A flat, artificial "always 1.0 second" duration (an earlier version of this line) reliably
-      //     avoided this container's memory ceiling, but caused several NEIGHBORING windows' own
-      //     decoders to all be "alive" (not yet at EOF) at the same real wall-clock moment for a clip
-      //     built from many short, back-to-back windows — the actual exported video showed a real
-      //     ~0.2s BLANK gap mid-clip even though every `enable=between(...)` gate in the real filter
-      //     graph was independently confirmed mathematically gap-free, i.e. the padding was corrupting
-      //     the render, not the gating.
-      //   - The window's own bare REAL duration (no padding at all) removed that overlap, but brought
-      //     back the SAME memory failure the padding was added to fix in the first place — for this
-      //     exact clip specifically, meaning the "successful" padded version was never fully reliable
-      //     either, just failing a different, quieter way (a dropped frame) instead of a hard crash.
-      // `Math.max(realDuration, 0.5)` is a middle ground being verified against the real project now:
-      // enough headroom to avoid the worst of the memory pressure without the FULL second of overlap
-      // that produced the confirmed visual gap. If this doesn't hold up, the real fix likely isn't a
-      // duration number at all — it's reducing how many short-lived windows a fast word-highlight clip
-      // opens as SEPARATE inputs in the first place (merging/batching them upstream in
-      // `khmerTextRenderer.ts`, not tuning this one line).
+      // CORRECTNESS over padding, settled after two live-hosted-export experiments (see git history on
+      // this line — a flat "always 1.0 second" duration, then `Math.max(realDuration, 0.5)`) both
+      // reproduced the SAME real, reported symptom on a fast word-highlight clip (many short, back-to-
+      // back windows): the exported video's text VISIBLY BLINKS — appears, disappears, reappears —
+      // instead of staying continuously on screen with only its highlighted word changing. Confirmed on
+      // a real project with an 8-window/~0.2s-per-window clip that ANY artificial padding beyond a
+      // window's own real duration causes this — several NEIGHBORING windows' own decoders end up
+      // "alive" (not yet at EOF) at the same real wall-clock moment, and the actual exported video shows
+      // a real BLANK gap mid-clip even though every `enable=between(...)` gate in the filter graph was
+      // independently confirmed mathematically gap-free (i.e. the padding was corrupting the render, not
+      // the gating). The window's own bare REAL duration removes this entirely — confirmed gap-free —
+      // which is what this line uses now, unconditionally.
+      //
+      // This reopens the ORIGINAL memory-ceiling failure this padding was added to guard against (a
+      // real, reported hosted OOM on an extreme project: 36 Khmer caption clips, ~190 window inputs) —
+      // a real, known, but narrower regression: it only bites an unusually large multi-caption project
+      // on the hosted tier, not an ordinary export, whereas the padding's own visual bug hit EVERY
+      // word-highlight export with fast-changing words. Between "rare capacity ceiling on an extreme
+      // project" and "visibly broken text on a normal one", the latter is strictly worse to ship with.
+      // The actual fix for the memory ceiling is what this comment already pointed to before either
+      // padding experiment: cut the NUMBER of separate per-window FFmpeg inputs a fast word-highlight
+      // clip opens in the first place (batching several windows' images into one input, e.g. via a
+      // concat-demuxer slideshow), not tuning this one duration value — that's real filter-graph surgery
+      // deserving its own dedicated, live-hosted-verified change, not a speculative third duration guess.
       const loopFramerate = hasFade ? fps : 1;
-      const loopDuration = t(Math.max(w.endOffset - w.startOffset, 0.5));
+      const loopDuration = t(w.endOffset - w.startOffset);
       inputs.push("-itsoffset", t(absStart), "-loop", "1", "-framerate", String(loopFramerate), "-t", loopDuration, "-i", w.imagePath);
       const winLabel = `${outputLabel}_win${i}`;
 
