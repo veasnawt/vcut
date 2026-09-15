@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Close } from "@veasnawt/vicons";
 import { mediaUrl } from "../api/client.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -42,6 +42,19 @@ export function TemplateTrimDialog({
   function seekPreview(value: number) {
     if (videoRef.current) videoRef.current.currentTime = value;
   }
+
+  // `onLoadedMetadata` alone missed a real case: if the browser already had this video's metadata
+  // cached (a re-open of the same dialog, or the asset was recently played elsewhere), `loadedmetadata`
+  // can fire before React's own listener is attached, leaving the preview stuck on frame 0 regardless
+  // of `sourceIn` until the user actually dragged. Checking `readyState` on mount catches that case —
+  // same "don't rely on an event that might have already fired" pattern `VideoFrameThumbnail.tsx` uses.
+  useEffect(() => {
+    if (videoRef.current && videoRef.current.readyState >= 1) seekPreview(sourceIn);
+    // Only on mount (and if the asset itself changes) — every subsequent seek during a drag already
+    // goes through `beginDrag`'s own `seekPreview` calls; re-running this on every `sourceIn` change
+    // would fight a live drag by re-seeking to the STALE value this closure captured.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asset.id]);
 
   function beginDrag(event: React.MouseEvent | React.TouchEvent) {
     const track = trackRef.current;

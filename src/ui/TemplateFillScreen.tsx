@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Add, Edit, Image as ImageIcon, Music, Video } from "@veasnawt/vicons";
-import { assetFromLibraryMedia, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
+import { assetFromLibraryMedia, mediaUrl, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import type { Asset } from "../project/types.ts";
 import { templateSlotRequiredLength, templateSlots, type TemplateSlot } from "../project/template.ts";
@@ -11,6 +11,7 @@ import { formatDuration } from "../timeline/time.ts";
 import { EditableProjectTitle } from "./EditableProjectTitle.tsx";
 import { TemplateTrimDialog } from "./TemplateTrimDialog.tsx";
 import { useLibraryMedia } from "./useLibraryMedia.ts";
+import { VideoFrameThumbnail } from "./VideoFrameThumbnail.tsx";
 
 /** Covers `LibraryGridTile`'s own general `LibraryMediaItem.kind` (video/audio/image — a user's
  *  library can hold all three) even though a slot's own `TemplateSlot["kind"]` only ever needs
@@ -152,7 +153,15 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
             const filled = filledBySlotId[slot.assetId];
             const isActive = activeSlotAssetId === slot.assetId;
             const Icon = KIND_ICON[slot.kind];
-            const thumb = filled ? thumbnailUrl(projectId, filled) : null;
+            // A video's own static thumbnail is generated once at import time and never reflects a
+            // later retrim — see `VideoFrameThumbnail`'s own doc comment. `sourceIn` comes from
+            // whichever real clip currently references this pick, the same lookup
+            // `TemplatePreviewScreen.tsx`'s own trim dialog already does.
+            const filledClipSourceIn = filled
+              ? (project.sequence.tracks.flatMap((tr) => tr.clips).find((c) => c.assetId === filled.id)?.sourceIn ?? 0)
+              : 0;
+            const videoSrc = filled?.kind === "video" ? mediaUrl(projectId, filled.relPath, Boolean(filled.libraryMediaId)) : null;
+            const thumb = filled && filled.kind !== "video" ? thumbnailUrl(projectId, filled) : null;
             // Same `canTrim` condition as the pick-time offer above and `TemplatePreviewScreen.tsx`'s
             // own gating — re-openable here too, not just the one time right after picking, since a
             // user may want to revisit the choice after seeing how the rest of the fill turned out.
@@ -166,7 +175,9 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
                     isActive ? "border-sky-400" : filled ? "border-emerald-400/50" : "border-white/15 hover:border-white/30"
                   }`}
                 >
-                  {thumb ? (
+                  {videoSrc ? (
+                    <VideoFrameThumbnail src={videoSrc} time={filledClipSourceIn} className="absolute inset-0 h-full w-full object-cover" />
+                  ) : thumb ? (
                     <img src={thumb} alt="" className="absolute inset-0 h-full w-full object-cover" draggable={false} />
                   ) : (
                     <div className="absolute inset-0 flex items-center justify-center bg-white/5 text-white/40">

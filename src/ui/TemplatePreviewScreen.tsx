@@ -4,16 +4,19 @@ import { useRef, useState } from "react";
 import { Add, Close, Image as ImageIcon, Music, Pause, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
 import { assetFromLibraryMedia, mediaUrl, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
 import { fontById } from "../project/fonts.ts";
+import { sequenceDuration } from "../project/createProject.ts";
 import { templateAudioAssets, templateClips, templateSlotRequiredLength, type TemplateClipEntry } from "../project/template.ts";
 import type { Asset, Project } from "../project/types.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
-import { formatDuration } from "../timeline/time.ts";
+import { formatDuration, formatTimecode } from "../timeline/time.ts";
 import { EditableProjectTitle } from "./EditableProjectTitle.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
+import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { Preview } from "./Preview.tsx";
 import { TemplateTrimDialog } from "./TemplateTrimDialog.tsx";
 import { useLibraryMedia } from "./useLibraryMedia.ts";
+import { VideoFrameThumbnail } from "./VideoFrameThumbnail.tsx";
 
 type TabKey = "video" | "audio" | "text";
 
@@ -118,6 +121,8 @@ export function TemplatePreviewScreen() {
       <div className="min-h-0 flex-1 p-3">
         <Preview onResizeStart={() => {}} />
       </div>
+
+      {project && <PlaybackProgressBar total={sequenceDuration(project)} fps={project.sequence.fps} />}
 
       {(hasVideo || hasAudio || hasText) && project && projectId && (
         <div className="shrink-0 border-t border-white/10">
@@ -229,6 +234,66 @@ export function TemplatePreviewScreen() {
   );
 }
 
+/** A scrubbable start-to-finish playback position bar — the guided template flow has no `Timeline.tsx`
+ *  at all (see `TemplatePreviewScreen`'s own doc comment: structure stays completely locked here), so
+ *  without this there was literally nowhere to see or change WHERE playback currently is beyond
+ *  watching the Preview canvas itself and guessing. Isolated into its own component (not inlined in
+ *  `TemplatePreviewScreen` directly) for the same reason `Timeline.tsx`'s own `CurrentTime` is: only
+ *  THIS subscribes to the live `playhead`, so the whole screen doesn't re-render 30-60×/sec during
+ *  playback — just this one thin bar. Click or drag anywhere on the bar to seek, the same direct
+ *  "tap where you want to be" gesture a video player's own scrubber uses. */
+function PlaybackProgressBar({ total, fps }: { total: number; fps: number }) {
+  const playhead = useEditorStore((s) => s.playhead);
+  const setPlayhead = useEditorStore((s) => s.setPlayhead);
+  const trackRef = useRef<HTMLDivElement | null>(null);
+
+  if (total <= 0) return null;
+  const fraction = Math.max(0, Math.min(1, playhead / total));
+
+  function seekTo(clientX: number) {
+    const track = trackRef.current;
+    if (!track) return;
+    const rect = track.getBoundingClientRect();
+    const f = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    setPlayhead(f * total);
+  }
+
+  function beginScrub(event: React.MouseEvent | React.TouchEvent) {
+    preventDefaultIfMouse(event);
+    seekTo(clientPoint(event).x);
+    const remove = addDragListeners(
+      (moveEvent) => seekTo(clientPoint(moveEvent).x),
+      () => remove()
+    );
+  }
+
+  return (
+    <div className="shrink-0 px-3 pb-2">
+      <div
+        ref={trackRef}
+        onMouseDown={beginScrub}
+        onTouchStart={beginScrub}
+        role="slider"
+        aria-label="Playback position"
+        aria-valuemin={0}
+        aria-valuemax={Math.round(total)}
+        aria-valuenow={Math.round(playhead)}
+        className="relative h-2 w-full touch-none rounded-full bg-white/10"
+      >
+        <div className="h-full rounded-full bg-sky-400" style={{ width: `${fraction * 100}%` }} />
+        <div
+          className="absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full bg-white shadow"
+          style={{ left: `calc(${fraction * 100}% - 7px)` }}
+        />
+      </div>
+      <div className="mt-1 flex justify-between font-mono text-[10px] tabular-nums text-white/40">
+        <span>{formatTimecode(playhead, fps)}</span>
+        <span>{formatTimecode(total, fps)}</span>
+      </div>
+    </div>
+  );
+}
+
 function TabButton({ label, Icon, active, onClick }: { label: string; Icon: typeof Video; active: boolean; onClick: () => void }) {
   return (
     <button
@@ -258,7 +323,14 @@ function FilmstripTile({
   onSelect: () => void;
 }) {
   const { clip, asset } = entry;
-  const thumb = asset.kind === "video" || asset.kind === "image" ? thumbnailUrl(projectId, asset) : null;
+  // A video's own static `thumbnailRelPath` is generated ONCE at import time and never regenerated —
+  // stale the moment a retrim moves `sourceIn` away from that fixed offset (a real, reported bug: the
+  // tile kept showing the ORIGINAL pick's own first frame regardless of how the trim window was later
+  // adjusted). `VideoFrameThumbnail` seeks the real video to the clip's CURRENT `sourceIn` live instead.
+  // An image has no "portion" to trim (never offered a Trim button at all — see `VideoTabContent`'s own
+  // `canTrim` gating), so it keeps the plain static thumbnail unchanged.
+  const videoSrc = asset.kind === "video" ? mediaUrl(projectId, asset.relPath, Boolean(asset.libraryMediaId)) : null;
+  const thumb = asset.kind === "image" ? thumbnailUrl(projectId, asset) : null;
   return (
     <button
       onClick={onSelect}
@@ -266,7 +338,9 @@ function FilmstripTile({
         selected ? "border-sky-400" : "border-white/15 hover:border-white/30"
       }`}
     >
-      {thumb ? (
+      {videoSrc ? (
+        <VideoFrameThumbnail src={videoSrc} time={clip.sourceIn} className="absolute inset-0 h-full w-full object-cover" />
+      ) : thumb ? (
         <img src={thumb} alt="" className="absolute inset-0 h-full w-full object-cover" draggable={false} />
       ) : asset.kind === "text" ? (
         <div
