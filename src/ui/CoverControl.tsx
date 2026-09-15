@@ -80,7 +80,7 @@ export function CoverControl() {
         title={t("Cover")}
         aria-label={t("Cover")}
         aria-haspopup="dialog"
-        className="relative h-full w-9 shrink-0 overflow-hidden rounded-md border border-white/15 bg-white/5 transition hover:border-white/35"
+        className="relative block h-full w-full overflow-hidden rounded-md border border-white/15 bg-white/5 transition hover:border-white/35"
       >
         {previewUrl ? (
           previewIsVideo ? (

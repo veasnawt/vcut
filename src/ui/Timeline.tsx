@@ -21,15 +21,16 @@ import { useIsMobile } from "./useIsMobile.ts";
 const TRACK_HEIGHT = 44;
 /** Mobile-only row height for a track with nothing on it — a full-height empty row (same height as
  *  a busy one, showing nothing) reads as broken/wasteful on a small screen where every row of height
- *  is precious. Tall enough to still comfortably fit the compact single-row header (drag handle, name,
- *  import, delete — see TrackHeader.tsx's own `compact` branch) at the same 26px touch-target floor
- *  used everywhere else in that file. Reverts to `TRACK_HEIGHT` the instant a clip actually lands on
- *  the track (or a voiceover recording is in progress on it — see `isTrackCompact`'s own comment). */
+ *  is precious. Tall enough to still comfortably fit TrackHeader.tsx's own single-row header (drag
+ *  handle, identity tile, name, menu) at the same 26px touch-target floor used everywhere else in that
+ *  file. Reverts to `TRACK_HEIGHT` the instant a clip actually lands on the track (or a voiceover
+ *  recording is in progress on it — see `isTrackCompact`'s own comment). */
 const EMPTY_TRACK_HEIGHT = 32;
-// Bumped from 156 — the first populated video track's own row now also hosts a real thumbnail-sized
-// Cover tile (see `TrackHeader.tsx`'s own `isCoverTrack`/`CoverControl.tsx`), which the original width
-// had no spare room for alongside the name and its existing Lock/Visibility/Mute buttons.
-const HEADER_WIDTH = 190;
+// TrackHeader.tsx's own row is deliberately compact now — a drag handle, one fixed-size identity
+// tile (the real Cover thumbnail on whichever track hosts it, a plain kind icon otherwise), the
+// track's name, and a single "⋮" menu for everything else — so this stays close to the original 156
+// rather than the wider value the row's old, busier layout briefly needed.
+const HEADER_WIDTH = 150;
 const RULER_HEIGHT = 26;
 /** Height of the "add a track" row below the last real one — deliberately shorter than either track
  *  height above: it's a single affordance, not a row of content, and shouldn't compete visually with
@@ -1022,7 +1023,6 @@ export function Timeline() {
                     key={track.id}
                     track={track}
                     height={isTrackCompact(track) ? EMPTY_TRACK_HEIGHT : TRACK_HEIGHT}
-                    isMobile={isMobile}
                     dropIndicator={trackDropIndicator?.trackId === track.id ? trackDropIndicator.position : null}
                     onDragOverRow={(trackId, position) => setTrackDropIndicator({ trackId, position })}
                     onDropRow={dropTrackOnRow}
@@ -1186,7 +1186,6 @@ export function Timeline() {
                       <TrackHeader
                         track={track}
                         height={isTrackCompact(track) ? EMPTY_TRACK_HEIGHT : TRACK_HEIGHT}
-                            isMobile={isMobile}
                         dropIndicator={trackDropIndicator?.trackId === track.id ? trackDropIndicator.position : null}
                         onDragOverRow={(trackId, position) => setTrackDropIndicator({ trackId, position })}
                         onDropRow={dropTrackOnRow}
