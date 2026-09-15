@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Delete, Lock, Menu, Music, Text as TextIcon, Unlock, Video, Visibility, VisibilityOff } from "@veasnawt/vicons";
 import { RemoveTrackCommand, SetTrackFlagCommand } from "../commands/index.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -77,7 +78,17 @@ function TrackActionsMenu({ track, anchorRef, onClose }: { track: Track; anchorR
   const anchor = anchorRef.current?.getBoundingClientRect();
   if (!anchor) return null;
 
-  return (
+  // Portaled straight to `document.body` — a real, reported bug without this: `TrackHeader` renders
+  // deep inside `Timeline.tsx`'s own scrolling/zooming hierarchy on mobile (an `absolute`-positioned
+  // per-row chip inside a horizontally-scrolling lane), and `position: fixed` only actually fixes to
+  // the VIEWPORT when no ancestor establishes its own containing block for fixed descendants (a
+  // `transform`, in particular — which that scrolling/zooming machinery relies on). Rendered inline,
+  // this menu was getting trapped inside that ancestor's own stacking context instead of truly
+  // overlaying the page, so a track's own clip label (from a LATER sibling in that same context) could
+  // still paint on top of it. Every other popup in this app that needs true page-level stacking
+  // (`TransitionPickerMenu`, `EffectsPickerMenu`, `ColorPickerMenu`) already does this — this was the
+  // one that didn't, being new.
+  return createPortal(
     <div
       ref={menuRef}
       role="menu"
@@ -194,7 +205,8 @@ function TrackActionsMenu({ track, anchorRef, onClose }: { track: Track; anchorR
           onCancel={() => setConfirmOpen(false)}
         />
       )}
-    </div>
+    </div>,
+    document.body
   );
 }
 
