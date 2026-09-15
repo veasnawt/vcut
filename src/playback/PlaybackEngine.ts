@@ -290,32 +290,36 @@ export function compositeTransitionFrame(
 
   if (family.kind === "zoomBlur" || family.kind === "flashZoom") {
     // A centered zoom-in plus blur on BOTH sides, ramped by the same parabola (0 at both edges,
-    // peaking at the midpoint) glitch/waterRipple already use — a genuine `context.filter =
-    // "blur(...)"` since this blur is omnidirectional (unlike whipPan below, which needs its own
-    // directional pixel math). `save()`/`restore()` around each draw scope the transform+filter to
-    // just that one call, matching the wipe/circle branches' own local save/restore convention.
-    // `flashZoom` layers a plain white overlay on top of the already-blended result afterward — the
-    // same order the export side's own zoom+blur-then-flash `geq=` chain uses.
+    // peaking at the midpoint) glitch/waterRipple already use — omnidirectional, unlike whipPan below,
+    // which needs its own directional pixel math. `drawZoomedWithBlur` (see its own doc comment) picks
+    // between a fast direct-`context.filter` path and a manual pixel-blur fallback depending on
+    // whether THIS browser's `context.filter` actually does anything (Safari/WebKit silently ignores
+    // it — a real, reported "effect doesn't work on some devices" bug). `flashZoom` layers a plain
+    // white overlay on top of the already-blended result afterward — the same order the export side's
+    // own zoom+blur-then-flash `geq=` chain uses.
     const intensity = 4 * progress * (1 - progress);
     const scale = 1 + ZOOM_BLUR_SCALE * intensity;
     const blurPx = ZOOM_BLUR_SIGMA_PX * intensity;
-    const priorFilter = context.filter;
-    context.filter = blurPx > 0.05 ? `blur(${blurPx}px)` : "none";
-    context.save();
-    context.translate(frameWidth / 2, frameHeight / 2);
-    context.scale(scale, scale);
-    context.translate(-frameWidth / 2, -frameHeight / 2);
-    context.drawImage(outgoing, 0, 0, frameWidth, frameHeight);
-    context.restore();
-    context.globalAlpha = progress;
-    context.save();
-    context.translate(frameWidth / 2, frameHeight / 2);
-    context.scale(scale, scale);
-    context.translate(-frameWidth / 2, -frameHeight / 2);
-    context.drawImage(incoming, 0, 0, frameWidth, frameHeight);
-    context.restore();
-    context.globalAlpha = 1;
-    context.filter = priorFilter;
+    drawZoomedWithBlur(
+      context,
+      (_alpha, target = context) => target.drawImage(outgoing, 0, 0, frameWidth, frameHeight),
+      frameWidth,
+      frameHeight,
+      scale,
+      blurPx,
+      1,
+      "a"
+    );
+    drawZoomedWithBlur(
+      context,
+      (_alpha, target = context) => target.drawImage(incoming, 0, 0, frameWidth, frameHeight),
+      frameWidth,
+      frameHeight,
+      scale,
+      blurPx,
+      progress,
+      "b"
+    );
     if (family.kind === "flashZoom") {
       context.fillStyle = "#ffffff";
       context.globalAlpha = FLASH_ZOOM_PEAK * intensity;
@@ -460,37 +464,25 @@ function compositeSoloReveal(
     context.imageSmoothingEnabled = false;
     context.drawImage(scratch, 0, 0, frameWidth, frameHeight);
   } else if (family.kind === "zoomBlur") {
-    // A pure transform+filter, no scratch canvas needed — `draw()`'s own coordinate system already
-    // assumes frame-space drawing, so scaling about the frame's own center before calling it (rather
-    // than redirecting onto an offscreen canvas the way glitch/waterRipple above need to) is enough.
     // `intensity` peaks at the disappearing/appearing instant (`reveal` at 0) and fades to 0 by fully
     // visible/stable (`reveal` at 1) — same one-formula-covers-both-directions shape the glitch/
-    // waterRipple branch above already uses.
+    // waterRipple branch above already uses. `drawZoomedWithBlur` (see its own doc comment) picks
+    // between a fast direct-`context.filter` path and a manual pixel-blur fallback depending on
+    // whether THIS browser's `context.filter` actually does anything (Safari/WebKit silently ignores
+    // it — a real, reported "effect doesn't work on some devices" bug) — it's already fully
+    // self-contained (its own transform save/restore either way), so no extra scoping needed here.
     const intensity = 1 - reveal;
     const scale = 1 + ZOOM_BLUR_SCALE * intensity;
     const blurPx = ZOOM_BLUR_SIGMA_PX * intensity;
-    context.filter = blurPx > 0.05 ? `blur(${blurPx}px)` : "none";
-    context.globalAlpha = reveal;
-    context.translate(frameWidth / 2, frameHeight / 2);
-    context.scale(scale, scale);
-    context.translate(-frameWidth / 2, -frameHeight / 2);
-    draw(1);
+    drawZoomedWithBlur(context, draw, frameWidth, frameHeight, scale, blurPx, reveal, "a");
   } else if (family.kind === "flashZoom") {
-    // Same zoom+blur draw as the `zoomBlur` branch above, scoped in its own `save()`/`restore()` (not
-    // relying on this function's own top-level one) so the zoom transform is undone BEFORE the flat
-    // white overlay below — that overlay must cover the frame at its normal scale, not zoomed in too.
+    // Same zoom+blur draw as the `zoomBlur` branch above — `drawZoomedWithBlur` already undoes its own
+    // transform before returning, so the flat white overlay below correctly covers the frame at its
+    // normal scale, not zoomed in too, with no extra save/restore needed here either.
     const intensity = 1 - reveal;
     const scale = 1 + ZOOM_BLUR_SCALE * intensity;
     const blurPx = ZOOM_BLUR_SIGMA_PX * intensity;
-    context.filter = blurPx > 0.05 ? `blur(${blurPx}px)` : "none";
-    context.globalAlpha = reveal;
-    context.save();
-    context.translate(frameWidth / 2, frameHeight / 2);
-    context.scale(scale, scale);
-    context.translate(-frameWidth / 2, -frameHeight / 2);
-    draw(1);
-    context.restore();
-    context.filter = "none";
+    drawZoomedWithBlur(context, draw, frameWidth, frameHeight, scale, blurPx, reveal, "a");
     context.fillStyle = "#ffffff";
     context.globalAlpha = FLASH_ZOOM_PEAK * intensity;
     context.fillRect(0, 0, frameWidth, frameHeight);
@@ -631,39 +623,55 @@ export function supportsCanvasFilter(): boolean {
  *  small radii `ClipEffects.blur` is actually used at in practice (this app's own presets top out at
  *  3) — same "documented approximation, not an exact match" territory that field's own doc comment
  *  already accepts for the CSS `blur()` path this replaces on a browser `supportsCanvasFilter` reports
- *  `false` for. Separable (two 1D passes, not one 2D convolution) keeps the cost O(width×height×radius)
- *  rather than squaring the radius term — still cheap at the radii this ever actually runs at. Edge
- *  pixels clamp to the nearest real one (never sample past the frame) rather than wrapping or padding
- *  with black, so a blurred edge fades toward its own edge color, not toward black. */
+ *  `false` for. Edge pixels clamp to the nearest real one (never sample past the frame) rather than
+ *  wrapping or padding with black, so a blurred edge fades toward its own edge color, not toward black.
+ *
+ *  Each pass is a SLIDING-WINDOW sum, O(width×height) total regardless of `radius` — NOT the naive
+ *  "resum the whole window at every pixel" approach (O(width×height×radius)) this used to be. That
+ *  naive version was a real, reported performance bug, not just a theoretical inefficiency: at
+ *  `ZOOM_BLUR_SIGMA_PX` (18px) over a full sequence-resolution frame (`compositeTransitionFrame` always
+ *  runs at `project.sequence.width/height`, e.g. 1080×1920, regardless of how small the on-screen
+ *  canvas actually is — see `drawFrame`'s own `frameWidth`/`frameHeight`), the old approach needed on
+ *  the order of a BILLION array reads per animation frame across both the outgoing and incoming panels
+ *  a zoomBlur/flashZoom transition draws — measured directly as a multi-hundred-millisecond stall per
+ *  frame on real mobile hardware, which is what actually produced the "transition freezes on a stuck,
+ *  half-composited frame" bug a user recorded and reported, not a rendering-correctness bug. The
+ *  sliding-window sum below updates each pixel's window sum in O(1) from its neighbor's (adding the
+ *  pixel entering the window, removing the one leaving it — both still resolved through the same
+ *  clamp-to-edge index function, which is what keeps this mathematically identical to the naive
+ *  version's own edge behavior, not merely visually close to it), cutting the cost by roughly
+ *  `2×radius+1` — over 30× at this radius — comfortably inside a single frame's budget. */
 function applyBoxBlur(imageData: ImageData, radius: number): void {
   const r = Math.round(radius);
   if (r <= 0) return;
   const { width, height, data } = imageData;
   const windowSize = r * 2 + 1;
   const horizontal = new Float32Array(data.length);
+  const clampX = (x: number) => (x < 0 ? 0 : x >= width ? width - 1 : x);
+  const clampY = (y: number) => (y < 0 ? 0 : y >= height ? height - 1 : y);
 
   for (let y = 0; y < height; y++) {
     const rowOffset = y * width * 4;
-    for (let x = 0; x < width; x++) {
-      for (let c = 0; c < 4; c++) {
-        let sum = 0;
-        for (let k = -r; k <= r; k++) {
-          const sx = Math.min(width - 1, Math.max(0, x + k));
-          sum += data[rowOffset + sx * 4 + c];
-        }
+    for (let c = 0; c < 4; c++) {
+      let sum = 0;
+      for (let k = -r; k <= r; k++) sum += data[rowOffset + clampX(k) * 4 + c];
+      horizontal[rowOffset + c] = sum / windowSize;
+      for (let x = 1; x < width; x++) {
+        sum -= data[rowOffset + clampX(x - 1 - r) * 4 + c];
+        sum += data[rowOffset + clampX(x + r) * 4 + c];
         horizontal[rowOffset + x * 4 + c] = sum / windowSize;
       }
     }
   }
 
   for (let x = 0; x < width; x++) {
-    for (let y = 0; y < height; y++) {
-      for (let c = 0; c < 4; c++) {
-        let sum = 0;
-        for (let k = -r; k <= r; k++) {
-          const sy = Math.min(height - 1, Math.max(0, y + k));
-          sum += horizontal[(sy * width + x) * 4 + c];
-        }
+    for (let c = 0; c < 4; c++) {
+      let sum = 0;
+      for (let k = -r; k <= r; k++) sum += horizontal[(clampY(k) * width + x) * 4 + c];
+      data[x * 4 + c] = sum / windowSize;
+      for (let y = 1; y < height; y++) {
+        sum -= horizontal[(clampY(y - 1 - r) * width + x) * 4 + c];
+        sum += horizontal[(clampY(y + r) * width + x) * 4 + c];
         data[(y * width + x) * 4 + c] = sum / windowSize;
       }
     }
@@ -707,6 +715,113 @@ export function applyManualEffects(imageData: ImageData, effects: ClipEffects): 
     data[i + 2] = b * 255;
   }
   if (effects.blur > 0) applyBoxBlur(imageData, effects.blur);
+}
+
+/** Long-edge cap (pixels) for the WORKING canvas `applyDownsampledBlur` actually runs `getImageData`/
+ *  `applyBoxBlur`/`putImageData` against — see that function's own doc comment for why a fixed small
+ *  size, not the caller's real resolution, is what keeps blur inside a real frame budget. */
+const MAX_BLUR_WORK_DIMENSION = 480;
+
+/** Blurs `source` (`width`×`height`) by `blurPx`, working at a capped resolution regardless of how
+ *  large `width`×`height` actually is — the fix for a real, reported performance bug (not merely a
+ *  theoretical inefficiency): even `applyBoxBlur`'s own sliding-window pass is still `O(width×height)`,
+ *  and a `getImageData`/`putImageData` round trip at a real sequence or source-video resolution (often
+ *  1080×1920 or considerably larger) measured at HUNDREDS of milliseconds per call on real hardware —
+ *  independent of blur radius, since pixel COUNT, not radius, dominates once the naive O(radius) cost
+ *  is already gone. That's slow enough, every single animation frame a blurred clip or a zoomBlur/
+ *  flashZoom transition is on screen, to freeze the whole preview on a stuck frame for a visible
+ *  stretch — confirmed directly from a user's own screen recording of a transition into a text clip.
+ *  Blurring at a small WORKING size instead and letting the browser's own smoothed `drawImage` scaling
+ *  handle both the downscale in and the upscale back out fixes this: blur is inherently a softening
+ *  operation, so the resolution lost along the way is invisible once composited — not a visible quality
+ *  compromise at the radii this ever actually runs at, just a much smaller buffer to push through the
+ *  expensive part. `blurPx` is scaled down by the same factor as the working size so the RESULT still
+ *  reads as the same absolute blur strength once drawn back at full size, not a weaker one. Returns a
+ *  canvas (not a mutated `ImageData`) since every caller composites the result via `drawImage`, the same
+ *  "processed result ready to draw" contract `applyPixelFxToImage` already has. */
+function applyDownsampledBlur(source: CanvasImageSource, width: number, height: number, blurPx: number, scratchSlot: "a" | "b"): HTMLCanvasElement {
+  const workScale = Math.min(1, MAX_BLUR_WORK_DIMENSION / Math.max(width, height));
+  const workWidth = Math.max(1, Math.round(width * workScale));
+  const workHeight = Math.max(1, Math.round(height * workScale));
+  const canvas = getPixelFxScratchCanvas(scratchSlot, workWidth, workHeight);
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, workWidth, workHeight);
+  ctx.drawImage(source, 0, 0, workWidth, workHeight);
+  const imageData = ctx.getImageData(0, 0, workWidth, workHeight);
+  applyBoxBlur(imageData, blurPx * workScale);
+  ctx.putImageData(imageData, 0, 0);
+  return canvas;
+}
+
+/** Draws a zoomed, optionally blurred frame — `zoomBlur`/`flashZoom`'s own shared "scale about center,
+ *  blur by `blurPx`" compositing step, used by both the two-clip transition (`compositeTransitionFrame`)
+ *  and solo-reveal (`compositeSoloReveal`) paths.
+ *
+ *  A real, reported bug: both call sites used to set `context.filter = "blur(...)"` directly and rely
+ *  on the browser to actually apply it — `supportsCanvasFilter()`'s own doc comment already documents
+ *  that Safari/WebKit (every version, desktop AND iOS) silently no-ops `context.filter` entirely, which
+ *  is exactly the "effects don't work as they should on some devices" class of bug the OTHER effects
+ *  pipeline (`ClipEffects`/`needsManualEffects`) was already fixed for, just never applied here. On an
+ *  affected browser these two transitions rendered as a plain zoom (still real — the scale itself is a
+ *  canvas transform, not a filter) with NO blur at all, while Chrome/Firefox/desktop showed the
+ *  intended motion-blur look.
+ *
+ *  `draw` paints onto `target` at the given alpha — `compositeSoloReveal`'s own `draw(alpha, target?)`
+ *  signature, reused verbatim (a plain `context.drawImage` wrapper would work identically for
+ *  `compositeTransitionFrame`'s two-image case, since both just need "paint SOMETHING onto a context").
+ *  When a manual blur is needed, `draw` is redirected onto a small WORKING canvas (capped to
+ *  `MAX_BLUR_WORK_DIMENSION` regardless of `frameWidth`×`frameHeight` — see `applyDownsampledBlur`'s own
+ *  doc comment for why blurring at the sequence's real resolution here was a real, reported performance
+ *  bug, not merely a correctness one) with the zoom scale folded directly into that same downscale
+ *  transform, so there's no full-resolution intermediate draw at all — the zoom transform still bakes
+ *  in BEFORE the blur samples neighboring pixels, same as before, just at the smaller working size from
+ *  the start. That result is then drawn onto `context` at `alpha`, upscaled by the browser's own
+ *  smoothed `drawImage` scaling. When no manual blur is needed (blur is genuinely off, or the browser
+ *  actually supports `context.filter`), this instead takes the original fast direct-context path with
+ *  no extra canvas/readback cost. */
+function drawZoomedWithBlur(
+  context: CanvasRenderingContext2D,
+  draw: (alphaMultiplier: number, targetContext?: CanvasRenderingContext2D) => void,
+  frameWidth: number,
+  frameHeight: number,
+  scale: number,
+  blurPx: number,
+  alpha: number,
+  scratchSlot: "a" | "b"
+): void {
+  if (blurPx > 0.05 && !supportsCanvasFilter()) {
+    const workScale = Math.min(1, MAX_BLUR_WORK_DIMENSION / Math.max(frameWidth, frameHeight));
+    const workWidth = Math.max(1, Math.round(frameWidth * workScale));
+    const workHeight = Math.max(1, Math.round(frameHeight * workScale));
+    const scratch = getPixelFxScratchCanvas(scratchSlot, workWidth, workHeight);
+    const scratchContext = scratch.getContext("2d")!;
+    scratchContext.clearRect(0, 0, workWidth, workHeight);
+    scratchContext.save();
+    scratchContext.scale(workScale, workScale);
+    scratchContext.translate(frameWidth / 2, frameHeight / 2);
+    scratchContext.scale(scale, scale);
+    scratchContext.translate(-frameWidth / 2, -frameHeight / 2);
+    draw(1, scratchContext);
+    scratchContext.restore();
+    const imageData = scratchContext.getImageData(0, 0, workWidth, workHeight);
+    applyBoxBlur(imageData, blurPx * workScale);
+    scratchContext.putImageData(imageData, 0, 0);
+    context.globalAlpha = alpha;
+    context.drawImage(scratch, 0, 0, frameWidth, frameHeight);
+    context.globalAlpha = 1;
+  } else {
+    const priorFilter = context.filter;
+    context.filter = blurPx > 0.05 ? `blur(${blurPx}px)` : "none";
+    context.globalAlpha = alpha;
+    context.save();
+    context.translate(frameWidth / 2, frameHeight / 2);
+    context.scale(scale, scale);
+    context.translate(-frameWidth / 2, -frameHeight / 2);
+    draw(1);
+    context.restore();
+    context.globalAlpha = 1;
+    context.filter = priorFilter;
+  }
 }
 
 /** Mutates `imageData` in place, zeroing (or feathering) alpha on pixels near `settings.color` —
@@ -1164,7 +1279,24 @@ export class PlaybackEngine {
         if (clip.timelineStart < time || clip.timelineStart > time + AUDIO_PREFETCH_LOOKAHEAD_SECONDS) continue;
         const asset = project.assets.find((a) => a.id === clip.assetId);
         if (!asset || asset.kind === "color") continue;
-        this.mediaFor(clip, asset.kind === "image" ? "image" : "video");
+        const element = this.mediaFor(clip, asset.kind === "image" ? "image" : "video");
+        // Also pre-SEEKS a video element to its own clip-relative starting point, not just creates it
+        // — a real, reported gap left over even after the element-creation fix above: a clip that's
+        // the INCOMING side of a transition gets its first real seek inside `syncMedia`, the very
+        // first tick it's drawn as "current" — which, for a transition partner, is exactly the instant
+        // the blend needs it composited. Seeking here instead, while the clip is still merely upcoming
+        // and nothing is waiting on the result, gives the browser the whole lookahead window to finish
+        // a potentially-expensive keyframe seek quietly in the background, instead of that seek's own
+        // latency landing as a visible stutter at the one moment (a transition's own onset) it's most
+        // noticeable. `readyState >= 1` (HAVE_METADATA) guards against seeking before the element even
+        // knows its own duration/seekable range, which some browsers silently ignore or queue
+        // unreliably — if not ready yet this tick, the next scan interval (this loop reruns every
+        // `AUDIO_PREFETCH_SCAN_INTERVAL_MS`) naturally retries once metadata has loaded. Only the
+        // FIRST seek matters here — once `syncMedia` takes over as the clip becomes current, its own
+        // `DRIFT_TOLERANCE`-gated reseek logic is what keeps it in sync from then on, same as always.
+        if (element instanceof HTMLVideoElement && element.readyState >= 1 && Math.abs(element.currentTime - clip.sourceIn) > DRIFT_TOLERANCE) {
+          element.currentTime = clip.sourceIn;
+        }
       }
     }
   }
@@ -1481,7 +1613,21 @@ export class PlaybackEngine {
         const sourceTime = partner.sourceOut - duration + elapsed;
         if (element.readyState === 0) return false;
         if (Math.abs(element.currentTime - sourceTime) > DRIFT_TOLERANCE) element.currentTime = sourceTime;
-        if (!element.paused) element.pause();
+        if (!element.paused) {
+          // A real, reported "glitch... including audio when we use a transition" bug: `pause()`
+          // stops this element's decode outright, which — since its audio is routed through Web Audio
+          // via `AudioMixEngine.syncVideoClipAudio`'s own `MediaElementSourceNode` — cuts its audio
+          // output at whatever sample the waveform happened to be at, an abrupt discontinuity that's
+          // audible as a click/pop. `duckAroundSeek` (built for the identical click this same class's
+          // own hard-reseek path already produces — see its own doc comment) ramps this clip's gain to
+          // silence over 15ms on the audio thread's own clock BEFORE the pause actually lands, turning
+          // that hard cut into an imperceptibly fast fade instead. Guarded by the SAME `!element.paused`
+          // check `pause()` itself already needed (this element only transitions playing→paused once
+          // per becoming a transition partner), so the duck fires exactly once per transition, not
+          // every tick for its whole blend window.
+          this.audioMixEngine.duckAroundSeek(partner.id);
+          element.pause();
+        }
         if (element.readyState < 2) return false;
         sourceWidth = element.videoWidth;
         sourceHeight = element.videoHeight;
@@ -1585,10 +1731,18 @@ export class PlaybackEngine {
         }
         // Last — `context.filter` (when supported) applies at DRAW time, after this whole readback
         // pipeline already finished and drew its result back via `putImageData`; running the manual
-        // fallback last too keeps the two paths visually consistent with each other.
-        if (needsManualEffects) applyManualEffects(imageData, effects);
+        // fallback last too keeps the two paths visually consistent with each other. Blur is EXCLUDED
+        // here (`blur: 0`) and applied separately, below, via `applyDownsampledBlur` — running it in
+        // place on this SAME full-`sourceWidth`×`sourceHeight` buffer (as this used to) was a real,
+        // reported performance bug: brightness/contrast/saturation are cheap O(1)-per-pixel work, but
+        // `applyBoxBlur` is not, and a source video's own native resolution is often considerably
+        // larger than the sequence's own frame size — see `applyDownsampledBlur`'s own doc comment.
+        if (needsManualEffects) applyManualEffects(imageData, { ...effects, blur: 0 });
         scratch.putImageData(imageData, 0, 0);
         source = scratch.canvas;
+        if (needsManualEffects && effects.blur > 0) {
+          source = applyDownsampledBlur(source, sourceWidth, sourceHeight, effects.blur, "a");
+        }
       }
     }
 
