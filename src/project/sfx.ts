@@ -226,6 +226,8 @@ export const SFX_REGISTRY: SfxDefinition[] = [
   { id: "uff", label: "Uff", category: "Meme", file: "uff.mp3" },
   { id: "uiiiiiiii", label: "Uiiiiiiii", category: "Meme", file: "uiiiiiiii.mp3" },
   { id: "vine-boom", label: "Vine Boom", category: "Meme", file: "vine-boom.mp3" },
+  { id: "vine-boom-bass-boost", label: "Vine Boom (Bass Boost)", category: "Meme", file: "vine-boom-bass-boost.mp3" },
+  { id: "cinematic-boom-distorted", label: "Cinematic Boom (Distorted)", category: "Meme", file: "cinematic-boom-distorted.mp3" },
   { id: "vlog-oh-no", label: "Oh No (Vlog)", category: "Meme", file: "vlog-oh-no.mp3" },
   { id: "wait-what-the-hell", label: "Wait, What the Hell? (Legend)", category: "Meme", file: "wait-what-the-hell.mp3" },
   { id: "what-wtf", label: "What / WTF", category: "Meme", file: "what-wtf.mp3" },
