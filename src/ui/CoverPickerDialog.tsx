@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Add, Close } from "@veasnawt/vicons";
 import { filmstripUrl, mediaUrl, sfxAssetUrl, thumbnailUrl } from "../api/client.ts";
 import { SetExportCoverCommand } from "../commands/index.ts";
@@ -31,7 +32,18 @@ type Tab = "video" | "album";
  *  one-shot and bounded, not a concern for an occasional "pick a cover" flow. Scrub position lives in a
  *  plain ref (`scrubTimeRef`), read by the engine's `getPlayhead` — NOT the shared store's real
  *  `playhead` — so scrubbing here never moves the actual editor's own position, and there's nothing to
- *  restore on close either. */
+ *  restore on close either.
+ *
+ *  Portaled straight to `document.body` — a real, reported bug without this: `CoverControl` (and this
+ *  dialog it opens) renders deep inside `Timeline.tsx`'s own scrolling/zooming hierarchy on mobile, and
+ *  `position: fixed` only actually fixes to the VIEWPORT when no ancestor establishes its own
+ *  containing block for fixed descendants (a `transform`, in particular — which that scrolling/zooming
+ *  machinery relies on). Rendered inline, this dialog's own `fixed inset-0` got trapped inside that
+ *  ancestor's box instead of truly covering the page — confirmed live: the underlying timeline's own
+ *  track rows painted THROUGH it, and the big preview canvas rendered solid black (almost certainly
+ *  clipped to a nonsensical size by the same containment, not a separate bug in the engine itself).
+ *  `TrackHeader.tsx`'s own `TrackActionsMenu` had the identical bug fixed the same way shortly before
+ *  this — this was the other place that needed it. */
 export function CoverPickerDialog({ onClose }: { onClose: () => void }) {
   const t = useTranslation();
   const project = useEditorStore((s) => s.project);
@@ -166,7 +178,7 @@ export function CoverPickerDialog({ onClose }: { onClose: () => void }) {
 
   const imageUrl = imageAsset ? thumbnailUrl(projectId, imageAsset) : null;
 
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-50 flex flex-col bg-[#0a0c10] text-white">
       <div className="flex shrink-0 items-center justify-between px-4 py-3">
         <button onClick={onClose} aria-label={t("Close")} className="rounded p-1.5 text-white/70 transition hover:bg-white/10 hover:text-white">
@@ -289,6 +301,7 @@ export function CoverPickerDialog({ onClose }: { onClose: () => void }) {
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
