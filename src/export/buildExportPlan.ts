@@ -2060,32 +2060,27 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // long as `enable=` stays open, indistinguishable on screen from a "real" full-duration source for
       // content that never changes.
       //
-      // CORRECTNESS over padding, settled after two live-hosted-export experiments (see git history on
-      // this line — a flat "always 1.0 second" duration, then `Math.max(realDuration, 0.5)`) both
-      // reproduced the SAME real, reported symptom on a fast word-highlight clip (many short, back-to-
-      // back windows): the exported video's text VISIBLY BLINKS — appears, disappears, reappears —
-      // instead of staying continuously on screen with only its highlighted word changing. Confirmed on
-      // a real project with an 8-window/~0.2s-per-window clip that ANY artificial padding beyond a
-      // window's own real duration causes this — several NEIGHBORING windows' own decoders end up
-      // "alive" (not yet at EOF) at the same real wall-clock moment, and the actual exported video shows
-      // a real BLANK gap mid-clip even though every `enable=between(...)` gate in the filter graph was
-      // independently confirmed mathematically gap-free (i.e. the padding was corrupting the render, not
-      // the gating). The window's own bare REAL duration removes this entirely — confirmed gap-free —
-      // which is what this line uses now, unconditionally.
-      //
-      // This reopens the ORIGINAL memory-ceiling failure this padding was added to guard against (a
-      // real, reported hosted OOM on an extreme project: 36 Khmer caption clips, ~190 window inputs) —
-      // a real, known, but narrower regression: it only bites an unusually large multi-caption project
-      // on the hosted tier, not an ordinary export, whereas the padding's own visual bug hit EVERY
-      // word-highlight export with fast-changing words. Between "rare capacity ceiling on an extreme
-      // project" and "visibly broken text on a normal one", the latter is strictly worse to ship with.
-      // The actual fix for the memory ceiling is what this comment already pointed to before either
-      // padding experiment: cut the NUMBER of separate per-window FFmpeg inputs a fast word-highlight
-      // clip opens in the first place (batching several windows' images into one input, e.g. via a
-      // concat-demuxer slideshow), not tuning this one duration value — that's real filter-graph surgery
-      // deserving its own dedicated, live-hosted-verified change, not a speculative third duration guess.
+      // MEMORY SAFETY over cosmetic smoothness — THREE configurations of this one line have now been
+      // live-tested against real hosted exports (see git history), and none is free of a real problem:
+      //   - The window's own bare REAL duration (no padding at all — this line's immediately prior
+      //     value) is confirmed GAP-FREE, but on a real, caption-dense project (many short Khmer
+      //     word-highlight clips across several stacked caption tracks) it reliably OOM-kills the
+      //     hosted FFmpeg process outright (`SIGKILL`) — a hard export FAILURE, not a cosmetic issue.
+      //   - `Math.max(realDuration, 0.5)` (an intermediate attempt) still let neighboring windows'
+      //     decoders overlap enough to visibly blink the text on/off on a fast word-highlight clip.
+      //   - A flat "always 1.0 second" duration for every non-fading window (this line's value again,
+      //     now restored) is the one CONFIRMED to reliably avoid this container's memory ceiling, at the
+      //     cost of a real but narrower ~0.2s blank gap on an unusually fast clip (many short, back-to-
+      //     back windows) — a visible but non-fatal cosmetic issue, not a failed export.
+      // Between "some exports outright fail" and "a fast word-highlight clip has an occasional small
+      // gap", the latter is the only one of the three that's actually safe to ship. The real fix for
+      // BOTH remaining problems (the gap AND the memory ceiling) is the same: cut the NUMBER of separate
+      // per-window FFmpeg inputs a fast word-highlight clip opens in the first place (batching several
+      // windows' images into one input, e.g. via a concat-demuxer slideshow) instead of tuning this one
+      // duration value — real filter-graph surgery deserving its own dedicated, live-hosted-verified
+      // change, not a fourth speculative duration guess made blind (no local FFmpeg to test against).
       const loopFramerate = hasFade ? fps : 1;
-      const loopDuration = t(w.endOffset - w.startOffset);
+      const loopDuration = hasFade ? t(w.endOffset - w.startOffset) : "1.000000";
       inputs.push("-itsoffset", t(absStart), "-loop", "1", "-framerate", String(loopFramerate), "-t", loopDuration, "-i", w.imagePath);
       const winLabel = `${outputLabel}_win${i}`;
 
