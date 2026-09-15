@@ -2060,27 +2060,27 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // long as `enable=` stays open, indistinguishable on screen from a "real" full-duration source for
       // content that never changes.
       //
-      // MEMORY SAFETY over cosmetic smoothness — THREE configurations of this one line have now been
-      // live-tested against real hosted exports (see git history), and none is free of a real problem:
-      //   - The window's own bare REAL duration (no padding at all — this line's immediately prior
-      //     value) is confirmed GAP-FREE, but on a real, caption-dense project (many short Khmer
-      //     word-highlight clips across several stacked caption tracks) it reliably OOM-kills the
-      //     hosted FFmpeg process outright (`SIGKILL`) — a hard export FAILURE, not a cosmetic issue.
-      //   - `Math.max(realDuration, 0.5)` (an intermediate attempt) still let neighboring windows'
-      //     decoders overlap enough to visibly blink the text on/off on a fast word-highlight clip.
-      //   - A flat "always 1.0 second" duration for every non-fading window (this line's value again,
-      //     now restored) is the one CONFIRMED to reliably avoid this container's memory ceiling, at the
-      //     cost of a real but narrower ~0.2s blank gap on an unusually fast clip (many short, back-to-
-      //     back windows) — a visible but non-fatal cosmetic issue, not a failed export.
-      // Between "some exports outright fail" and "a fast word-highlight clip has an occasional small
-      // gap", the latter is the only one of the three that's actually safe to ship. The real fix for
-      // BOTH remaining problems (the gap AND the memory ceiling) is the same: cut the NUMBER of separate
-      // per-window FFmpeg inputs a fast word-highlight clip opens in the first place (batching several
-      // windows' images into one input, e.g. via a concat-demuxer slideshow) instead of tuning this one
-      // duration value — real filter-graph surgery deserving its own dedicated, live-hosted-verified
-      // change, not a fourth speculative duration guess made blind (no local FFmpeg to test against).
+      // CORRECTNESS, now that there's real memory headroom for it. Three configurations of this one
+      // line have been live-tested against real hosted exports (see git history):
+      //   - The window's own bare REAL duration (no padding at all) is confirmed GAP-FREE — text stays
+      //     continuously on screen with only the highlighted word changing, exactly matching preview —
+      //     but on a caption-dense project (many short Khmer word-highlight clips across several stacked
+      //     caption tracks) it pushed this container's memory usage close enough to its ceiling that, on
+      //     the 8GB Hobby-plan limit this app ran on at the time, it reliably OOM-killed FFmpeg outright
+      //     (`SIGKILL`).
+      //   - `Math.max(realDuration, 0.5)` and a flat "always 1.0 second" duration (two padding attempts
+      //     tried in between) both avoided that crash, but at the cost of visibly blinking the text
+      //     on/off on a fast word-highlight clip — neighboring windows' own decoders ending up "alive"
+      //     at the same wall-clock moment corrupts the render, not just wastes memory.
+      // The project has since moved to Railway's Pro plan (24GB memory limit, 3x the old 8GB ceiling)
+      // specifically to cover this — the peak memory this path was hitting (~7-8GB) now sits well under
+      // half the new ceiling, so the bare real duration is safe again without trading away correctness.
+      // If a future project's own caption density ever pushes this close to 24GB too, the real fix is
+      // still what it always was: cut the NUMBER of separate per-window FFmpeg inputs a fast
+      // word-highlight clip opens (batching several windows' images into one input, e.g. via a
+      // concat-demuxer slideshow) rather than reaching for a padding value again.
       const loopFramerate = hasFade ? fps : 1;
-      const loopDuration = hasFade ? t(w.endOffset - w.startOffset) : "1.000000";
+      const loopDuration = t(w.endOffset - w.startOffset);
       inputs.push("-itsoffset", t(absStart), "-loop", "1", "-framerate", String(loopFramerate), "-t", loopDuration, "-i", w.imagePath);
       const winLabel = `${outputLabel}_win${i}`;
 
