@@ -799,7 +799,32 @@ export interface ExportSettings {
   /** H.264 CRF — lower is higher quality. 18 is visually near-lossless, 23 is FFmpeg's default. */
   crf: number;
   audioBitrateKbps: number;
+  /** What to embed as the exported file's own attached cover/poster image (an `attached_pic`-
+   *  disposition stream in the MP4 container — the same mechanism iTunes-style cover art uses,
+   *  recognized by QuickTime/Photos/most players/messaging apps as the file's preview without needing
+   *  to decode/seek into the real video stream at all). `null`/absent means no cover is embedded — the
+   *  export behaves exactly as it always has, a player falls back to its own default (usually the real
+   *  first frame).
+   *
+   *  Two independent ways to pick one, hence the discriminated union rather than two optional fields
+   *  (which would leave "both set" an ambiguous, unvalidated state to reason about at every consumer):
+   *  - `{ kind: "frame", time }`: a timeline-seconds position, TIMELINE (not clip-local) time, matching
+   *    `playhead`'s own space — set by scrubbing the whole sequence via the track-header cover control
+   *    (`Timeline.tsx`). `export/route.ts`'s post-encode step extracts this exact frame FROM the
+   *    already-composited main output (not a raw source clip) so the cover always matches whatever
+   *    crop/overlay/text/color-grading the real export produced.
+   *  - `{ kind: "image", assetId }`: an `Asset.id` for a separately-uploaded still image (imported via
+   *    the ordinary `importFiles` pipeline with `hiddenFromLibrary: true`, same treatment a voiceover
+   *    recording gets — it's a real project asset, just not one that clutters the Media Library) —
+   *    `export/route.ts` muxes that file in directly, no frame extraction needed.
+   *  Deliberately NOT validated against `project.assets` here — same "resolve to a real file only at
+   *  use time, degrade gracefully if it's gone" reasoning `Clip.lutId` documents; an `image` cover whose
+   *  asset was since deleted just falls back to no-cover-embedded at export time. */
+  cover?: CoverSelection | null;
 }
+
+/** See `ExportSettings.cover`'s own doc comment. */
+export type CoverSelection = { kind: "frame"; time: number } | { kind: "image"; assetId: string };
 
 /** A `.cube` 3D LUT imported into the project's own reusable library — "My LUTs" in the Inspector's
  *  LUT picker, referenced by `Clip.lutId`. Same id/name/relPath/importedAt shape `Asset` itself uses

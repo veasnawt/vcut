@@ -10,34 +10,52 @@ const TILE_HEIGHT = 54;
  *  thumbnail that's supposed to demonstrate smooth motion shouldn't itself stutter on every loop. */
 const LOOP_MS = 1400;
 
-const OUTGOING_COLOR = "#f59e0b";
-const INCOMING_COLOR = "#38bdf8";
-
-/** Builds one flat placeholder panel — a solid color plus a small centered dot, so a `slide` (the
- *  whole panel translating) reads visibly differently from a `wipe` (the panel staying put while a
- *  boundary sweeps across it) even though both are, geometrically, just two colored rectangles. */
-function solidPanel(color: string): HTMLCanvasElement {
+/** Builds one panel canvas — plain black, or (once the real thumbnail has loaded) that image
+ *  cover-fit into the tile, same crop math as CSS `object-fit: cover`. Black is both the "no adjacent
+ *  clip on this side" case AND the "still loading"/"adjacent clip has no thumbnail at all" case
+ *  (a text/color-matte neighbor, or a video whose thumbnail hasn't generated yet) — deliberately not
+ *  distinguished from each other: either way there's nothing real yet to show, and a real, reported
+ *  ask was specifically "show black" for exactly this, not a placeholder color standing in for it. */
+function buildPanel(image: HTMLImageElement | null): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = TILE_WIDTH;
   canvas.height = TILE_HEIGHT;
   const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = color;
+  ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, TILE_WIDTH, TILE_HEIGHT);
-  ctx.fillStyle = "rgba(255,255,255,0.85)";
-  ctx.beginPath();
-  ctx.arc(TILE_WIDTH / 2, TILE_HEIGHT / 2, 5, 0, Math.PI * 2);
-  ctx.fill();
+  if (image && image.naturalWidth > 0 && image.naturalHeight > 0) {
+    const scale = Math.max(TILE_WIDTH / image.naturalWidth, TILE_HEIGHT / image.naturalHeight);
+    const drawWidth = image.naturalWidth * scale;
+    const drawHeight = image.naturalHeight * scale;
+    ctx.drawImage(image, (TILE_WIDTH - drawWidth) / 2, (TILE_HEIGHT - drawHeight) / 2, drawWidth, drawHeight);
+  }
   return canvas;
 }
 
-// Built once and reused by every tile — every instance draws the identical two placeholder panels,
-// only `type` and the animated progress differ, so there's nothing tile-specific to regenerate.
-let outgoingPanel: HTMLCanvasElement | null = null;
-let incomingPanel: HTMLCanvasElement | null = null;
-function panels(): [HTMLCanvasElement, HTMLCanvasElement] {
-  outgoingPanel ??= solidPanel(OUTGOING_COLOR);
-  incomingPanel ??= solidPanel(INCOMING_COLOR);
-  return [outgoingPanel, incomingPanel];
+/** Loads `url` as an `HTMLImageElement`, `null` while there's nothing to load or it hasn't resolved
+ *  yet — a real, reported request: these tiles used to show two flat placeholder colors regardless of
+ *  what was actually on the timeline, which didn't help distinguish (say) two different wipe tiles from
+ *  each other any more than real footage would, AND misled about what the transition will actually look
+ *  like against this project's own content. `cancelled` guards against a slow-loading image finishing
+ *  after `url` has already changed (a fast re-hover onto a different clip) from stomping a newer load. */
+function useThumbnailImage(url: string | null): HTMLImageElement | null {
+  const [image, setImage] = useState<HTMLImageElement | null>(null);
+  useEffect(() => {
+    if (!url) {
+      setImage(null);
+      return;
+    }
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => {
+      if (!cancelled) setImage(img);
+    };
+    img.src = url;
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+  return image;
 }
 
 /** How a resting (unhovered) tile is drawn: paused at the MIDPOINT of the sweep, not progress 0 — a
@@ -47,15 +65,30 @@ function panels(): [HTMLCanvasElement, HTMLCanvasElement] {
 const REST_PROGRESS = 0.5;
 
 /** One thumbnail in the transition picker grid — renders `type` through the exact same
- *  `compositeTransitionFrame` a real clip's canvas preview uses, just fed two flat placeholder panels
- *  instead of a real outgoing/incoming clip frame. A faithful geometry preview (the real wipe edge,
- *  the real slide direction, the real circle center), not a decorative stand-in. Only animates on
- *  hover — sitting at `REST_PROGRESS` otherwise — so a 13-tile grid isn't running 13 concurrent rAF
- *  loops the instant it opens; a static frame per idle tile is plenty until the user actually points
- *  at one. */
-export function TransitionPreviewTile({ type }: { type: TransitionType }) {
+ *  `compositeTransitionFrame` a real clip's canvas preview uses, fed the REAL outgoing/incoming clip's
+ *  own thumbnail (or plain black when that side has no adjacent clip, or the clip has no thumbnail —
+ *  see `buildPanel`'s own comment) instead of a generic placeholder. A faithful, project-specific
+ *  preview (the real wipe edge, the real slide direction, AND what will actually be on each side of
+ *  it), not a decorative stand-in. Only animates on hover — sitting at `REST_PROGRESS` otherwise — so
+ *  a 13-tile grid isn't running 13 concurrent rAF loops the instant it opens; a static frame per idle
+ *  tile is plenty until the user actually points at one. */
+export function TransitionPreviewTile({
+  type,
+  outgoingThumbnailUrl,
+  incomingThumbnailUrl,
+}: {
+  type: TransitionType;
+  /** The clip content on the FADING-OUT side — the previous clip's thumbnail for an "In" preview, or
+   *  the clip being edited's own thumbnail for an "Out" preview. `null` shows plain black. */
+  outgoingThumbnailUrl: string | null;
+  /** The clip content on the FADING-IN side — the clip being edited's own thumbnail for an "In"
+   *  preview, or the next clip's thumbnail for an "Out" preview. `null` shows plain black. */
+  incomingThumbnailUrl: string | null;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hovered, setHovered] = useState(false);
+  const outgoingImage = useThumbnailImage(outgoingThumbnailUrl);
+  const incomingImage = useThumbnailImage(incomingThumbnailUrl);
 
   // Sizing/DPR setup only — runs once per mount, independent of `hovered` toggling below, so hovering
   // on and off doesn't repeatedly reset the canvas's own backing store for no reason.
@@ -71,7 +104,8 @@ export function TransitionPreviewTile({ type }: { type: TransitionType }) {
   useEffect(() => {
     const ctx = canvasRef.current?.getContext("2d");
     if (!ctx) return;
-    const [outgoing, incoming] = panels();
+    const outgoing = buildPanel(outgoingImage);
+    const incoming = buildPanel(incomingImage);
 
     function paint(progress: number) {
       ctx!.clearRect(0, 0, TILE_WIDTH, TILE_HEIGHT);
@@ -92,7 +126,7 @@ export function TransitionPreviewTile({ type }: { type: TransitionType }) {
     }
     frameId = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(frameId);
-  }, [type, hovered]);
+  }, [type, hovered, outgoingImage, incomingImage]);
 
   return (
     <canvas

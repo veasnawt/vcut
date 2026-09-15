@@ -35,6 +35,9 @@ export function TransitionPickerMenu({
   onChangeIn,
   onChangeOut,
   onClose,
+  selectedThumbnailUrl,
+  predecessorThumbnailUrl,
+  successorThumbnailUrl,
 }: {
   anchorRef: React.RefObject<HTMLElement | null>;
   /** An audio clip's transition is always a crossfade — see `buildAudioTrackStream`'s own comment on
@@ -54,6 +57,15 @@ export function TransitionPickerMenu({
   onChangeIn: (type: TransitionType | null) => void;
   onChangeOut: (type: TransitionType | null) => void;
   onClose: () => void;
+  /** Real thumbnails for `TransitionPreviewTile`'s two panels (`null` when there's nothing to show —
+   *  see that component's own `buildPanel` comment for why that renders as plain black rather than a
+   *  placeholder color). `selected` is the clip being edited itself — always the INCOMING side for the
+   *  "In" tab and the OUTGOING side for the "Out" tab; `predecessor`/`successor` are its neighbors on
+   *  the same track, resolved by the caller (`VCutApp.tsx`, via `findTransitionCandidate`/
+   *  `findTransitionSuccessorCandidate`) since that's where `project`/`track` already live. */
+  selectedThumbnailUrl: string | null;
+  predecessorThumbnailUrl: string | null;
+  successorThumbnailUrl: string | null;
 }) {
   const t = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
@@ -82,6 +94,10 @@ export function TransitionPickerMenu({
   const { bottom, left } = popupPosition(anchor);
   const activeType = mode === "in" ? activeIn : activeOut;
   const onChange = mode === "in" ? onChangeIn : onChangeOut;
+  // "In" blends FROM the predecessor INTO the clip being edited; "Out" blends FROM the clip being
+  // edited INTO the successor — see `TransitionPreviewTile.tsx`'s own prop doc comments.
+  const outgoingThumbnailUrl = mode === "in" ? predecessorThumbnailUrl : selectedThumbnailUrl;
+  const incomingThumbnailUrl = mode === "in" ? selectedThumbnailUrl : successorThumbnailUrl;
   const gridOptions = isAudioTrack
     ? (["crossfade"] as TransitionType[])
     : isTextTrack
@@ -143,7 +159,7 @@ export function TransitionPickerMenu({
               activeType === type ? "bg-sky-500/20" : ""
             }`}
           >
-            <TransitionPreviewTile type={type} />
+            <TransitionPreviewTile type={type} outgoingThumbnailUrl={outgoingThumbnailUrl} incomingThumbnailUrl={incomingThumbnailUrl} />
             <span className="text-[10px] text-white/70">{t(TRANSITION_TYPE_LABEL[type])}</span>
           </button>
         ))}

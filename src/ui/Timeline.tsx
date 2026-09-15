@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Add } from "@veasnawt/vicons";
 import { thumbnailUrl } from "../api/client.ts";
-import { AddTrackCommand, ReorderTrackCommand } from "../commands/index.ts";
+import { AddTrackCommand, ReorderTrackCommand, SetExportCoverCommand } from "../commands/index.ts";
 import { OUTRO_DURATION_SECONDS } from "../export/outro.ts";
 import { sequenceDuration } from "../project/createProject.ts";
 import { DEFAULT_TEXT_STYLE, type Track, type TrackKind } from "../project/types.ts";
@@ -12,6 +12,7 @@ import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { formatTimecode } from "../timeline/time.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
+import { CoverControl } from "./CoverControl.tsx";
 import { TimelineClip } from "./TimelineClip.tsx";
 import { ACCEPTED_EXTENSIONS_BY_KIND, TrackHeader } from "./TrackHeader.tsx";
 import { TrackKindPickerMenu } from "./TrackKindPickerMenu.tsx";
@@ -135,6 +136,14 @@ export function Timeline() {
   const setExportRangeStart = useEditorStore((s) => s.setExportRangeStart);
   const setExportRangeEnd = useEditorStore((s) => s.setExportRangeEnd);
   const clearExportRange = useEditorStore((s) => s.clearExportRange);
+  // The exported file's own attached cover — unlike the export range above, this IS a persisted
+  // project field (`SetExportCoverCommand`, undoable), so a drag can't dispatch a command on every
+  // pixel of movement the way `scrubExportStart` freely mutates ephemeral store state. `draggingCoverTime`
+  // is the live, LOCAL preview shown while dragging (same "preview locally, commit once on release"
+  // split `TransformHandles.tsx` already establishes for the identical reason); `null` once a drag
+  // isn't in progress, when the marker falls back to the committed `cover.time` itself.
+  const cover = project?.exportSettings.cover ?? null;
+  const [draggingCoverTime, setDraggingCoverTime] = useState<number | null>(null);
   // Whether this project's export will actually get the outro end card appended — same condition
   // `export/route.ts`'s own server-side `shouldIncludeOutro` checks (hosted mode, not on the Pro
   // plan), duplicated here only because there's no single shared place both a Next.js API route and
@@ -689,6 +698,32 @@ export function Timeline() {
     [setExportRangeEnd, timeFromEvent]
   );
 
+  /** Drags the cover-frame marker anywhere across the WHOLE timeline — the literal ask behind moving
+   *  cover selection out of the Export dialog, where the only way to change it was re-scrubbing the
+   *  MAIN playhead first. Same `stopPropagation`-then-`addDragListeners` shape as `scrubExportStart`,
+   *  but commits exactly ONCE, on release, via `SetExportCoverCommand` — unlike the export range
+   *  (plain ephemeral store state safe to mutate every pixel of movement), the cover is a real,
+   *  undoable project field, so continuous per-pixel commands would flood the undo stack with one
+   *  entry per mousemove. */
+  const scrubCoverFrame = useCallback(
+    (event: React.MouseEvent | React.TouchEvent) => {
+      event.stopPropagation();
+      const clamp = (t: number) => Math.max(0, Math.min(t, total));
+      const point = clientPoint(event);
+      setDraggingCoverTime(clamp(timeFromEvent(point.x)));
+      const remove = addDragListeners(
+        (moveEvent) => setDraggingCoverTime(clamp(timeFromEvent(clientPoint(moveEvent).x))),
+        (upEvent) => {
+          remove();
+          const finalTime = clamp(timeFromEvent(clientPoint(upEvent).x));
+          setDraggingCoverTime(null);
+          run(new SetExportCoverCommand({ kind: "frame", time: finalTime }));
+        }
+      );
+    },
+    [timeFromEvent, total, run]
+  );
+
   // Persistent horizontal scrollbar geometry — the track spans the scroll viewport's own width, and
   // the thumb's size/position are the standard scrollbar ratios against `contentWidth`. Floored at
   // 24px so the thumb never shrinks to an ungrabbable sliver on a long edit at low zoom. When there's
@@ -1008,7 +1043,15 @@ export function Timeline() {
             fixed column there at all. */}
         {!isMobile && (
           <div className="flex shrink-0 flex-col" style={{ width: HEADER_WIDTH }}>
-            <div style={{ height: RULER_HEIGHT }} className="border-b border-r border-white/10 bg-[#0d0f14]" />
+            {/* The corner cell above the track headers, otherwise permanently empty — the natural home
+                for a control that belongs to the whole sequence rather than any one track (see
+                `CoverControl.tsx`'s own doc comment for why this moved here from the Export dialog). */}
+            <div
+              style={{ height: RULER_HEIGHT }}
+              className="flex items-center justify-center border-b border-r border-white/10 bg-[#0d0f14] px-1"
+            >
+              <CoverControl />
+            </div>
             {/* `overflow-hidden` here (no scrollbar of its own) — this column's vertical position is
                 driven by the lanes' own scroll via the transform below, so it always tracks exactly,
                 rather than being a second independently-scrollable area that could drift out of sync. */}
@@ -1402,6 +1445,36 @@ export function Timeline() {
                   className="absolute -left-3 top-0 flex h-6 w-6 cursor-ew-resize touch-none items-start justify-center"
                 >
                   <div className="h-2.5 w-2.5 rounded-b-sm bg-amber-400" />
+                </div>
+              </div>
+            )}
+
+            {/* The exported file's own cover-frame marker — fuchsia so it's never confused with the
+                amber export-range flags or the rose playhead, draggable across the WHOLE timeline (not
+                bounded by any export range) since a frame chosen outside a since-narrowed range still
+                gets re-based server-side rather than rejected (see `ExportDialog.tsx`'s own `begin()`).
+                Only rendered for a `frame`-kind cover — an `image`-kind cover has no timeline position
+                to show a marker for. `draggingCoverTime` (live, local) wins over the committed
+                `cover.time` while a drag is in progress — same convention the export-range markers
+                would use if they needed one, except those mutate ephemeral store state directly instead
+                of a local preview. */}
+            {(draggingCoverTime !== null || cover?.kind === "frame") && (
+              <div
+                style={{ left: (draggingCoverTime ?? (cover?.kind === "frame" ? cover.time : 0)) * pixelsPerSecond }}
+                className="absolute top-0 bottom-0 z-30 w-px bg-fuchsia-400"
+              >
+                <div
+                  role="slider"
+                  aria-label={t("Cover frame")}
+                  aria-valuemin={0}
+                  aria-valuemax={Math.round(total)}
+                  aria-valuenow={Math.round(draggingCoverTime ?? (cover?.kind === "frame" ? cover.time : 0))}
+                  tabIndex={0}
+                  onMouseDown={scrubCoverFrame}
+                  onTouchStart={scrubCoverFrame}
+                  className="absolute -left-3 top-0 flex h-6 w-6 cursor-ew-resize touch-none items-start justify-center"
+                >
+                  <div className="h-2.5 w-2.5 rounded-b-sm bg-fuchsia-400" />
                 </div>
               </div>
             )}

@@ -1,6 +1,6 @@
 import { clipEnd, createClip, createTextAsset, findAsset, findClip, findTrack, newId } from "../project/createProject.ts";
 import { applyTextStylePreset, type TextStylePreset } from "../project/textStylePresets.ts";
-import type { ChromaKeySettings, Asset, Clip, ClipEffects, ClipTransform, ColorGrading, Project, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
+import type { ChromaKeySettings, Asset, Clip, ClipEffects, ClipTransform, ColorGrading, CoverSelection, Project, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
 import { DEFAULT_TEXT_STYLE, IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../project/types.ts";
 import {
   addClip,
@@ -27,6 +27,7 @@ import {
   setClipTextAnimation,
   setClipTransitionIn,
   setClipTransitionOut,
+  setExportCover,
   setMasterGain,
   setTextAsset,
   setTrackFlag,
@@ -1315,6 +1316,31 @@ export class SetMasterGainCommand implements Command {
   revert(project: Project): Project {
     if (this.previous === null) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
     return setMasterGain(project, this.previous);
+  }
+}
+
+/** Sets or clears the exported file's attached cover image — the track-header cover control's own
+ *  command, undoable like any other edit even though it's a project-wide "export settings" tweak
+ *  rather than a timeline edit. `previous` starts `undefined` (not yet captured) rather than `null`
+ *  so "no cover was set before" and "not yet applied" stay distinguishable. */
+export class SetExportCoverCommand implements Command {
+  label = "Set Cover";
+  private previous: CoverSelection | null | undefined = undefined;
+
+  private cover: CoverSelection | null;
+
+  constructor(cover: CoverSelection | null) {
+    this.cover = cover;
+  }
+
+  apply(project: Project): Project {
+    this.previous = project.exportSettings.cover ?? null;
+    return setExportCover(project, this.cover);
+  }
+
+  revert(project: Project): Project {
+    if (this.previous === undefined) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setExportCover(project, this.previous);
   }
 }
 

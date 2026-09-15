@@ -129,6 +129,15 @@ function findAdjacentSuccessor(track: Track, clip: Clip): Clip | undefined {
   return track.clips.find((c) => Math.abs(c.timelineStart - clipEnd(clip)) < ADJACENCY_TOLERANCE);
 }
 
+/** Whether `clip` has an eligible following neighbor to blend INTO, independent of whether
+ *  `transitionOut` is actually set — the successor-side mirror of `findTransitionCandidate`. Used by
+ *  `TransitionPickerMenu`/`TransitionPreviewTile` to show the real next clip's own thumbnail (or black
+ *  when there isn't one) in the "Out" tab's preview tiles, the same way `findTransitionCandidate`
+ *  already lets the "In" tab preview the real previous clip. */
+export function findTransitionSuccessorCandidate(track: Track, clip: Clip): Clip | undefined {
+  return findAdjacentSuccessor(track, clip);
+}
+
 /** Resolves a clip's `transitionOut` (see its own doc comment) into an effective fade-out duration,
  *  clamped to the clip's real current length. `null` — meaning "no fade-out, render this clip's tail
  *  as a plain cut" — whenever `transitionOut` is absent/non-positive, a genuine successor exists on

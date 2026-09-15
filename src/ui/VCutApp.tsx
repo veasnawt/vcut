@@ -31,7 +31,7 @@ import {
   Volume,
 } from "@veasnawt/vicons";
 import { startCheckout } from "../api/billing.ts";
-import { HOSTED } from "../api/client.ts";
+import { HOSTED, thumbnailUrl } from "../api/client.ts";
 import { reportError } from "../api/crashLog.ts";
 import { isDesktopSignInAvailable, openDesktopSignIn, subscribeToDesktopAuthCallback } from "../api/desktopAuth.ts";
 import { DeleteClipsCommand, SetClipTransitionCommand, SetClipTransitionOutCommand, SplitClipCommand } from "../commands/index.ts";
@@ -42,11 +42,13 @@ import { preloadAllFonts } from "../project/fonts.ts";
 import { templateSlots } from "../project/template.ts";
 import { flushPendingSave, useEditorStore } from "../store/editorStore.ts";
 import { clipAtTime } from "../timeline/queries.ts";
-import { DEFAULT_TRANSITION } from "../timeline/transitions.ts";
+import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCandidate } from "../timeline/transitions.ts";
 import { AnimationPickerMenu } from "./AnimationPickerMenu.tsx";
 import { AutoCaptionsDialog } from "./AutoCaptionsDialog.tsx";
 import { ClipContextMenu, type ClipContextMenuAction } from "./ClipContextMenu.tsx";
 import { ColorPickerMenu } from "./ColorPickerMenu.tsx";
+import { CoverControl } from "./CoverControl.tsx";
+import { EditableProjectTitle } from "./EditableProjectTitle.tsx";
 import { EffectsPickerMenu } from "./EffectsPickerMenu.tsx";
 import { ErrorBoundary } from "./ErrorBoundary.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
@@ -317,6 +319,21 @@ function StatusBar({
   const foundForTransition = project && selectedId ? findClip(project, selectedId) : undefined;
   const transitionActive = Boolean(foundForTransition?.clip.transitionIn || foundForTransition?.clip.transitionOut);
   const transitionDisabled = !foundForTransition || (foundForTransition.track.kind !== "video" && foundForTransition.track.kind !== "text");
+
+  // Real thumbnails for `TransitionPickerMenu`'s preview tiles — `null` for any side with nothing
+  // real to show (no eligible neighbor, or an asset with no generated thumbnail), which
+  // `TransitionPreviewTile.tsx` renders as plain black rather than a placeholder color. Resolved
+  // here (not inside the menu) since `project`/`findAsset`/`thumbnailUrl` already live in this scope.
+  const transitionPredecessor =
+    project && foundForTransition ? findTransitionCandidate(foundForTransition.track, foundForTransition.clip) : undefined;
+  const transitionSuccessor =
+    project && foundForTransition ? findTransitionSuccessorCandidate(foundForTransition.track, foundForTransition.clip) : undefined;
+  const transitionSelectedAsset = project && foundForTransition ? findAsset(project, foundForTransition.clip.assetId) : undefined;
+  const transitionPredecessorAsset = project && transitionPredecessor ? findAsset(project, transitionPredecessor.assetId) : undefined;
+  const transitionSuccessorAsset = project && transitionSuccessor ? findAsset(project, transitionSuccessor.assetId) : undefined;
+  const transitionSelectedThumbnailUrl = projectId && transitionSelectedAsset ? thumbnailUrl(projectId, transitionSelectedAsset) : null;
+  const transitionPredecessorThumbnailUrl = projectId && transitionPredecessorAsset ? thumbnailUrl(projectId, transitionPredecessorAsset) : null;
+  const transitionSuccessorThumbnailUrl = projectId && transitionSuccessorAsset ? thumbnailUrl(projectId, transitionSuccessorAsset) : null;
 
   // Effects/Pixel Effects — video-track clips only (video/image/color-matte), same gating `ClipEffects`/
   // `pixelEffect`'s own doc comments give; a text/audio clip has neither. Reuses `foundForTransition`'s
@@ -858,6 +875,12 @@ function StatusBar({
                 <span className="text-[16px] font-bold leading-none text-amber-300">×</span>
               </ToolbarButton>
             )}
+            {/* Mobile-only stand-in for `Timeline.tsx`'s own corner-cell Cover control — desktop has a
+                dedicated empty cell beside the ruler for it, but mobile's headers scroll with the
+                clips (no fixed column to put it in), same reasoning this whole group already follows. */}
+            <div className="lg:hidden">
+              <CoverControl compact />
+            </div>
           </>
         )}
 
@@ -926,6 +949,9 @@ function StatusBar({
                   run(new SetClipTransitionOutCommand(foundForTransition.clip.id, { duration, type }));
                 }}
                 onClose={() => setShowTransitionMenu(false)}
+                selectedThumbnailUrl={transitionSelectedThumbnailUrl}
+                predecessorThumbnailUrl={transitionPredecessorThumbnailUrl}
+                successorThumbnailUrl={transitionSuccessorThumbnailUrl}
               />
             )}
           </>
@@ -1177,74 +1203,6 @@ function StatusToast() {
       </div>
     </div>,
     document.body
-  );
-}
-
-/** Click-to-rename project title, sitting in the header next to "VCut". `project.name` (not the
- *  `projectName` prop a host app like BP Studio passes in) is the only thing this reads or writes —
- *  that prop only ever SEEDS `project.name` at creation time (see `load`'s own comment), so once a
- *  project exists its name lives entirely in the project itself, and a rename here is exactly as
- *  durable/visible as any other edit (autosaved, and reflected back in VCut's own project list). */
-function EditableProjectTitle() {
-  const name = useEditorStore((s) => s.project?.name ?? "");
-  const renameProject = useEditorStore((s) => s.renameProject);
-  const t = useTranslation();
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(name);
-  // Set right before an Escape-triggered exit, so the `onBlur` that follows (removing the input from
-  // the DOM mid-focus fires one) knows to discard rather than commit — Escape means "cancel", not
-  // "save whatever's currently typed". Same pattern TextTransformHandles.tsx uses for its own inline
-  // text editor.
-  const skipCommitRef = useRef(false);
-
-  function startEditing() {
-    setDraft(name);
-    setEditing(true);
-  }
-
-  function commit() {
-    if (skipCommitRef.current) {
-      skipCommitRef.current = false;
-      return;
-    }
-    setEditing(false);
-    renameProject(draft);
-  }
-
-  if (editing) {
-    return (
-      <input
-        ref={(el) => el?.focus()}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            skipCommitRef.current = true;
-            setEditing(false);
-          }
-          // Enter commits, matching a single-line "done typing" expectation — a plain text input has
-          // no newline to worry about swallowing the way the tap-to-edit text-clip textarea does.
-          if (e.key === "Enter") {
-            e.preventDefault();
-            e.currentTarget.blur();
-          }
-        }}
-        aria-label={t("Project name")}
-        className="min-w-0 max-w-[240px] flex-1 rounded bg-white/10 px-1.5 py-0.5 text-xs text-white outline-none ring-1 ring-sky-400/60"
-      />
-    );
-  }
-
-  return (
-    <button
-      onClick={startEditing}
-      title={t("Rename project")}
-      aria-label={t("Rename project")}
-      className="min-w-0 max-w-[240px] flex-1 truncate rounded px-1.5 py-0.5 text-left text-xs text-white/35 transition hover:bg-white/10 hover:text-white/70"
-    >
-      {name}
-    </button>
   );
 }
 

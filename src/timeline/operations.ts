@@ -1,5 +1,5 @@
 import { clipDuration, clipEnd, createClip, findAsset, findClip, findTrack, newId } from "../project/createProject.ts";
-import type { ChromaKeySettings, Asset, Clip, ClipEffects, ClipTransform, ColorCurve, ColorGrading, Project, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
+import type { ChromaKeySettings, Asset, Clip, ClipEffects, ClipTransform, ColorCurve, ColorGrading, CoverSelection, Project, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
 import { IMAGE_DEFAULT_DURATION, isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop, isIdentityTransform, TEXT_DEFAULT_DURATION } from "../project/types.ts";
 import { frameDuration, snapToFrame } from "./time.ts";
 
@@ -420,6 +420,20 @@ export function setMasterGain(project: Project, gain: number): Project {
       delete draft.sequence.masterGain;
     } else {
       draft.sequence.masterGain = clamped;
+    }
+  });
+}
+
+/** Sets (or clears, when `cover` is `null`) the exported file's attached cover image (see
+ *  `ExportSettings.cover`'s own doc comment) — persisted on the project itself, not the transient
+ *  per-dialog state a resolution/CRF pick still is, since the track-header control that sets this
+ *  needs somewhere to write to independent of whether the Export dialog even happens to be open. */
+export function setExportCover(project: Project, cover: CoverSelection | null): Project {
+  return edit(project, (draft) => {
+    if (cover === null) {
+      delete draft.exportSettings.cover;
+    } else {
+      draft.exportSettings.cover = cover;
     }
   });
 }

@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { Add, Close, Image as ImageIcon, Music, Text as TextIcon, Video } from "@veasnawt/vicons";
-import { assetFromLibraryMedia, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
+import { useRef, useState } from "react";
+import { Add, Close, Image as ImageIcon, Music, Pause, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
+import { assetFromLibraryMedia, mediaUrl, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
 import { fontById } from "../project/fonts.ts";
 import { templateAudioAssets, templateClips, templateSlotRequiredLength, type TemplateClipEntry } from "../project/template.ts";
 import type { Asset, Project } from "../project/types.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
+import { EditableProjectTitle } from "./EditableProjectTitle.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
 import { Preview } from "./Preview.tsx";
 import { TemplateTrimDialog } from "./TemplateTrimDialog.tsx";
@@ -63,6 +64,7 @@ export function TemplatePreviewScreen() {
   const fillTemplateSlot = useEditorStore((s) => s.fillTemplateSlot);
   const trimTemplateSlot = useEditorStore((s) => s.trimTemplateSlot);
   const setTemplateClipText = useEditorStore((s) => s.setTemplateClipText);
+  const setPlaying = useEditorStore((s) => s.setPlaying);
 
   const clips = project ? templateClips(project) : [];
   const audioRows = project ? templateAudioAssets(project) : [];
@@ -72,6 +74,30 @@ export function TemplatePreviewScreen() {
 
   const [selectedClipId, setSelectedClipId] = useState<string | null>(() => clips[0]?.clip.id ?? null);
   const [activeTab, setActiveTab] = useState<TabKey>(() => (hasVideo ? "video" : hasAudio ? "audio" : "text"));
+
+  // Auditions ONE bundled audio track in isolation — asked for directly: the only way to hear the
+  // template's own music/voiceover used to be playing the WHOLE composited timeline from the main
+  // transport above, with no way to single out just the audio. A single shared `<audio>` element
+  // (not one per row) since only one row can ever be playing at a time anyway. Pauses the main
+  // preview transport on play — otherwise its own Web Audio graph would keep the template's audio
+  // playing underneath this one too, doubling up rather than actually isolating it.
+  const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
+  const auditionRef = useRef<HTMLAudioElement>(null);
+
+  function toggleAudioPreview(asset: Asset) {
+    const el = auditionRef.current;
+    if (!el || !projectId) return;
+    if (playingAudioId === asset.id) {
+      el.pause();
+      setPlayingAudioId(null);
+      return;
+    }
+    setPlaying(false);
+    el.src = mediaUrl(projectId, asset.relPath, Boolean(asset.libraryMediaId));
+    el.currentTime = 0;
+    void el.play();
+    setPlayingAudioId(asset.id);
+  }
 
   function selectClip(entry: TemplateClipEntry) {
     setSelectedClipId(entry.clip.id);
@@ -83,7 +109,9 @@ export function TemplatePreviewScreen() {
   return (
     <div className="flex h-full flex-col bg-[#0a0c10] text-white">
       <div className="shrink-0 border-b border-white/10 px-4 py-3">
-        <h1 className="text-sm font-semibold text-white">{t("Your video is ready")}</h1>
+        {/* Renameable right here — see `EditableProjectTitle`'s own doc comment for why this needs to
+            live somewhere in the guided template flow at all, not just the normal editor's header. */}
+        <EditableProjectTitle variant="title" />
         <p className="mt-1 text-xs text-white/50">{t("Preview it below, then export when you're happy with it.")}</p>
       </div>
 
@@ -126,6 +154,14 @@ export function TemplatePreviewScreen() {
                 {audioRows.map((asset) => (
                   <div key={asset.id} className="flex items-center justify-between gap-2 rounded-lg bg-white/5 px-3 py-2">
                     <div className="flex min-w-0 items-center gap-2">
+                      <button
+                        onClick={() => toggleAudioPreview(asset)}
+                        title={playingAudioId === asset.id ? t("Pause") : t("Play")}
+                        aria-label={playingAudioId === asset.id ? t("Pause") : t("Play")}
+                        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white/10 text-white/80 transition hover:bg-white/20"
+                      >
+                        {playingAudioId === asset.id ? <Pause size={12} /> : <Play size={12} />}
+                      </button>
                       <Music size={15} className="shrink-0 text-white/40" />
                       <span className="truncate text-xs text-white/80">{asset.name}</span>
                       <span className="shrink-0 text-[11px] tabular-nums text-white/40">{formatDuration(asset.duration)}</span>
@@ -138,6 +174,11 @@ export function TemplatePreviewScreen() {
                     </button>
                   </div>
                 ))}
+                {/* Hidden — a plain playback element, not a visible transport, since the button above
+                    (and the row's own icon showing which asset is playing) already communicates state.
+                    One shared instance for whichever row is currently playing, see this screen's own
+                    `toggleAudioPreview` comment. */}
+                <audio ref={auditionRef} className="hidden" onEnded={() => setPlayingAudioId(null)} />
               </div>
             )}
 

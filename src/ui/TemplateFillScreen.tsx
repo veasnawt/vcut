@@ -1,13 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { Add, Image as ImageIcon, Music, Video } from "@veasnawt/vicons";
+import { Add, Edit, Image as ImageIcon, Music, Video } from "@veasnawt/vicons";
 import { assetFromLibraryMedia, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import type { Asset } from "../project/types.ts";
-import { templateSlots, type TemplateSlot } from "../project/template.ts";
+import { templateSlotRequiredLength, templateSlots, type TemplateSlot } from "../project/template.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
+import { EditableProjectTitle } from "./EditableProjectTitle.tsx";
+import { TemplateTrimDialog } from "./TemplateTrimDialog.tsx";
 import { useLibraryMedia } from "./useLibraryMedia.ts";
 
 /** Covers `LibraryGridTile`'s own general `LibraryMediaItem.kind` (video/audio/image — a user's
@@ -39,12 +41,18 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
   const projectId = useEditorStore((s) => s.projectId);
   const importFiles = useEditorStore((s) => s.importFiles);
   const fillTemplateSlotAction = useEditorStore((s) => s.fillTemplateSlot);
+  const trimTemplateSlotAction = useEditorStore((s) => s.trimTemplateSlot);
   const library = useLibraryMedia(true);
 
   const [allSlots] = useState<TemplateSlot[]>(() => (project ? templateSlots(project) : []));
   const [filledBySlotId, setFilledBySlotId] = useState<Record<string, Asset>>({});
   const [activeSlotAssetId, setActiveSlotAssetId] = useState<string | null>(allSlots[0]?.assetId ?? null);
   const [uploading, setUploading] = useState(false);
+  // Offered immediately after a pick, not tucked away in the later Preview screen — see
+  // `TemplateTrimDialog.tsx`'s own doc comment for why a video's own first `requiredDuration` seconds
+  // are rarely its most interesting part; asked for directly, right here at fill time, rather than
+  // only ever being reachable from `TemplatePreviewScreen.tsx`'s own Trim button one screen later.
+  const [trimmingAsset, setTrimmingAsset] = useState<Asset | null>(null);
 
   if (!project || !projectId) return null;
   const activeSlot = allSlots.find((s) => s.assetId === activeSlotAssetId) ?? null;
@@ -69,6 +77,10 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
       setActiveSlotAssetId(allSlots.find((s) => !next[s.assetId])?.assetId ?? null);
       return next;
     });
+    // Only when there's real room to trim (a video genuinely longer than the slot needs) — same
+    // `canTrim` condition `TemplatePreviewScreen.tsx`'s own `VideoTabContent` gates its Trim button on.
+    // Never for an image (no "which portion" of a still to choose) or an exact-length video pick.
+    if (asset.kind === "video" && asset.duration > slot.requiredDuration) setTrimmingAsset(asset);
   }
 
   async function uploadForActiveSlot(file: File) {
@@ -84,7 +96,10 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
   return (
     <div className="flex h-full flex-col bg-[#0a0c10] text-white">
       <div className="shrink-0 border-b border-white/10 px-4 py-3">
-        <h1 className="text-sm font-semibold text-white">{t("Add your own media")}</h1>
+        {/* The project's own name, editable right here — a template-origin project has no normal
+            editor chrome anywhere else to rename it from (see `EditableProjectTitle`'s own doc
+            comment), and this is the first screen it's ever shown on. */}
+        <EditableProjectTitle variant="title" />
         <p className="mt-1 text-xs text-white/50">
           {activeSlot
             ? t("Pick a photo or video for slot {n} — {duration} needed", {
@@ -138,31 +153,49 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
             const isActive = activeSlotAssetId === slot.assetId;
             const Icon = KIND_ICON[slot.kind];
             const thumb = filled ? thumbnailUrl(projectId, filled) : null;
+            // Same `canTrim` condition as the pick-time offer above and `TemplatePreviewScreen.tsx`'s
+            // own gating — re-openable here too, not just the one time right after picking, since a
+            // user may want to revisit the choice after seeing how the rest of the fill turned out.
+            const canTrimFilled = filled && filled.kind === "video" && filled.duration > slot.requiredDuration;
             return (
-              <button
-                key={slot.assetId}
-                onClick={() => setActiveSlotAssetId(slot.assetId)}
-                title={t("Slot {n}", { n: i + 1 })}
-                className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border-2 transition ${
-                  isActive ? "border-sky-400" : filled ? "border-emerald-400/50" : "border-white/15 hover:border-white/30"
-                }`}
-              >
-                {thumb ? (
-                  <img src={thumb} alt="" className="absolute inset-0 h-full w-full object-cover" draggable={false} />
-                ) : (
-                  <div className="absolute inset-0 flex items-center justify-center bg-white/5 text-white/40">
-                    <Icon size={18} />
-                  </div>
-                )}
-                {!filled && (
-                  <span className="absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-black/70 text-[9px] font-bold text-white">
-                    {i + 1}
+              <div key={slot.assetId} className="relative h-16 w-16 shrink-0">
+                <button
+                  onClick={() => setActiveSlotAssetId(slot.assetId)}
+                  title={t("Slot {n}", { n: i + 1 })}
+                  className={`absolute inset-0 overflow-hidden rounded-xl border-2 transition ${
+                    isActive ? "border-sky-400" : filled ? "border-emerald-400/50" : "border-white/15 hover:border-white/30"
+                  }`}
+                >
+                  {thumb ? (
+                    <img src={thumb} alt="" className="absolute inset-0 h-full w-full object-cover" draggable={false} />
+                  ) : (
+                    <div className="absolute inset-0 flex items-center justify-center bg-white/5 text-white/40">
+                      <Icon size={18} />
+                    </div>
+                  )}
+                  {!filled && (
+                    <span className="absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-full bg-black/70 text-[9px] font-bold text-white">
+                      {i + 1}
+                    </span>
+                  )}
+                  <span className="absolute bottom-0.5 right-0.5 rounded bg-black/80 px-1 text-[9px] tabular-nums text-white">
+                    {formatDuration(slot.requiredDuration)}
                   </span>
+                </button>
+                {canTrimFilled && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setTrimmingAsset(filled);
+                    }}
+                    title={t("Trim")}
+                    aria-label={t("Trim")}
+                    className="absolute -right-1.5 -top-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-sky-500 text-white shadow transition hover:bg-sky-400"
+                  >
+                    <Edit size={11} />
+                  </button>
                 )}
-                <span className="absolute bottom-0.5 right-0.5 rounded bg-black/80 px-1 text-[9px] tabular-nums text-white">
-                  {formatDuration(slot.requiredDuration)}
-                </span>
-              </button>
+              </div>
             );
           })}
         </div>
@@ -175,6 +208,20 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
           {allFilled ? t("Preview") : t("Fill every slot to continue")}
         </button>
       </div>
+
+      {trimmingAsset && (
+        <TemplateTrimDialog
+          asset={trimmingAsset}
+          projectId={projectId}
+          requiredLength={templateSlotRequiredLength(project, trimmingAsset.id)}
+          currentSourceIn={project.sequence.tracks.flatMap((tr) => tr.clips).find((c) => c.assetId === trimmingAsset.id)?.sourceIn ?? 0}
+          onClose={() => setTrimmingAsset(null)}
+          onConfirm={(sourceIn) => {
+            trimTemplateSlotAction(trimmingAsset.id, sourceIn);
+            setTrimmingAsset(null);
+          }}
+        />
+      )}
     </div>
   );
 }

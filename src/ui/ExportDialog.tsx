@@ -168,14 +168,22 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     await save();
 
     try {
-      const settings = { ...project.exportSettings, width, height, fps, crf };
-
       // Only clone/trim when a real (non-full) range is set — an untouched export keeps sending
       // the original project object, unchanged from before this feature existed.
       const { start, end } = useEditorStore.getState().exportRange();
       const seqTotal = sequenceDuration(project);
       const isFullRange = start <= 1e-6 && end >= seqTotal - 1e-6;
       const exportProject = isFullRange ? project : trimProjectToRange(project, start, end);
+
+      // A `frame` cover is picked (via the track-header control) against the FULL main timeline, but
+      // the server extracts it from the ALREADY-COMPOSITED (and possibly range-trimmed) output —
+      // re-based here to that output's own zero point, and clamped into its own bounds, so a cover
+      // chosen outside a since-narrowed export range doesn't ask the server to seek past the end of a
+      // file that no longer contains it. An `image` cover needs no such rebasing — it's muxed in as-is
+      // regardless of any export range.
+      const cover = project.exportSettings.cover ?? null;
+      const resolvedCover = cover && cover.kind === "frame" ? { kind: "frame" as const, time: Math.max(0, Math.min(cover.time - start, end - start)) } : cover;
+      const settings = { ...project.exportSettings, width, height, fps, crf, cover: resolvedCover };
 
       const started = await startExport(projectId, { ...exportProject, exportSettings: settings });
       resume(started.jobId, started.fileName);

@@ -7,6 +7,7 @@ import type {
   ClipTransform,
   ColorCurve,
   ColorGrading,
+  CoverSelection,
   CustomFontAsset,
   CustomSfxAsset,
   LutAsset,
@@ -635,6 +636,24 @@ export function deserializeProject(json: string): Project {
         "export audio bitrate",
         192
       ),
+      // Genuinely optional (unlike every field above, which always has a numeric fallback) — same
+      // conditional-spread convention `masterGain` above already uses for "omit the key entirely when
+      // there's nothing real to report" fields. Omitting the key (not setting it to `null`) is what
+      // keeps a project saved before this field existed byte-for-byte round-trippable. Validated
+      // structurally (not just "is it an object") since this round-trips through plain JSON with no
+      // schema enforcement between client and disk — a malformed `kind` or missing partner field
+      // degrades to "no cover" rather than a bad object.
+      ...((): { cover: CoverSelection } | Record<string, never> => {
+        const value = (raw.exportSettings as Record<string, unknown>)?.cover as Record<string, unknown>;
+        if (!value) return {};
+        if (value.kind === "frame" && typeof value.time === "number" && Number.isFinite(value.time)) {
+          return { cover: { kind: "frame", time: value.time } };
+        }
+        if (value.kind === "image" && typeof value.assetId === "string" && value.assetId) {
+          return { cover: { kind: "image", assetId: value.assetId } };
+        }
+        return {};
+      })(),
     },
     // `[]` for a project file saved before these libraries existed — same backward-compatible default
     // every other field added after `PROJECT_SCHEMA_VERSION`'s last bump uses (e.g. `Track.gain`/`.pan`

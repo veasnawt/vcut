@@ -95,7 +95,14 @@ export function EffectsPickerMenu({
       style={{ position: "fixed", bottom, left, width: MENU_WIDTH }}
       className="z-50 rounded-lg border border-white/10 bg-[#181b22] p-2.5 shadow-2xl"
     >
-      <EffectPresetGrid thumbnailUrl={thumb} onPick={patch} onPreview={preview} onClearPreview={clearPreview} swatchHeight={44} />
+      <EffectPresetGrid
+        thumbnailUrl={thumb}
+        currentEffects={clip.effects}
+        onPick={patch}
+        onPreview={preview}
+        onClearPreview={clearPreview}
+        swatchHeight={44}
+      />
       {clip.effects && (
         <button
           onClick={() => run(new SetClipEffectsCommand(clip.id, IDENTITY_EFFECTS))}
