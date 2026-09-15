@@ -169,6 +169,14 @@ export function Timeline() {
   const emptyTrackImportInputRef = useRef<HTMLInputElement>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  /** The `scrollableWidth`-wide content div (ruler + lanes + clips + export-range markers) — what the
+   *  pinch-zoom handler below applies its live `transform: scaleX()` preview to, so a live gesture is
+   *  a cheap GPU composite instead of a full-timeline browser layout on every frame. Deliberately does
+   *  NOT wrap the playhead marker (a sibling, not a child, of this div — see its own render below):
+   *  on mobile the marker's on-screen position never depends on `pixelsPerSecond` at all (the
+   *  fixed-center-playhead design already keeps it pinned at screen-center regardless of zoom), so it
+   *  correctly stays put and unscaled through a pinch exactly as it should. */
+  const contentRef = useRef<HTMLDivElement>(null);
   const lanesRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
   const markerRef = useRef<HTMLDivElement>(null);
@@ -381,21 +389,18 @@ export function Timeline() {
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
-    // Distance between the two touches as of the last processed move — each subsequent move zooms by
-    // the RATIO since then (not since gesture start), the same incremental-per-event shape the wheel
-    // handler above already uses, so it composes naturally with `zoomBy`'s own multiplicative update
-    // and the store's existing [4, 400] clamp rather than needing its own absolute-scale bookkeeping.
+    // Distance between the two touches as of the last processed move — each subsequent move scales by
+    // the RATIO since then (not since gesture start), composing into `cumulativeScale` below.
     let lastDistance = 0;
-    // A touchscreen can report `touchmove` far faster than the display actually repaints (confirmed a
-    // real, reported "pinch feels janky, not smooth" complaint, not a theoretical concern) — calling
-    // `zoomAround` (a synchronous store write that re-renders every clip on the timeline, since all of
-    // them position themselves off `pixelsPerSecond`) once per RAW event means several full re-layouts
-    // can be queued for a single frame the browser only ever gets to paint once anyway, wasted work
-    // that competes with the frame the user's fingers are actually waiting to see. Coalescing to one
-    // `zoomAround` call per animation frame — multiplying every event's own ratio together since the
-    // last flush, so combining N events into one call still produces the exact same total zoom change
-    // N individual calls would have — decouples the update rate from the input rate without changing
-    // the gesture's own math at all.
+    // The gesture's own TOTAL scale since `touchstart`, applied live as a cheap CSS `transform` (see
+    // `flush` below) rather than committed to the real `pixelsPerSecond` on every frame — a real,
+    // reported performance bug, not just a theoretical one: `pixelsPerSecond` drives every clip's own
+    // `left`/`width`, so writing it on every animation frame during a pinch forces a full-timeline
+    // browser LAYOUT (not just a React re-render) that many frames a second, measured as genuinely
+    // janky on real, slower Android hardware. `transform: scaleX()` is GPU-composited — no layout at
+    // all — so the live gesture stays smooth regardless of clip count or device speed; the real,
+    // expensive `zoomAround` commit (see `onTouchEnd`) happens exactly ONCE, when fingers lift.
+    let cumulativeScale = 1;
     let pendingFactor = 1;
     let pendingMidX = 0;
     let hasPending = false;
@@ -405,9 +410,25 @@ export function Timeline() {
       rafId = null;
       if (!hasPending) return;
       hasPending = false;
-      const factor = pendingFactor;
+      cumulativeScale *= pendingFactor;
       pendingFactor = 1;
-      zoomAround(factor, pendingMidX);
+      const content = contentRef.current;
+      if (!content) return;
+      // `transform-origin` re-anchored to the CURRENT midpoint every frame, same "follow the fingers"
+      // feel `zoomAround`'s own per-frame anchor used to give when it ran every frame — a later
+      // `transform-origin` change only affects scaling from that point forward, so this doesn't
+      // retroactively move anything already drawn, just keeps matching where the gesture is NOW.
+      // Local to `contentRef`'s OWN box (not the viewport, and not the outer scrollable div either —
+      // `contentRef` is the `marginLeft: leadingPad` div, see its own comment): `transform-origin` is
+      // relative to the element being transformed, so the midpoint's client-space X has to be re-based
+      // through the scroll container's own rect, its current `scrollLeft`, AND `leadingPad` itself —
+      // `contentRef`'s own local zero sits `leadingPad` px into the scroll container, not at its edge.
+      // Non-null assertion, not a real possible-null case — same reasoning `onTouchStart`'s own
+      // identical assertion below documents (a sibling function declaration's own body doesn't
+      // inherit this outer scope's already-checked non-null narrowing).
+      const rect = container!.getBoundingClientRect();
+      content.style.transformOrigin = `${pendingMidX - rect.left + container!.scrollLeft - leadingPad}px 0`;
+      content.style.transform = `scaleX(${cumulativeScale})`;
     }
 
     function distanceAndMidpoint(touches: TouchList): { distance: number; midX: number } {
@@ -418,6 +439,7 @@ export function Timeline() {
     function onTouchStart(e: TouchEvent) {
       if (e.touches.length !== 2) return;
       lastDistance = distanceAndMidpoint(e.touches).distance;
+      cumulativeScale = 1;
       // `pan-x pan-y` (this container's own JSX-set default — see its own comment) is what makes
       // ordinary single-finger scrolling native and smooth, but confirmed LIVE to also be permissive
       // enough that a real two-finger touch on it still sometimes gets claimed by the browser's own
@@ -452,6 +474,38 @@ export function Timeline() {
       if (e.touches.length < 2) {
         lastDistance = 0;
         container!.style.touchAction = "pan-x pan-y";
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        if (cumulativeScale !== 1) {
+          const finalScale = cumulativeScale;
+          const finalMidX = pendingMidX;
+          cumulativeScale = 1;
+          hasPending = false;
+          // The ONE real commit for the whole gesture — a full-timeline layout, but only once, not
+          // once per frame. Reuses `zoomAround`'s own existing anchor mechanism (the same one desktop's
+          // Ctrl+wheel zoom already relies on) so the just-lifted anchor point stays visually
+          // stationary once the REAL layout replaces the transform-scaled preview.
+          zoomAround(finalScale, finalMidX);
+          // The transform stays applied, frozen at its final gesture value, until the new committed
+          // layout has actually painted — clearing it immediately would flash back to the OLD,
+          // not-yet-updated `left`/`width` values for a frame first. Two RAFs (not one): the first
+          // fires once React's own commit for the just-dispatched store update has happened, but
+          // isn't guaranteed to be PAINTED yet on every engine; the second guarantees a real paint
+          // has occurred. Not gated on whether `pixelsPerSecond` actually changed — right at the
+          // store's own [4,400] clamp boundary a pinch can commit to the SAME value, and this still
+          // needs to clear the transform either way, or it would stay stuck applied forever.
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              const content = contentRef.current;
+              if (content) {
+                content.style.transform = "";
+                content.style.transformOrigin = "";
+              }
+            });
+          });
+        }
       }
     }
 
@@ -466,7 +520,7 @@ export function Timeline() {
       container.removeEventListener("touchcancel", onTouchEnd);
       if (rafId !== null) cancelAnimationFrame(rafId);
     };
-  }, [zoomAround]);
+  }, [zoomAround, leadingPad]);
 
   // Keyboard shortcuts (Ctrl/⌘ +/-/0) live in VCutApp's global keydown handler, which has no
   // access to this component's scroll container — it dispatches this event instead of calling the
@@ -1107,8 +1161,11 @@ export function Timeline() {
                 direct child of the outer div above, positioned in scroll-container coordinates, not
                 shifted by this). A `marginLeft`, not padding, on a `position: relative` element — see
                 `leadingPad`'s own comment on why padding wouldn't actually move its absolutely
-                positioned children. */}
-            <div style={{ marginLeft: leadingPad }} className="relative">
+                positioned children. Also the pinch-zoom handler's OWN transform target (`contentRef`)
+                for exactly the same reason: everything in here should visually scale live during a
+                pinch, and the playhead marker — a SIBLING of this div, not a descendant — correctly
+                stays excluded and unscaled, matching its own "never moves on mobile" design. */}
+            <div ref={contentRef} style={{ marginLeft: leadingPad }} className="relative">
             <div
               ref={rulerRef}
               role="slider"
