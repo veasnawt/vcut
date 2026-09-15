@@ -7,6 +7,7 @@ import { useTranslation } from "../i18n/useTranslation.ts";
 import type { Track } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { ConfirmDialog } from "./ConfirmDialog.tsx";
+import { CoverControl } from "./CoverControl.tsx";
 
 /** Icon + accent color standing in for the track's own name/controls when collapsed (mobile,
  *  inactive — see `iconOnly` below) — same color convention `TimelineClip.tsx` already uses to tell
@@ -109,6 +110,14 @@ export function TrackHeader({
   const importFiles = useEditorStore((s) => s.importFiles);
   const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
   const importing = useEditorStore((s) => s.importing);
+  // `project.exportSettings.cover` is a whole-PROJECT setting, not really "this track's own" — but it
+  // needs exactly one row to live in, and the first populated video track is the natural, always-
+  // present home for it (see `CoverControl.tsx`'s own doc comment). Read directly off the store rather
+  // than threaded down as a prop: this is the one place that needs to know "am I THAT track," and nothing
+  // else in this component's own props changes as a result.
+  const isCoverTrack = useEditorStore(
+    (s) => s.project?.sequence.tracks.find((tr) => tr.kind === "video" && tr.clips.length > 0)?.id === track.id
+  );
 
   const isActive = activeTrackId === track.id;
   // Collapsed to a single color-coded kind icon until tapped — a narrow phone doesn't have room to
@@ -293,6 +302,18 @@ export function TrackHeader({
               </FlagButton>
             </>
           )}
+        </div>
+      )}
+
+      {/* The exported file's own cover — a real thumbnail tile, lives on the FIRST video track with
+          clips (there's only ever one to anchor it to, and `project.exportSettings.cover` is a whole-
+          project setting regardless of which track happens to host it — see `CoverControl.tsx`'s own
+          doc comment). Desktop only, matching a direct request: mobile's header row is already the
+          tightest real estate in this whole component, and a full-screen picker dialog isn't a
+          "small device" affordance anyway. */}
+      {!isMobile && track.kind === "video" && isCoverTrack && (
+        <div className="h-[calc(100%-6px)] shrink-0 self-center">
+          <CoverControl />
         </div>
       )}
 

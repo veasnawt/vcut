@@ -12,7 +12,6 @@ import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { formatTimecode } from "../timeline/time.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
-import { CoverControl } from "./CoverControl.tsx";
 import { TimelineClip } from "./TimelineClip.tsx";
 import { ACCEPTED_EXTENSIONS_BY_KIND, TrackHeader } from "./TrackHeader.tsx";
 import { TrackKindPickerMenu } from "./TrackKindPickerMenu.tsx";
@@ -27,7 +26,10 @@ const TRACK_HEIGHT = 44;
  *  used everywhere else in that file. Reverts to `TRACK_HEIGHT` the instant a clip actually lands on
  *  the track (or a voiceover recording is in progress on it — see `isTrackCompact`'s own comment). */
 const EMPTY_TRACK_HEIGHT = 32;
-const HEADER_WIDTH = 156;
+// Bumped from 156 — the first populated video track's own row now also hosts a real thumbnail-sized
+// Cover tile (see `TrackHeader.tsx`'s own `isCoverTrack`/`CoverControl.tsx`), which the original width
+// had no spare room for alongside the name and its existing Lock/Visibility/Mute buttons.
+const HEADER_WIDTH = 190;
 const RULER_HEIGHT = 26;
 /** Height of the "add a track" row below the last real one — deliberately shorter than either track
  *  height above: it's a single affordance, not a row of content, and shouldn't compete visually with
@@ -1009,15 +1011,7 @@ export function Timeline() {
             fixed column there at all. */}
         {!isMobile && (
           <div className="flex shrink-0 flex-col" style={{ width: HEADER_WIDTH }}>
-            {/* The corner cell above the track headers, otherwise permanently empty — the natural home
-                for a control that belongs to the whole sequence rather than any one track (see
-                `CoverControl.tsx`'s own doc comment for why this moved here from the Export dialog). */}
-            <div
-              style={{ height: RULER_HEIGHT }}
-              className="flex items-center justify-center border-b border-r border-white/10 bg-[#0d0f14] px-1"
-            >
-              <CoverControl />
-            </div>
+            <div style={{ height: RULER_HEIGHT }} className="border-b border-r border-white/10 bg-[#0d0f14]" />
             {/* `overflow-hidden` here (no scrollbar of its own) — this column's vertical position is
                 driven by the lanes' own scroll via the transform below, so it always tracks exactly,
                 rather than being a second independently-scrollable area that could drift out of sync. */}

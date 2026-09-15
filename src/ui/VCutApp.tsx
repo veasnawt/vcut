@@ -47,7 +47,6 @@ import { AnimationPickerMenu } from "./AnimationPickerMenu.tsx";
 import { AutoCaptionsDialog } from "./AutoCaptionsDialog.tsx";
 import { ClipContextMenu, type ClipContextMenuAction } from "./ClipContextMenu.tsx";
 import { ColorPickerMenu } from "./ColorPickerMenu.tsx";
-import { CoverControl } from "./CoverControl.tsx";
 import { EditableProjectTitle } from "./EditableProjectTitle.tsx";
 import { EffectsPickerMenu } from "./EffectsPickerMenu.tsx";
 import { ErrorBoundary } from "./ErrorBoundary.tsx";
@@ -875,12 +874,6 @@ function StatusBar({
                 <span className="text-[16px] font-bold leading-none text-amber-300">×</span>
               </ToolbarButton>
             )}
-            {/* Mobile-only stand-in for `Timeline.tsx`'s own corner-cell Cover control — desktop has a
-                dedicated empty cell beside the ruler for it, but mobile's headers scroll with the
-                clips (no fixed column to put it in), same reasoning this whole group already follows. */}
-            <div className="lg:hidden">
-              <CoverControl compact />
-            </div>
           </>
         )}
 
