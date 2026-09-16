@@ -115,6 +115,44 @@ describe("renderKhmerClipWindows", () => {
     assert.deepEqual(windows, []);
   });
 
+  it("wordHighlight widens a real-timing window narrower than one output frame, without disturbing which word its render samples", async () => {
+    const { renderFrame, calls } = fakeRenderer();
+    // Word 2 ("ច្រើន") spans only 0.01s of real speech -- under `1 / fps` (≈0.0333s at 30fps) -- exactly
+    // the shape that left an `enable=between(...)` gate too narrow for any real output frame to ever
+    // land inside, even after `buildExportPlan.ts`'s own separate `-t` floor on the same window.
+    const windows = await renderKhmerClipWindows(
+      clip({
+        sourceIn: 0,
+        sourceOut: 3,
+        textAnimation: { type: "wordHighlight" },
+        wordTimings: [
+          { start: 0, end: 1 },
+          { start: 1, end: 1.01 },
+          { start: 1.01, end: 3 },
+        ],
+      }),
+      "អរគុណ ច្រើន សម្រាប់",
+      DEFAULT_TEXT_STYLE,
+      { ...baseOptions, renderFrame }
+    );
+
+    assert.equal(windows.length, 3);
+    assert.equal(windows[0].startOffset, 0);
+    assert.equal(windows[2].endOffset, 3);
+    for (let i = 1; i < windows.length; i++) {
+      assert.equal(windows[i].startOffset, windows[i - 1].endOffset, "windows telescope with no gap or overlap");
+    }
+    const minGateWidth = 1 / baseOptions.fps;
+    for (const w of windows) {
+      assert.ok(w.endOffset - w.startOffset >= minGateWidth - 1e-9, `window [${w.startOffset}, ${w.endOffset}) is at least one output frame wide`);
+    }
+    // The short word's own gate got widened (from 0.01s up to the 1/30s floor)...
+    assert.ok(windows[1].endOffset - windows[1].startOffset > 0.01 + 1e-9);
+    // ...but its RENDER still samples the word's own true midpoint (1.005s), not the widened gate's —
+    // so the widening never changes which word a window's rendered image actually highlights.
+    assert.equal(calls[1].elapsedSeconds, 1.005);
+  });
+
   it("every window's imagePath comes from the injected renderFrame, in order", async () => {
     const { renderFrame } = fakeRenderer();
     const windows = await renderKhmerClipWindows(

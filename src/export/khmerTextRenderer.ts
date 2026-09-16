@@ -110,22 +110,52 @@ export async function renderKhmerClipWindows(clip: Clip, content: string, style:
     // window's `startOffset` to be exactly 0 (no gap before it), and the speed-divided last boundary
     // isn't `duration` at all once `speed !== 1`.
     const boundaries = wordBoundaries(words.length, duration, clip.wordTimings).map((b) => b / speed);
+    const rawOffsets = [0, ...boundaries.slice(1, words.length), duration];
+
+    // The offsets returned below (which `buildExportPlan.ts`'s `pushKhmerTextOverlay` turns straight
+    // into `enable='between(t,absStart,gateEnd)'` on each window's overlay step) get a hard floor of one
+    // real output frame (`1 / fps`) on their own width — a SEPARATE concern from that file's own
+    // `loopDuration` floor on the same window's `-t` (which only guarantees the PNG's decoder itself
+    // emits a frame). `enable=between(...)` is only ever tested at an actual output frame's own
+    // timestamp, so even a fully-decoded window can still never be DRAWN if its gate is narrower than
+    // one output frame period — no output timestamp has to land inside it. A genuinely short spoken word
+    // (a short particle) can trip this even with that other floor already in place, matching a real
+    // report of the same "text blips sporadically" symptom surviving it. Only the GATE gets widened here
+    // — `elapsedSeconds` below still samples each window's TRUE (un-widened) midpoint from `rawOffsets`,
+    // so this never changes which word a window's own rendered image highlights, only how long its
+    // compositing window stays open. Forward pass only pushes LATER offsets later, so it can never
+    // detach from the fixed `0` start; the clamp-and-fold-back after it keeps the fixed `duration` end
+    // exact and the sequence monotonic even in the pathological case of more ultra-short words than the
+    // clip has frames for (some tail windows then fall back below one frame, same as before this fix,
+    // rather than overrunning into the next clip).
+    const minGateWidth = 1 / options.fps;
+    const gateOffsets = [...rawOffsets];
+    for (let i = 1; i < gateOffsets.length; i++) {
+      gateOffsets[i] = Math.max(gateOffsets[i], gateOffsets[i - 1] + minGateWidth);
+    }
+    if (gateOffsets[gateOffsets.length - 1] > duration) {
+      gateOffsets[gateOffsets.length - 1] = duration;
+      for (let i = gateOffsets.length - 2; i >= 0; i--) {
+        gateOffsets[i] = Math.min(gateOffsets[i], gateOffsets[i + 1]);
+      }
+    }
+
     const windows: KhmerTextWindow[] = [];
     for (let k = 0; k < words.length; k++) {
-      const startOffset = k === 0 ? 0 : boundaries[k];
-      const endOffset = k === words.length - 1 ? duration : boundaries[k + 1];
+      const rawStart = rawOffsets[k];
+      const rawEnd = rawOffsets[k + 1];
       const imagePath = await options.renderFrame({
         frameWidth: options.frameWidth,
         frameHeight: options.frameHeight,
         content,
         style,
         animation,
-        elapsedSeconds: startOffset + (endOffset - startOffset) / 2,
+        elapsedSeconds: rawStart + (rawEnd - rawStart) / 2,
         clipDurationSeconds: duration,
         customFonts: options.customFonts,
         wordTimings: clip.wordTimings,
       });
-      windows.push({ startOffset, endOffset, imagePath });
+      windows.push({ startOffset: gateOffsets[k], endOffset: gateOffsets[k + 1], imagePath });
     }
     return windows;
   }
