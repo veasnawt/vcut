@@ -1131,8 +1131,43 @@ export class PlaybackEngine {
    *  `drawVideoClip`), since `createMediaElementSource` captures the element's native output entirely —
    *  setting `.volume` on an element already routed through Web Audio would have no audible effect. */
   private syncMedia(clipId: string, element: HTMLVideoElement, sourceTime: number, playing: boolean): void {
+    // Transport runs BEFORE the readyState gate below, not after it with the rest of the sync work.
+    // On iOS Safari `preload` is ignored outright (treated as "none" — a deliberate WebKit policy, not
+    // a bug): an element that has only ever had its `src` assigned fetches NOTHING on its own there and
+    // sits at readyState 0 indefinitely, unlike every desktop browser, where `preload="auto"` moves it
+    // off 0 by itself within a tick or two and makes that gate purely transient. With the `play()` call
+    // below sequenced after the gate, those two facts deadlock on iOS: the element never loads because
+    // `play()` is never called, and `play()` is never called because the element never loads. Nothing
+    // breaks the tie — `mediaFor` only assigns `src`, and the prefetch pass in `tick` is itself gated on
+    // `readyState >= 1`. The reported symptom is the whole deadlock visible at once: the master clock
+    // (independent of any element) keeps advancing so the playhead moves normally, while EVERY video
+    // clip stays frozen on its last drawn frame with no audio, and `onPlaybackBlocked` never fires to
+    // explain it because no `play()` was ever issued to be rejected in the first place.
+    if (playing) {
+      // `play()` rejects if the browser blocks autoplay before a user gesture. The transport button's
+      // own click IS a real gesture, but a clip cut deep into a long, uninterrupted play session can
+      // create/activate a video element well outside that gesture's own window — "transient
+      // activation" is time-boxed (a handful of seconds on most browsers, confirmed strictest on
+      // Safari/WebKit, which is the reported case) and page-wide, not tied to any one element, so a
+      // FRESH element attached long after the original click can legitimately fall outside it even
+      // though the click itself was completely genuine. A bare `.catch(() => {})` here used to just
+      // swallow that — the video silently stayed paused, retried (just as gesture-lessly) every later
+      // tick, and NEVER recovered on its own, while the master clock (independent of any one element,
+      // see this class's own top doc comment) kept advancing regardless: "the timeline moves but the
+      // video never plays," a real, reported symptom, not a hypothetical one. `onPlaybackBlocked` is
+      // what actually recovers — it stops the whole transport, so the UI honestly reflects "paused"
+      // and the user's very next tap is a genuine, fresh, definitely-allowed gesture instead of the
+      // clock and the picture silently drifting apart forever.
+      if (element.paused) void element.play().catch(() => this.host.onPlaybackBlocked());
+    } else if (!element.paused) {
+      element.pause();
+    }
+
     // readyState 0 means nothing is loaded yet — seeking now would be discarded once metadata
-    // arrives, so let it load and correct on a later frame.
+    // arrives, so let it load and correct on a later frame. A clip whose `sourceIn` is past 0 can
+    // therefore start decoding from 0 for a tick on the iOS path above before this gate opens; the
+    // `DRIFT_TOLERANCE` seek below is what lands it on `sourceIn`, ducked exactly like every other
+    // real reseek.
     if (element.readyState === 0) return;
 
     // Positive: the element is AHEAD of where it should be (needs to slow down/seek back). Negative:
@@ -1164,26 +1199,6 @@ export class PlaybackEngine {
       // Back within the dead zone (or paused) — stop nudging. Explicit rather than relying on the
       // element to already be at 1: the branch above may have left it offset from the previous tick.
       element.playbackRate = 1;
-    }
-
-    if (playing) {
-      // `play()` rejects if the browser blocks autoplay before a user gesture. The transport button's
-      // own click IS a real gesture, but a clip cut deep into a long, uninterrupted play session can
-      // create/activate a video element well outside that gesture's own window — "transient
-      // activation" is time-boxed (a handful of seconds on most browsers, confirmed strictest on
-      // Safari/WebKit, which is the reported case) and page-wide, not tied to any one element, so a
-      // FRESH element attached long after the original click can legitimately fall outside it even
-      // though the click itself was completely genuine. A bare `.catch(() => {})` here used to just
-      // swallow that — the video silently stayed paused, retried (just as gesture-lessly) every later
-      // tick, and NEVER recovered on its own, while the master clock (independent of any one element,
-      // see this class's own top doc comment) kept advancing regardless: "the timeline moves but the
-      // video never plays," a real, reported symptom, not a hypothetical one. `onPlaybackBlocked` is
-      // what actually recovers — it stops the whole transport, so the UI honestly reflects "paused"
-      // and the user's very next tap is a genuine, fresh, definitely-allowed gesture instead of the
-      // clock and the picture silently drifting apart forever.
-      if (element.paused) void element.play().catch(() => this.host.onPlaybackBlocked());
-    } else if (!element.paused) {
-      element.pause();
     }
   }
 
