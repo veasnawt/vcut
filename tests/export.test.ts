@@ -2398,14 +2398,29 @@ describe("buildExportPlan Khmer static text (browser-rendered images — every F
     const { args } = planWithKhmerWindows(project, 1);
     const graph = filterGraph(args);
 
-    assert.equal(args.filter((a) => a === "-loop").length, 1, "exactly one image held via -loop for the whole window");
+    // A non-fading window must carry NO `-loop`. Measured against the bundled FFmpeg: `-loop 1
+    // -framerate F -t D` only bounds the input at `round(D * F)` frames, and when that rounds to zero
+    // the `-t` is ignored and the image loops forever — at the `-framerate 1` this used to pass, every
+    // window under 0.5s (i.e. essentially every spoken word) was silently infinite. One plain `-i` is
+    // finite at any width; `overlay`'s `eof_action=repeat` holds the frame while `enable=` is open.
+    assert.equal(args.filter((a) => a === "-loop").length, 0, "a non-fading window takes no -loop: at -framerate 1 a sub-0.5s -t is discarded and the image loops forever");
+    const windowOffsetIndex = args.indexOf("-itsoffset");
+    assert.equal(
+      args[windowOffsetIndex + 2],
+      "-i",
+      "the window's own -itsoffset is followed directly by -i — no -loop/-framerate/-t in between, so there is no duration left to round to zero"
+    );
     assert.ok(
       !graph.includes("txt0_stream"),
       "no filler-leg concat — a window is placed directly via -itsoffset + enable=, not a full-sequence-duration stream"
     );
     const itsoffsetIndex = args.indexOf("-itsoffset");
     assert.ok(itsoffsetIndex >= 0, "the window image is placed at its absolute timeline position via -itsoffset, not left to start at PTS 0");
-    assert.equal(args[itsoffsetIndex + 1], "3.000000", "shifted to the clip's own absolute start (t=3), not 0");
+    // Pre-rolled exactly one frame (1/30s) before the clip's own start: the lone image frame has to be
+    // sitting in the filter BEFORE the gate opens, or the window's opening frame passes through
+    // un-composited as a one-frame hole. Visibility is still decided solely by `enable=`, which keeps
+    // the true t=3 start below — so nothing can leak on screen early.
+    assert.equal(args[itsoffsetIndex + 1], "2.966667", "shifted one frame earlier than the clip's start so the frame is ready when the gate opens");
     assert.match(graph, /overlay=format=auto:enable='between\(t\\,3\.000000\\,[\d.]+\)'\[txt0\]/);
     void textClip;
   });
@@ -2423,7 +2438,8 @@ describe("buildExportPlan Khmer static text (browser-rendered images — every F
       const graph = filterGraph(args);
 
       assert.ok(!graph.includes("drawtext="), `${type}: must not fall back to drawtext when windows are supplied`);
-      assert.equal(args.filter((a) => a === "-loop").length, 4, `${type}: all 4 fake windows should be composited`);
+      assert.equal(args.filter((a) => a === "-itsoffset").length, 4, `${type}: all 4 fake windows should be composited, one -itsoffset input each`);
+      assert.equal(args.filter((a) => a === "-loop").length, 0, `${type}: none of them may loop — a looped sub-0.5s window input never terminates`);
     }
   });
 

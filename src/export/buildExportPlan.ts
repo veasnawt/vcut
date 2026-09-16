@@ -2060,40 +2060,49 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // long as `enable=` stays open, indistinguishable on screen from a "real" full-duration source for
       // content that never changes.
       //
-      // CORRECTNESS, now that there's real memory headroom for it. Three configurations of this one
-      // line have been live-tested against real hosted exports (see git history):
-      //   - The window's own bare REAL duration (no padding at all) is confirmed GAP-FREE — text stays
-      //     continuously on screen with only the highlighted word changing, exactly matching preview —
-      //     but on a caption-dense project (many short Khmer word-highlight clips across several stacked
-      //     caption tracks) it pushed this container's memory usage close enough to its ceiling that, on
-      //     the 8GB Hobby-plan limit this app ran on at the time, it reliably OOM-killed FFmpeg outright
-      //     (`SIGKILL`).
-      //   - `Math.max(realDuration, 0.5)` and a flat "always 1.0 second" duration (two padding attempts
-      //     tried in between) both avoided that crash, but at the cost of visibly blinking the text
-      //     on/off on a fast word-highlight clip — neighboring windows' own decoders ending up "alive"
-      //     at the same wall-clock moment corrupts the render, not just wastes memory.
-      // The project has since moved to Railway's Pro plan (24GB memory limit, 3x the old 8GB ceiling)
-      // specifically to cover this — the peak memory this path was hitting (~7-8GB) now sits well under
-      // half the new ceiling, so the bare real duration is safe again without trading away correctness.
-      // If a future project's own caption density ever pushes this close to 24GB too, the real fix is
-      // still what it always was: cut the NUMBER of separate per-window FFmpeg inputs a fast
-      // word-highlight clip opens (batching several windows' images into one input, e.g. via a
-      // concat-demuxer slideshow) rather than reaching for a padding value again.
-      const loopFramerate = hasFade ? fps : 1;
-      // Floored at ONE real output frame's own duration (`1 / fps` — a hard technical minimum, not a
-      // tuning guess the way the earlier 0.5s/1.0s memory-pressure paddings were): real per-word timing
-      // (`clip.wordTimings`) can legitimately produce a window well under 1 frame long for a genuinely
-      // short spoken word (a short function word/particle), and `-loop 1 -framerate 1 -t <duration>`
-      // with a `-t` shorter than that framerate's own frame interval risks FFmpeg emitting NO frame at
-      // all for that one window — a real, reported symptom: "blank blip between words, even on the same
-      // clip, at only a few spots" (not systematically, matching how only UNUSUALLY short real words
-      // would ever trip this, not every word the way the old even `duration / wordCount` split with no
-      // real timing data never could). At `1 / fps` (≈0.033s at 30fps) this is roughly two orders of
-      // magnitude smaller than either padding value already tried and rejected for causing neighboring
-      // windows' decoders to overlap — far too small to reproduce that mechanism, since it only ever
-      // raises a window's own declared duration up to what one real frame already needs regardless.
-      const loopDuration = t(Math.max(w.endOffset - w.startOffset, 1 / fps));
-      inputs.push("-itsoffset", t(absStart), "-loop", "1", "-framerate", String(loopFramerate), "-t", loopDuration, "-i", w.imagePath);
+      // A NON-FADING window therefore takes no `-loop`/`-t` at all — just the image, read once. That
+      // is not a tuning choice, it is the only shape that actually terminates. Measured directly
+      // against this repo's own bundled FFmpeg (6.1.1): `-loop 1 -framerate F -t D` bounds the input
+      // at `round(D * F)` frames, and when that product rounds to ZERO the `-t` is discarded outright
+      // and the image loops FOREVER. At the `-framerate 1` a non-fading window used to pass, that
+      // means every `-t` below 0.5s was silently unbounded — i.e. essentially every real spoken word.
+      // Measured boundary, `-framerate 1`: `-t` 0.033/0.1/0.3/0.4/0.49 all ran past 350,000 frames
+      // (80+ hours of output) before being killed; 0.5 and up stop at 1 frame. That single fact
+      // retro-explains this whole area's history:
+      //   - the "bare REAL duration is GAP-FREE but OOM-kills the container (`SIGKILL`) at 8GB" result
+      //     — of course it did: nearly every window input was an infinite image loop, and the
+      //     `/sys/fs/cgroup/memory.current` trace climbing ~300MB/s was those loops, not decode waste;
+      //   - why `Math.max(realDuration, 0.5)` and a flat 1.0s "memory padding" both stopped the crash
+      //     — 0.5 is not a lucky memory threshold, it is exactly `round(D * 1) >= 1`, the point where
+      //     `-t` starts being honoured and the inputs become finite at all;
+      //   - and why flooring `-t` at `1 / fps` (≈0.033s) did nothing for either problem: still far
+      //     below 0.5, so still unbounded, so still the same symptom.
+      // With `-loop` gone the input is finite by construction at any window width, with no rounding
+      // cliff to fall off — and `overlay`'s `eof_action=repeat` (already relied on above) holds that
+      // one frame for as long as `enable=` stays open. Verified on the same synthetic graph: the
+      // looped form never finished, the single-frame form rendered the identical result in 0.18s.
+      //
+      // A FADING window keeps `-loop 1 -framerate fps -t D`, because `fade=` genuinely needs a frame
+      // sequence to ramp across rather than one repeated still. That stays bounded: `D` is floored at
+      // `1 / fps` (`khmerTextRenderer.ts` guarantees the window itself is never narrower, and the
+      // `Math.max` below re-asserts it here), so `round(D * fps) >= 1` always.
+      //
+      // `-itsoffset` is pulled back by one frame so the image is already sitting in the filter when
+      // the gate opens. Without it the first window of a clip loses its opening frame outright: its
+      // lone frame lands at exactly `absStart`, the same instant `enable=` first evaluates true, and
+      // the overlay step passes that frame through un-composited — a real one-frame hole, measured as
+      // exactly 1 blank frame at the window's own start. Later windows never showed it only because
+      // `between()` is INCLUSIVE at both ends, so the previous window's still-open gate happened to
+      // paper over the same instant — which is also why this reads as sporadic rather than constant:
+      // it is the FIRST window of each clip that goes uncovered. Pre-rolling cannot leak the image
+      // early, since `enable=` alone decides visibility and still carries the true `absStart`
+      // (verified: no overlay drawn anywhere before the clip's own start).
+      if (hasFade) {
+        const loopDuration = t(Math.max(w.endOffset - w.startOffset, 1 / fps));
+        inputs.push("-itsoffset", t(absStart), "-loop", "1", "-framerate", String(fps), "-t", loopDuration, "-i", w.imagePath);
+      } else {
+        inputs.push("-itsoffset", t(Math.max(0, absStart - 1 / fps)), "-i", w.imagePath);
+      }
       const winLabel = `${outputLabel}_win${i}`;
 
       // Only the FIRST window carries a fade-in and only the LAST carries a fade-out — a clip's fade is
