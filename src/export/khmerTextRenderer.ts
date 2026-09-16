@@ -69,8 +69,12 @@ export type RenderKhmerTextFrame = (params: RenderKhmerTextParams) => Promise<st
 export interface RenderKhmerClipOptions {
   frameWidth: number;
   frameHeight: number;
-  /** Only needed for the bounce/pulse/typewriter per-slice path — `computeSliceBoundaries`'s own
-   *  frame-snapping, harmlessly unused for static text and `wordHighlight`. */
+  /** Must be the clip's real OUTPUT frame rate (`buildExportPlan.ts`'s own `fps`, sourced from
+   *  `project.exportSettings.fps` — NOT `project.sequence.fps`, the separate editing-timeline rate a
+   *  user's chosen export fps can differ from). Used for the bounce/pulse/typewriter per-slice path's
+   *  `computeSliceBoundaries` frame-snapping, harmlessly unused for static text, AND (since the
+   *  compositing-gate-width fix below) for `wordHighlight`'s own minimum window width — a wrong value
+   *  here doesn't error, it just silently mis-sizes that floor against the wrong frame period. */
   fps: number;
   customFonts: CustomFontAsset[];
   renderFrame: RenderKhmerTextFrame;
