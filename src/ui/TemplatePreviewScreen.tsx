@@ -113,6 +113,22 @@ export function TemplatePreviewScreen({ onBack }: { onBack?: () => void }) {
   }
 
   const selected = clips.find((e) => e.clip.id === selectedClipId) ?? null;
+  const isFootage = (entry: TemplateClipEntry) => entry.asset.kind === "video" || entry.asset.kind === "image";
+
+  // Video and image tiles belong with the Video tab only — asked for directly: on Audio or Text they
+  // were just clutter between the preview and the tab's own controls.
+  const filmstripClips = activeTab === "video" ? clips : clips.filter((entry) => !isFootage(entry));
+
+  // Switching to Text or Video lands on that tab's first clip when the current selection belongs to
+  // the other one — otherwise the tab would open on "select a clip above" with the right tile possibly
+  // not even shown any more.
+  function switchTab(tab: TabKey) {
+    setActiveTab(tab);
+    const belongs = tab === "text" ? (entry: TemplateClipEntry) => entry.asset.kind === "text" : tab === "video" ? isFootage : null;
+    if (!belongs || (selected && belongs(selected))) return;
+    const first = clips.find(belongs);
+    if (first) setSelectedClipId(first.clip.id);
+  }
 
   // Editing a text on the preview itself (its Edit button) — follow it here, so the filmstrip and tabs
   // show which clip is being edited, while the Text tab stands its own editor down (see below and
@@ -140,18 +156,18 @@ export function TemplatePreviewScreen({ onBack }: { onBack?: () => void }) {
 
       {(hasVideo || hasAudio || hasText) && project && projectId && (
         <div className="shrink-0 border-t border-white/10">
-          {clips.length > 0 && (
+          {filmstripClips.length > 0 && (
             <div className="scrollbar-thin flex gap-2 overflow-x-auto p-3 pb-2">
-              {clips.map((entry) => (
+              {filmstripClips.map((entry) => (
                 <FilmstripTile key={entry.clip.id} entry={entry} projectId={projectId} selected={entry.clip.id === selectedClipId} onSelect={() => selectClip(entry)} />
               ))}
             </div>
           )}
 
           <div className="flex border-t border-white/10">
-            {hasVideo && <TabButton label={t("Video")} Icon={Video} active={activeTab === "video"} onClick={() => setActiveTab("video")} />}
-            {hasAudio && <TabButton label={t("Audio")} Icon={Music} active={activeTab === "audio"} onClick={() => setActiveTab("audio")} />}
-            {hasText && <TabButton label={t("Text")} Icon={TextIcon} active={activeTab === "text"} onClick={() => setActiveTab("text")} />}
+            {hasVideo && <TabButton label={t("Video")} Icon={Video} active={activeTab === "video"} onClick={() => switchTab("video")} />}
+            {hasAudio && <TabButton label={t("Audio")} Icon={Music} active={activeTab === "audio"} onClick={() => switchTab("audio")} />}
+            {hasText && <TabButton label={t("Text")} Icon={TextIcon} active={activeTab === "text"} onClick={() => switchTab("text")} />}
           </div>
 
           <div className="scrollbar-thin max-h-40 overflow-y-auto p-3">

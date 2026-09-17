@@ -66,6 +66,16 @@ interface VideoClipNode {
  *
  *  Every method here assumes it's only ever called from `PlaybackEngine`'s own per-frame `tick()` (or
  *  its teardown path) — it has no clock/loop of its own beyond the `AudioContext`'s own scheduling. */
+interface BufferInfo {
+  status: "pending" | "decoded" | "failed";
+  startedAt: number;
+  httpStatus?: number;
+  bytes?: number;
+  decodeMs?: number;
+  duration?: number;
+  error?: string;
+}
+
 export class AudioMixEngine {
   private audioContext: AudioContext;
   private masterGain: GainNode;
@@ -74,6 +84,12 @@ export class AudioMixEngine {
   private bufferCache = new Map<string, Promise<AudioBuffer>>();
   private bufferLastUsed = new Map<string, number>();
   private trackClipNodes = new Map<string, TrackClipNode>();
+  /** What happened to each audio-track asset's fetch and decode, kept even after a failure clears
+   *  `bufferCache` — read only by `diagnostics`, for the preview's on-device audio report. */
+  private bufferInfo = new Map<string, BufferInfo>();
+  /** How many times each audio-track clip's buffer source was (re)started — a clip restarting every
+   *  frame is as silent as one that never starts. Diagnostics only. */
+  private trackClipStarts = new Map<string, number>();
   private videoClipNodes = new Map<string, VideoClipNode>();
   /** One shared GainNode per AUDIO track — every clip currently playing on that track routes its own
    *  clip-level GainNode through this ONE node before reaching `masterGain` (by way of that track's own
@@ -112,6 +128,19 @@ export class AudioMixEngine {
     this.masterAnalyser.fftSize = 1024;
     this.masterGain.connect(this.masterAnalyser);
     this.masterAnalyser.connect(this.audioContext.destination);
+    // iOS counts sound made through Web Audio as "ambient" by default, which the ringer/silent switch
+    // mutes — and every sound in this preview is Web Audio (audio-track clips as decoded buffers, video
+    // clips captured through `createMediaElementSource`). A video editor's preview is media playback,
+    // so it asks to be treated as one. `navigator.audioSession` exists in Safari 16.4+; a no-op anywhere
+    // it doesn't. (Reported: an extracted audio clip silent on an iPhone.)
+    const audioSession = typeof navigator === "undefined" ? undefined : (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    if (audioSession) {
+      try {
+        audioSession.type = "playback";
+      } catch {
+        // An unsupported value on some older build — leave the default.
+      }
+    }
   }
 
   /** `AudioContext` starts `suspended` until a user gesture resumes it — mirrors the existing
@@ -132,6 +161,31 @@ export class AudioMixEngine {
    *  too, not just silence them. */
   resumeFromGesture(): void {
     if (this.audioContext.state !== "running") void this.audioContext.resume().catch(() => {});
+  }
+
+  get contextTime(): number {
+    return this.audioContext.currentTime;
+  }
+
+  /** The audio engine's own state for a set of active audio-track clips — for the preview's on-device
+   *  audio report (`PlaybackEngine.maybeReportAudio`). Never includes a media URL (they carry a token). */
+  diagnostics(active: { clipId: string; assetId: string }[]): Record<string, unknown> {
+    const audioSession = typeof navigator === "undefined" ? undefined : (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    return {
+      contextState: this.audioContext.state,
+      sampleRate: this.audioContext.sampleRate,
+      baseLatency: this.audioContext.baseLatency,
+      audioSessionType: audioSession?.type ?? null,
+      masterGain: this.masterGain.gain.value,
+      clips: active.map(({ clipId, assetId }) => {
+        const info = this.bufferInfo.get(assetId);
+        return {
+          playing: this.trackClipNodes.has(clipId),
+          starts: this.trackClipStarts.get(clipId) ?? 0,
+          buffer: info ? { status: info.status, httpStatus: info.httpStatus, bytes: info.bytes, decodeMs: info.decodeMs, duration: info.duration, error: info.error } : null,
+        };
+      }),
+    };
   }
 
   get contextState(): string {
@@ -282,6 +336,7 @@ export class AudioMixEngine {
         const contextTimeAtStart = this.audioContext.currentTime;
         source.start(contextTimeAtStart, offset, remaining);
         this.trackClipNodes.set(clip.id, { source, gainNode, contextTimeAtStart, sourceTimeAtStart: offset });
+        this.trackClipStarts.set(clip.id, (this.trackClipStarts.get(clip.id) ?? 0) + 1);
 
         source.onended = () => {
           // Only clean up if this node is STILL the current one for this clip id — a natural end
@@ -371,9 +426,30 @@ export class AudioMixEngine {
       this.bufferLastUsed.set(assetId, performance.now());
       return existing;
     }
+    const info: BufferInfo = { status: "pending", startedAt: performance.now() };
+    this.bufferInfo.set(assetId, info);
     const promise = fetch(url)
-      .then((r) => r.arrayBuffer())
-      .then((data) => this.audioContext.decodeAudioData(data));
+      .then((r) => {
+        info.httpStatus = r.status;
+        return r.arrayBuffer();
+      })
+      .then((data) => {
+        info.bytes = data.byteLength;
+        return this.audioContext.decodeAudioData(data);
+      })
+      .then(
+        (buffer) => {
+          info.status = "decoded";
+          info.duration = buffer.duration;
+          info.decodeMs = Math.round(performance.now() - info.startedAt);
+          return buffer;
+        },
+        (err: unknown) => {
+          info.status = "failed";
+          info.error = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+          throw err;
+        }
+      );
     this.bufferCache.set(assetId, promise);
     this.bufferLastUsed.set(assetId, performance.now());
     this.evictStaleBuffers();

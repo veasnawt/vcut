@@ -1019,6 +1019,9 @@ export interface PlaybackHost {
    *  is playing. Carries the element's own media state so a platform-specific failure (iOS Safari
    *  especially, which can't be reproduced off-device) arrives as evidence rather than a guess. */
   onPlaybackStall?: (details: Record<string, unknown>) => void;
+  /** Called once per page load, three seconds into playback over an audio-track clip, with the audio
+   *  engine's own state — see `maybeReportAudio`. */
+  onAudioReport?: (details: Record<string, unknown>) => void;
   /** Resolves an asset to a streamable URL — injected so this class needs no knowledge of the API. */
   mediaUrlFor: (assetId: string) => string | null;
   /** Resolves a `LutAsset.id` to a fetchable URL for its raw `.cube` text — mirrors `mediaUrlFor`'s
@@ -1365,6 +1368,11 @@ export class PlaybackEngine {
   private playOutcome = new Map<string, string>();
   private stallWatch = new Map<string, StallWatchEntry>();
   private stallReported = new Set<string>();
+  /** `maybeReportAudio`'s own state: when the current stretch of playback over an audio-track clip
+   *  began (wall clock and audio clock), and whether this page load already reported. */
+  private audioReportSince: number | null = null;
+  private audioReportContextTime = 0;
+  private audioReported = false;
   /** When each clip's element was first seen seeking (or last told to seek) — feeds `planMediaSync`'s
    *  stuck-seek backstop. Cleared the moment the element reports it is no longer seeking. */
   private seekStartedAt = new Map<string, number>();
@@ -1734,6 +1742,7 @@ export class PlaybackEngine {
     this.mediaWaitingLastFrame = playing && this.mediaWaitingThisFrame;
     this.mediaWaitSince = this.mediaWaitingLastFrame ? (this.mediaWaitSince ?? now) : null;
     this.syncAudioTracks(project, time, playing);
+    this.maybeReportAudio(project, time, playing, now);
 
     // Live per-track/master mix levels, reconciled once per tick regardless of `playing` — cheap even
     // every frame (each is a single AudioParam.setTargetAtTime call, see AudioMixEngine's own
@@ -2580,6 +2589,42 @@ export class PlaybackEngine {
     customFonts: CustomFontAsset[] = []
   ): void {
     drawTextFrame(context, frameWidth, frameHeight, content, style, wordHighlight, customFonts);
+  }
+
+  /** Once per page load, three seconds into continuous playback over at least one audio-track clip,
+   *  reports what the audio engine is actually doing — whether each clip's file fetched and decoded,
+   *  whether its buffer source is playing (or restarting), whether the audio clock advanced, and the
+   *  state of the video elements alongside. Sent whether or not anything looks wrong, so a working
+   *  device is evidence too. Exists because an extracted audio clip was reported silent on an iPhone
+   *  while the same project played fine in desktop Chromium. */
+  private maybeReportAudio(project: Project, time: number, playing: boolean, now: number): void {
+    if (this.audioReported || !this.host.onAudioReport) return;
+    const active = playing ? this.activeAudioClips(project, time) : [];
+    if (active.length === 0) {
+      this.audioReportSince = null;
+      return;
+    }
+    if (this.audioReportSince === null) {
+      this.audioReportSince = now;
+      this.audioReportContextTime = this.audioMixEngine.contextTime;
+      return;
+    }
+    if (now - this.audioReportSince < 3000) return;
+    this.audioReported = true;
+    const videoElements = [...this.pool.entries()]
+      .filter(([, entry]) => entry.element instanceof HTMLVideoElement)
+      .map(([clipId, entry]) => {
+        const element = entry.element as HTMLVideoElement;
+        return { clipId, paused: element.paused, muted: element.muted, volume: element.volume, readyState: element.readyState };
+      });
+    this.host.onAudioReport({
+      ...this.audioMixEngine.diagnostics(active.map(({ clip }) => ({ clipId: clip.id, assetId: clip.assetId }))),
+      assetKinds: active.map(({ clip }) => project.assets.find((a) => a.id === clip.assetId)?.kind ?? null),
+      audioClockAdvanced: Number((this.audioMixEngine.contextTime - this.audioReportContextTime).toFixed(3)),
+      wallClockSeconds: Number(((now - this.audioReportSince) / 1000).toFixed(3)),
+      videoElements,
+      userAgent: typeof navigator === "undefined" ? null : navigator.userAgent,
+    });
   }
 
   private syncAudioTracks(project: Project, time: number, playing: boolean): void {

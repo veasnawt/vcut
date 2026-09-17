@@ -237,6 +237,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
         state.setStatus(translateText(state.language, "Playback stopped — tap Play to resume"));
       },
       onPlaybackStall: (details) => reportError("preview-video-stall", new Error("Preview video element not progressing while playing"), details),
+      onAudioReport: (details) => reportError("preview-audio-report", new Error("Preview audio state after 3s of playback"), details),
       mediaUrlFor: (assetId) => {
         // Same two fixed ids `export/route.ts`'s own `inputPathFor` special-cases server-side —
         // these synthetic assets (`buildOutroPreviewProject`) have no real project `relPath` to look

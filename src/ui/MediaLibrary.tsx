@@ -496,7 +496,9 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
           (2 each) turned out to still reproduce the exact same imbalance, confirmed live, since two
           same-kind short items can easily land together even at that ratio. More items per column
           gives the balance algorithm more room to actually average out a height difference instead of
-          concentrating it. */}
+          concentrating it. Two columns, though, are now the minimum whatever the count — asked for
+          directly: with only a few assets the Import tile sat alone at full width as one oversized
+          square. A lopsided pair of columns is the lesser problem; the 3-column threshold stays. */}
       <style>{`
         .vcut-media-grid-container {
           container-type: inline-size;
@@ -504,8 +506,8 @@ export function MediaLibrary({ onAssetAdded }: { onAssetAdded?: () => void } = {
         .vcut-media-grid {
           columns: 1;
         }
-        @container (min-width: 220px) {
-          .vcut-media-grid:has(li:nth-child(5)) {
+        @container (min-width: 160px) {
+          .vcut-media-grid {
             columns: 2;
           }
         }
