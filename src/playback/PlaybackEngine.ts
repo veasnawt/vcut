@@ -1,4 +1,5 @@
 import { clipDuration, clipEnd } from "../project/createProject.ts";
+import { animationFrameIndex, animationFrameRect, type AssetAnimation } from "../project/stickers.ts";
 import type { ChromaKeySettings, Clip, ClipEffects, ClipTransform, ColorGrading, CustomFontAsset, Project, TextStyle, TransitionType, Track } from "../project/types.ts";
 import { isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
@@ -1025,6 +1026,9 @@ export interface PlaybackHost {
   onAudioReport?: (details: Record<string, unknown>) => void;
   /** Resolves an asset to a streamable URL — injected so this class needs no knowledge of the API. */
   mediaUrlFor: (assetId: string) => string | null;
+  /** Resolves an ANIMATED image asset (a sticker/GIF — `Asset.animation`) to its preview sprite sheet,
+   *  which is what preview draws it from (see `stickers.ts`). Without it, a sticker draws as a still. */
+  spriteUrlFor?: (assetId: string) => string | null;
   /** Resolves a `LutAsset.id` to a fetchable URL for its raw `.cube` text — mirrors `mediaUrlFor`'s
    *  own injected-resolver shape. `null` when the id doesn't resolve to a real `LutAsset` (a stale
    *  reference to a since-deleted LUT); `resolveLut` below treats that exactly like a fetch that
@@ -1266,6 +1270,7 @@ export class PlaybackEngine {
     this.stop();
     for (const { element } of this.pool.values()) this.release(element);
     this.pool.clear();
+    this.animationFrames.clear();
     this.mediaHostElement?.remove();
     this.mediaHostElement = null;
     this.audioMixEngine.dispose();
@@ -1303,12 +1308,14 @@ export class PlaybackEngine {
     if (existing && existing.assetId !== clip.assetId) {
       this.release(existing.element);
       this.pool.delete(clip.id);
+      this.animationFrames.delete(clip.id);
     } else if (existing) {
       existing.lastUsed = performance.now();
       return existing.element;
     }
 
-    const url = this.host.mediaUrlFor(clip.assetId);
+    const animated = kind === "image" && Boolean(this.host.getProject()?.assets.find((a) => a.id === clip.assetId)?.animation) && this.host.spriteUrlFor;
+    const url = animated ? this.host.spriteUrlFor!(clip.assetId) : this.host.mediaUrlFor(clip.assetId);
     if (!url) return null;
 
     const element = kind === "image" ? document.createElement("img") : document.createElement("video");
@@ -1373,6 +1380,7 @@ export class PlaybackEngine {
       this.audioMixEngine.releaseVideoClipAudio(clipId);
       this.release(element);
       this.pool.delete(clipId);
+      this.animationFrames.delete(clipId);
     }
   }
 
@@ -2007,8 +2015,15 @@ export class PlaybackEngine {
           this.drawIncomplete = true;
           return;
         }
-        sourceWidth = element.naturalWidth;
-        sourceHeight = element.naturalHeight;
+        const animation = asset?.animation;
+        if (animation && this.host.spriteUrlFor) {
+          element = this.animationFrameFor(clip.id, element, animation, clip.sourceIn + (time - clip.timelineStart));
+          sourceWidth = animation.frameWidth;
+          sourceHeight = animation.frameHeight;
+        } else {
+          sourceWidth = element.naturalWidth;
+          sourceHeight = element.naturalHeight;
+        }
       } else if (element instanceof HTMLVideoElement) {
         const sourceTime = clip.sourceIn + (time - clip.timelineStart);
         // The track's own visibility no longer needs checking here: `drawVideoLayer` already skips
@@ -2158,8 +2173,15 @@ export class PlaybackEngine {
 
       if (element instanceof HTMLImageElement) {
         if (!element.complete || element.naturalWidth === 0) return false;
-        sourceWidth = element.naturalWidth;
-        sourceHeight = element.naturalHeight;
+        const animation = asset?.animation;
+        if (animation && this.host.spriteUrlFor) {
+          element = this.animationFrameFor(partner.id, element, animation, partner.sourceOut - duration + elapsed);
+          sourceWidth = animation.frameWidth;
+          sourceHeight = animation.frameHeight;
+        } else {
+          sourceWidth = element.naturalWidth;
+          sourceHeight = element.naturalHeight;
+        }
       } else if (element instanceof HTMLVideoElement) {
         const sourceTime = partner.sourceOut - duration + elapsed;
         if (element.readyState === 0) return false;
@@ -2336,6 +2358,36 @@ export class PlaybackEngine {
    *  mismatch is invisible until you actually look at the result. Cache key includes size so a sequence
    *  resize (rare) just adds a new cached canvas rather than reusing a stale one. */
   private colorCanvasCache = new Map<string, HTMLCanvasElement>();
+  /** Per clip: a frame-sized canvas holding an animated sticker's current frame, copied out of its
+   *  sprite sheet only when the frame (or the sheet) changes. Dropped with the clip's pooled element. */
+  private animationFrames = new Map<string, { canvas: HTMLCanvasElement; sheet: HTMLImageElement; frame: number }>();
+
+  /** The frame of an animated image showing at `sourceTime`, as a canvas the normal crop/scale/
+   *  transform/effects drawing takes like any other source — `animationFrameIndex` is the same rule
+   *  export follows (see `stickers.ts`). */
+  private animationFrameFor(clipId: string, sheet: HTMLImageElement, animation: AssetAnimation, sourceTime: number): HTMLCanvasElement {
+    const frame = animationFrameIndex(animation, sourceTime);
+    let entry = this.animationFrames.get(clipId);
+    if (!entry || entry.canvas.width !== animation.frameWidth || entry.canvas.height !== animation.frameHeight) {
+      const canvas = document.createElement("canvas");
+      canvas.width = animation.frameWidth;
+      canvas.height = animation.frameHeight;
+      entry = { canvas, sheet, frame: -1 };
+      this.animationFrames.set(clipId, entry);
+    }
+    if (entry.frame !== frame || entry.sheet !== sheet) {
+      const ctx = entry.canvas.getContext("2d");
+      if (ctx) {
+        const rect = animationFrameRect(animation, frame);
+        ctx.clearRect(0, 0, entry.canvas.width, entry.canvas.height);
+        ctx.drawImage(sheet, rect.x, rect.y, rect.width, rect.height, 0, 0, entry.canvas.width, entry.canvas.height);
+      }
+      entry.frame = frame;
+      entry.sheet = sheet;
+    }
+    return entry.canvas;
+  }
+
   private colorCanvasFor(color: string, width: number, height: number): HTMLCanvasElement {
     const key = `${color}@${width}x${height}`;
     const cached = this.colorCanvasCache.get(key);

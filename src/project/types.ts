@@ -4,6 +4,7 @@
  *  correct by construction rather than by careful maintenance. */
 
 import { DEFAULT_FONT_ID } from "./fonts.ts";
+import type { AssetAnimation, AssetStickerSource } from "./stickers.ts";
 
 /** Bumped whenever a change to these types would make an older `project.json` misread rather than
  *  merely incomplete. `deserializeProject` refuses anything newer than it understands instead of
@@ -103,6 +104,12 @@ export interface Asset {
    *  project's own asset for that reason: by the time it reaches `project.assets`, it's indistinguishable
    *  from any other imported audio file. */
   templateBundledAudio?: true;
+  /** Present only on an ANIMATED image — a sticker or GIF from the Stickers tool. `relPath` is then an
+   *  animated PNG that export loops, and this describes the preview sprite sheet and frame timing. See
+   *  `stickers.ts` for how preview and export stay on the same frame. */
+  animation?: AssetAnimation;
+  /** Present only on an asset added from the Stickers tool — which provider and item it came from. */
+  stickerSource?: AssetStickerSource;
   /** Present only when `kind === "text"`. A text asset has no backing file — `relPath` is an empty
    *  string and `hasAudio` is always false — its "content" is this string, authored directly rather
    *  than imported. Lives on the ASSET (not the clip) for the same reason a video's pixels do: it's

@@ -24,6 +24,58 @@ export function buildThumbnailArgs(input: string, output: string, atSeconds: num
   ];
 }
 
+/** ffprobe args listing an animated image's size and every frame's own timing (`packets`) — a GIF
+ *  reports no container duration, so the duration and average frame rate come from the frames. */
+export function buildAnimatedImageProbeArgs(input: string): string[] {
+  return ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:packet=pts_time,duration_time", "-of", "json", input];
+}
+
+/** Converts an animated source (a sticker/GIF from the Stickers tool) into the looping animated PNG
+ *  export reads (`Asset.relPath` of an animated image — see `stickers.ts`): resampled to one constant
+ *  frame rate, scaled, full 8-bit alpha. APNG rather than keeping the GIF or a WebP: every FFmpeg build
+ *  VCut runs decodes it with transparency (none of them decode animated WebP), and it loops cleanly
+ *  with `-stream_loop`. `maxSeconds` cuts an overly long source. */
+export function buildAnimatedPngArgs(
+  input: string,
+  output: string,
+  plan: { fps: number; frameCount: number; exportWidth: number; exportHeight: number },
+  maxSeconds: number
+): string[] {
+  return [
+    "-t", String(maxSeconds),
+    "-i", input,
+    "-vf", `fps=fps=${plan.fps},scale=${plan.exportWidth}:${plan.exportHeight}:flags=lanczos,format=rgba`,
+    "-frames:v", String(plan.frameCount),
+    "-plays", "0",
+    "-f", "apng",
+    "-y", output,
+  ];
+}
+
+/** Tiles every frame of an animated PNG into the one sprite sheet preview draws from (see
+ *  `stickers.ts`): left to right, top to bottom, transparent where the last row runs out. Lossy WebP
+ *  with alpha (`output` should end in `.webp`): it's only ever the preview, and a real 41-frame KLIPY
+ *  GIF's sheet was 1.36MB as PNG against 349KB this way. */
+export function buildSpriteSheetArgs(
+  input: string,
+  output: string,
+  grid: { columns: number; rows: number; frameWidth: number; frameHeight: number }
+): string[] {
+  return [
+    "-i", input,
+    "-vf", `scale=${grid.frameWidth}:${grid.frameHeight}:flags=lanczos,format=rgba,tile=${grid.columns}x${grid.rows}:padding=0:margin=0:color=0x00000000`,
+    "-frames:v", "1",
+    "-c:v", "libwebp",
+    "-quality", "85",
+    "-y", output,
+  ];
+}
+
+/** A single-frame "animated" source (a still sticker) imports as a plain PNG still instead. */
+export function buildFirstFramePngArgs(input: string, output: string): string[] {
+  return ["-i", input, "-frames:v", "1", "-vf", "format=rgba", "-y", output];
+}
+
 /** How many frames `buildFilmstripArgs` samples, and the fixed size (pixels) each is scaled/cropped to
  *  — fixed, not proportional to the source's own aspect ratio, so every sampled frame is IDENTICALLY
  *  sized and the sprite tiles into a clean, uniform grid regardless of whether the source is portrait,

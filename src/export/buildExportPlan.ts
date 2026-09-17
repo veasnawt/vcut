@@ -31,6 +31,7 @@ import {
 } from "../timeline/pixelEffects.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { findTransitionOut, findTransitionPartner } from "../timeline/transitions.ts";
+import { animationFrameIndex, animationLoopOffset } from "../project/stickers.ts";
 import { buildCurvesFilterFragment } from "./curvesFilter.ts";
 import type { KhmerTextWindow } from "./khmerTextRenderer.ts";
 import { buildPanFilterStage } from "./panFilter.ts";
@@ -1685,6 +1686,50 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
   const filters: string[] = [];
   let inputIndex = 0;
 
+  /** Filter-graph references for inputs that don't feed the graph as their raw `${index}:v` — an
+   *  animated sticker's looped input goes through `pushImageInput`'s own trim stage first. */
+  const videoInputRefs = new Map<number, string>();
+  const videoRef = (index: number): string => videoInputRefs.get(index) ?? `${index}:v`;
+
+  /** Adds a still image's input for `duration` seconds, as input number `index` — or, for an ANIMATED
+   *  image (a sticker/GIF: `Asset.animation`), its animated PNG looped from wherever `clip` is inside
+   *  the animation at source time `sourceStart`. Preview picks a sticker's frame with
+   *  `animationFrameIndex(animation, sourceTime)` (see `stickers.ts`); this reproduces exactly that,
+   *  verified frame by frame against the real FFmpeg binary for starts on and between frames and across
+   *  the loop point:
+   *  - `-ss` can't be used to start mid-loop: combined with `-stream_loop` FFmpeg replays from the seek
+   *    point instead of the loop start, so the loop is read from its beginning and cut in the graph.
+   *  - Timestamps are rebuilt from the frame number first: an animated PNG stores frame delays as
+   *    16-bit fractions (1/18s came back as 1389/25000s), which drifts a millisecond every few seconds
+   *    — enough to land frames an output frame late on a long clip.
+   *  - `trim=start_frame` starts on the frame showing at `sourceStart`; `setpts` then pulls every frame
+   *    after it earlier by however far into that frame `sourceStart` already is (the first clamped to
+   *    0), so each frame starts exactly when preview switches to it.
+   *  - `fps=...:round=up` puts each frame on the first output frame at or after its start (the frame
+   *    preview shows at that instant); `trim=duration` then cuts to exactly the length a still gets. */
+  function pushImageInput(clip: Clip, path: string, sourceStart: number, duration: number, index: number): void {
+    const animation = findAsset(project, clip.assetId)?.animation;
+    if (!animation) {
+      inputs.push("-loop", "1", "-framerate", String(fps), "-t", t(duration), "-i", path);
+      return;
+    }
+    const startFrame = animationFrameIndex(animation, sourceStart);
+    const loopStart = startFrame / animation.fps;
+    // Plus 5µs: `n()` keeps 6 decimals, and a frame whose start lands exactly on an output frame, nudged
+    // even 1µs LATE by that rounding, would move a whole output frame later through `round=up`. Real
+    // frame starts that aren't on an output frame sit well over 5µs away from one, so starting every
+    // frame this much early never moves one onto the wrong output frame.
+    const intoFrame = Math.max(0, Math.min(1 / animation.fps, animationLoopOffset(animation, sourceStart) - loopStart)) + 0.000005;
+    // A little past what's needed, so the last output frame always has a sticker frame to show.
+    inputs.push("-stream_loop", "-1", "-t", t(loopStart + duration + 2 / animation.fps), "-i", path);
+    const label = `anim${index}`;
+    filters.push(
+      `[${index}:v]setpts=N/(${animation.fps}*TB),trim=start_frame=${startFrame},setpts='max(0\\,PTS-STARTPTS-${n(intoFrame)}/TB)',` +
+        `fps=fps=${fps}:round=up,trim=duration=${t(duration)}[${label}]`
+    );
+    videoInputRefs.set(index, label);
+  }
+
   // Pushes one source's own video filter chain — the plain scale+pad path for an untouched clip, or
   // the full crop/eq/scale/blur/rotate/opacity chain for a real transform/effects — shared by a
   // normal "clip" segment AND each half of a "transition" segment's crossfade below, so a
@@ -1733,9 +1778,9 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     if (isPlain) {
       filters.push(
         transparent
-          ? `[${videoIndex}:v]format=rgba,scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
+          ? `[${videoRef(videoIndex)}]format=rgba,scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
               `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black@0,setsar=1,fps=${fps},setpts=PTS-STARTPTS[${label}]`
-          : `[${videoIndex}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
+          : `[${videoRef(videoIndex)}]scale=${width}:${height}:force_original_aspect_ratio=decrease,` +
               `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=${fps},setpts=PTS-STARTPTS[${label}]`
       );
     } else {
@@ -1756,7 +1801,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       );
       filters.push(
         ...buildTransformFilters({
-          source: `${videoIndex}:v`,
+          source: videoRef(videoIndex),
           bg: `${bgIndex}:v`,
           outputLabel: label,
           transform: transform ?? IDENTITY_TRANSFORM,
@@ -1831,7 +1876,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     // (same `-ss`/seek formula it already uses at its own call site), instead of one per slice.
     const sourceIndex = inputIndex++;
     if (isImage) {
-      inputs.push("-loop", "1", "-framerate", String(fps), "-t", t(sliceDuration), "-i", path);
+      pushImageInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex);
     } else {
       inputs.push("-ss", t(clip.sourceIn + elapsedAtSegmentStart), "-t", t(sliceDuration), "-i", path);
     }
@@ -1849,7 +1894,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
 
     const srcZeroed = `${label}_kfsrc`;
     const bgZeroed = `${label}_kfbg`;
-    filters.push(`[${sourceIndex}:v]setpts=PTS-STARTPTS[${srcZeroed}]`);
+    filters.push(`[${videoRef(sourceIndex)}]setpts=PTS-STARTPTS[${srcZeroed}]`);
     filters.push(`[${bgIndex}:v]setpts=PTS-STARTPTS[${bgZeroed}]`);
 
     // `split=` fans the ONE zeroed stream out into N independent copies, one per slice, so each can be
@@ -2302,7 +2347,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
             // A still has no timeline to seek into — `-ss` would be meaningless and `-t` alone would
             // yield a single frame. `-loop 1` repeats the decoded image for the clip's duration, which
             // is what makes an image occupy real time on the timeline.
-            inputs.push("-loop", "1", "-framerate", String(fps), "-t", t(segment.duration), "-i", segment.path);
+            pushImageInput(segment.clip, segment.path, segment.sourceIn, segment.duration, inputIndex);
           } else {
             // -ss and -t BEFORE -i: seek-then-decode, so only the needed range is read. `sourceIn` (not
             // `segment.clip.sourceIn`) is what accounts for a transition-shortened clip starting partway
@@ -2345,7 +2390,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           pushKeyframedAudio(segment.from.clip, segment.from.path, segment.from.isImage, segment.from.hasAudio && !track.muted, fromElapsedAtSegmentStart, fromAudioLabel, D);
         } else {
           if (segment.from.isImage) {
-            inputs.push("-loop", "1", "-framerate", String(fps), "-t", t(D), "-i", segment.from.path);
+            pushImageInput(segment.from.clip, segment.from.path, segment.from.clip.sourceOut - D, D, inputIndex);
           } else {
             inputs.push("-ss", t(segment.from.clip.sourceOut - D), "-t", t(D), "-i", segment.from.path);
           }
@@ -2359,7 +2404,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           pushKeyframedAudio(segment.to.clip, segment.to.path, segment.to.isImage, segment.to.hasAudio && !track.muted, 0, toAudioLabel, D);
         } else {
           if (segment.to.isImage) {
-            inputs.push("-loop", "1", "-framerate", String(fps), "-t", t(D), "-i", segment.to.path);
+            pushImageInput(segment.to.clip, segment.to.path, segment.to.clip.sourceIn, D, inputIndex);
           } else {
             inputs.push("-ss", t(segment.to.clip.sourceIn), "-t", t(D), "-i", segment.to.path);
           }

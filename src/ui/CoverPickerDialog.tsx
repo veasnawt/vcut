@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Add, Close } from "@veasnawt/vicons";
-import { filmstripUrl, mediaUrl, sfxAssetUrl, thumbnailUrl } from "../api/client.ts";
+import { filmstripUrl, mediaUrl, sfxAssetUrl, stickerSpriteUrl, thumbnailUrl } from "../api/client.ts";
 import { SetExportCoverCommand } from "../commands/index.ts";
 import { clipDuration, findAsset, sequenceDuration } from "../project/createProject.ts";
 import type { Asset, Clip } from "../project/types.ts";
@@ -100,6 +100,12 @@ export function CoverPickerDialog({ onClose }: { onClose: () => void }) {
         if (!asset || !state.projectId) return null;
         if (asset.bundledSfx) return sfxAssetUrl(asset.relPath);
         return mediaUrl(state.projectId, asset.relPath, Boolean(asset.libraryMediaId));
+      },
+      spriteUrlFor: (assetId) => {
+        const state = useEditorStore.getState();
+        const asset = state.project?.assets.find((a) => a.id === assetId);
+        if (!asset || !state.projectId) return null;
+        return stickerSpriteUrl(state.projectId, asset);
       },
       lutUrlFor: (lutId) => {
         const state = useEditorStore.getState();

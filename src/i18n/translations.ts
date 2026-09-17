@@ -443,6 +443,23 @@ export const KM_TRANSLATIONS: Record<string, string> = {
     "VCut ជួបបញ្ហាដែលមិនបានរំពឹងទុក ហើយមិនអាចបន្តទៀតបានទេ។ ការរក្សាទុកចុងក្រោយរបស់គម្រោងអ្នកនៅមានសុវត្ថិភាព — ការផ្ទុកឡើងវិញនឹងនាំអ្នកត្រឡប់ទៅចំណុចនោះវិញ។",
   Reload: "ផ្ទុកឡើងវិញ",
   "Show log folder": "បង្ហាញថតកំណត់ហេតុ",
+
+  // StickersPanel.tsx
+  Stickers: "ស្ទីកឃ័រ",
+  "Stickers and GIFs": "ស្ទីកឃ័រ និង GIF",
+  GIFs: "GIF",
+  "Search stickers…": "ស្វែងរកស្ទីកឃ័រ…",
+  "Search GIFs…": "ស្វែងរក GIF…",
+  "Search stickers": "ស្វែងរកស្ទីកឃ័រ",
+  "Search GIFs": "ស្វែងរក GIF",
+  Free: "ឥតគិតថ្លៃ",
+  "{n} credits each": "{n} ក្រេឌីតក្នុងមួយ",
+  Trending: "កំពុងពេញនិយម",
+  "Powered by {provider}": "ផ្តល់ដោយ {provider}",
+  "Stickers aren't available here yet.": "ស្ទីកឃ័រមិនទាន់មាននៅទីនេះនៅឡើយទេ។",
+  "Nothing to show right now.": "មិនមានអ្វីបង្ហាញនៅពេលនេះទេ។",
+  "Add Sticker": "បញ្ចូលស្ទីកឃ័រ",
+  "Add GIF": "បញ្ចូល GIF",
 };
 
 export type Language = "en" | "km";

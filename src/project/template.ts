@@ -63,7 +63,8 @@ export interface TemplateSlot {
  *  number, so two copies needing different lengths of the new footage both still come out right.
  *
  *  An AUDIO asset is never turned into a slot at all — it carries over marked `templateBundledAudio:
- *  true`, its real `relPath` left UNCHANGED (still relative to the SOURCE project's own `mediaDir` at
+ *  true` (and so does an animated sticker/GIF — `Asset.animation` — which is decoration, part of the
+ *  edit, not footage to swap: its files get bundled the same way), its real `relPath` left UNCHANGED (still relative to the SOURCE project's own `mediaDir` at
  *  this point) specifically so `templates/route.ts`'s own POST handler, which calls this function,
  *  knows exactly which file to actually copy into the template's own storage next — this function
  *  itself never touches the filesystem. */
@@ -72,7 +73,7 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
     .flatMap((track) => track.clips.map((clip) => ({ track, clip })))
     .filter(({ clip }) => {
       const asset = project.assets.find((a) => a.id === clip.assetId);
-      return Boolean(asset) && (asset!.kind === "video" || asset!.kind === "image");
+      return Boolean(asset) && (asset!.kind === "video" || asset!.kind === "image") && !asset!.animation;
     })
     .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
 
@@ -121,7 +122,7 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
   const assets: Asset[] = [
     ...project.assets
       .filter((a) => keptAssetIds.has(a.id))
-      .map((a) => (a.kind === "audio" ? { ...a, templateBundledAudio: true as const } : a)),
+      .map((a) => (a.kind === "audio" || a.animation ? { ...a, templateBundledAudio: true as const } : a)),
     ...placeholderByOriginalAssetId.values(),
   ];
 
@@ -404,7 +405,8 @@ export function templateClips(project: Project): TemplateClipEntry[] {
   return project.sequence.tracks
     .filter((t) => t.kind === "video" || t.kind === "text")
     .flatMap((track) => track.clips.map((clip) => ({ clip, asset: project.assets.find((a) => a.id === clip.assetId) })))
-    .filter((e): e is TemplateClipEntry => Boolean(e.asset))
+    // A sticker/GIF stays in the video as part of the edit, like a sound effect — nothing to replace.
+    .filter((e): e is TemplateClipEntry => Boolean(e.asset) && !e.asset!.animation)
     .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
 }
 

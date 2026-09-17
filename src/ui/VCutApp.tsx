@@ -14,6 +14,7 @@ import {
   Copy,
   Delete,
   Document,
+  Emoji,
   Filter,
   Gauge,
   Grid,
@@ -34,6 +35,7 @@ import { startCheckout } from "../api/billing.ts";
 import { HOSTED, thumbnailUrl } from "../api/client.ts";
 import { reportError } from "../api/crashLog.ts";
 import { isDesktopSignInAvailable, openDesktopSignIn, subscribeToDesktopAuthCallback } from "../api/desktopAuth.ts";
+import { subscribeToNativeAuthCallback } from "../api/nativeAuth.ts";
 import { DeleteClipsCommand, SetClipTransitionCommand, SetClipTransitionOutCommand, SplitClipCommand } from "../commands/index.ts";
 import { translateText } from "../i18n/translations.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -65,6 +67,7 @@ import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerE
 import { Preview } from "./Preview.tsx";
 import { ScopesPanel } from "./ScopesPanel.tsx";
 import { SfxPanel } from "./SfxPanel.tsx";
+import { StickersPanel } from "./StickersPanel.tsx";
 import { Timeline } from "./Timeline.tsx";
 import { TemplateFillScreen } from "./TemplateFillScreen.tsx";
 import { TemplatePreviewScreen } from "./TemplatePreviewScreen.tsx";
@@ -281,6 +284,7 @@ function StatusBar({
   const [showEffectsMenu, setShowEffectsMenu] = useState(false);
   const [showPixelEffectMenu, setShowPixelEffectMenu] = useState(false);
   const [showSfx, setShowSfx] = useState(false);
+  const [showStickers, setShowStickers] = useState(false);
   const [showVoiceRecord, setShowVoiceRecord] = useState(false);
   const [showTextStyleMenu, setShowTextStyleMenu] = useState(false);
   const [showAnimationMenu, setShowAnimationMenu] = useState(false);
@@ -799,6 +803,13 @@ function StatusBar({
             <ToolbarButton title={t("Sound Effects")} label={t("SFX")} onClick={() => setShowSfx(true)}>
               <Headphone size={18} />
             </ToolbarButton>
+            {/* Server-backed (the providers are proxied), so not offered in the native app — same as
+                stock search. */}
+            {!Capacitor.isNativePlatform() && (
+              <ToolbarButton title={t("Stickers and GIFs")} label={t("Stickers")} onClick={() => setShowStickers(true)}>
+                <Emoji size={18} />
+              </ToolbarButton>
+            )}
             <ToolbarButton
               ref={colorButtonRef}
               title={t("Add a color background")}
@@ -1071,6 +1082,7 @@ function StatusBar({
       {showVoiceRecord && <VoiceRecordModal onClose={() => setShowVoiceRecord(false)} />}
       {showTextImport && <TextToClipsDialog onClose={() => setShowTextImport(false)} />}
       {showSfx && <SfxPanel onClose={() => setShowSfx(false)} />}
+      {showStickers && <StickersPanel onClose={() => setShowStickers(false)} />}
       <NewTextComposer />
       {/* Zero-size, invisible — exists only so the picker menus above have a real DOM element to
           anchor to (`getBoundingClientRect()`) when opened FROM the context menu instead of their own
@@ -1261,6 +1273,19 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
       void getSupabaseBrowserClient()?.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
     });
   }, []);
+
+  // The Android app's half — the same browser round trip (Google, or an emailed link opened in the
+  // browser), handed back through a `vcut://auth-callback` link. See `nativeAuth.ts`.
+  useEffect(() => {
+    return subscribeToNativeAuthCallback(({ accessToken, refreshToken }) => {
+      void getSupabaseBrowserClient()?.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+    });
+  }, []);
+
+  // Signing in finishes outside the dialog when it goes through the browser, so close it here.
+  useEffect(() => {
+    if (user) setShowMobileSignIn(false);
+  }, [user]);
 
   // Warms every registered font's real `@font-face` fetch up front — see `preloadAllFonts`'s own
   // doc comment for why this is necessary at all (Canvas-only text rendering doesn't reliably trigger

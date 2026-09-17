@@ -2,6 +2,7 @@ import { Capacitor } from "@capacitor/core";
 import { getAccessToken, getCachedAccessToken } from "@veasnawt/auth";
 import { deserializeProject } from "../project/serialize.ts";
 import type { TemplateProjectData } from "../project/template.ts";
+import type { StickerProvider, StickerType } from "../project/stickers.ts";
 import type { Asset, CustomFontAsset, CustomSfxAsset, LutAsset, Project } from "../project/types.ts";
 import { nativeCancelExport, nativeExportAvailable, nativeStartExport, nativeWatchExport } from "./nativeExport.ts";
 import { nativeDeleteMedia, nativeImportMedia, nativeLoadProject, nativeMediaUrl, nativeSaveProject } from "./nativeStorage.ts";
@@ -323,6 +324,64 @@ export async function importStockResult(projectId: string, result: StockSearchRe
   });
   const body = await unwrap<{ asset: Asset }>(response);
   return body.asset;
+}
+
+/** One Stickers-tool search result — see `stickers/route.ts` (`_lib/stickerProviders.ts`). */
+export interface StickerSearchResult {
+  id: string;
+  provider: StickerProvider;
+  type: StickerType;
+  title: string;
+  previewUrl: string;
+  width: number;
+  height: number;
+  downloadUrl: string;
+}
+
+/** Which sticker providers this server has keys for, and what a GIPHY pick costs (0 off hosted). */
+export interface StickerAvailability {
+  klipy: boolean;
+  giphy: boolean;
+  giphyCredits: number;
+}
+
+/** Server-backed only, like stock search — the native app has no server to proxy the providers. */
+export async function getStickerAvailability(): Promise<StickerAvailability> {
+  if (isNative) return { klipy: false, giphy: false, giphyCredits: 0 };
+  const response = await apiFetch(`${BASE}/stickers?availability=1`);
+  return unwrap<StickerAvailability>(response);
+}
+
+/** Trending when `query` is empty. */
+export async function searchStickers(
+  provider: StickerProvider,
+  type: StickerType,
+  query: string,
+  page = 1
+): Promise<{ results: StickerSearchResult[]; hasMore: boolean }> {
+  if (isNative) return { results: [], hasMore: false };
+  const params = new URLSearchParams({ provider, type, q: query, page: String(page) });
+  const response = await apiFetch(`${BASE}/stickers?${params}`);
+  return unwrap<{ results: StickerSearchResult[]; hasMore: boolean }>(response);
+}
+
+/** Downloads and converts a picked sticker/GIF server-side into an animated image `Asset` (see
+ *  `stickers.ts`). A GIPHY pick spends credits on hosted. */
+export async function importSticker(projectId: string, result: StickerSearchResult): Promise<Asset> {
+  const response = await apiFetch(`${BASE}/stickers?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider: result.provider, type: result.type, id: result.id, url: result.downloadUrl, name: result.title }),
+  });
+  const body = await unwrap<{ asset: Asset }>(response);
+  return body.asset;
+}
+
+/** An animated image's preview sprite sheet (`Asset.animation.spriteRelPath`, stored with thumbnails),
+ *  or `null` for anything else. */
+export function stickerSpriteUrl(projectId: string, asset: Asset): string | null {
+  if (!asset.animation) return null;
+  return `${mediaUrl(projectId, asset.animation.spriteRelPath, Boolean(asset.libraryMediaId))}&kind=thumbnail`;
 }
 
 /** Every aspect ratio both AI generation routes accept (`ai-image/route.ts`'s Flux Schnell and

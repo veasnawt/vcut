@@ -19,6 +19,7 @@ import type {
 } from "./types.ts";
 import { DEFAULT_TEXT_STYLE, IDENTITY_CURVE, PROJECT_SCHEMA_VERSION } from "./types.ts";
 import { FONT_REGISTRY } from "./fonts.ts";
+import { parseAssetAnimation, parseStickerSource } from "./stickers.ts";
 import { TRANSITION_TYPE_OPTIONS } from "../timeline/transitions.ts";
 import { TEXT_ANIMATION_TYPE_OPTIONS } from "../timeline/textAnimation.ts";
 import { PIXEL_EFFECT_TYPE_OPTIONS } from "../timeline/pixelEffects.ts";
@@ -121,6 +122,8 @@ function parseAsset(raw: Record<string, unknown>): Asset {
   }
   const aiGeneration = parseAiGeneration(raw.aiGeneration);
   const templatePlaceholder = parseTemplatePlaceholder(raw.templatePlaceholder);
+  const animation = kind === "image" ? parseAssetAnimation(raw.animation) : undefined;
+  const stickerSource = parseStickerSource(raw.stickerSource);
   // Optional fields are spread in only when actually present, never written as an explicit
   // `undefined`. `JSON.stringify` omits undefined values entirely, so setting them unconditionally
   // would make a restored project structurally differ from the one that was saved — the round trip
@@ -169,6 +172,8 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     // ordinary project's own project.json indefinitely, for as long as the clip stays placed.
     ...(raw.bundledSfx === true ? { bundledSfx: true as const } : null),
     ...(raw.soundEffect === true ? { soundEffect: true as const } : null),
+    ...(animation ? { animation } : null),
+    ...(stickerSource ? { stickerSource } : null),
   };
 }
 

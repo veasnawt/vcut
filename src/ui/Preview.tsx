@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Maximize, Pause, Play, Redo, SkipBack, SkipForward, StepBack, StepForward, Undo } from "@veasnawt/vicons";
-import { mediaUrl, outroAssetUrl, sfxAssetUrl } from "../api/client.ts";
+import { mediaUrl, outroAssetUrl, sfxAssetUrl, stickerSpriteUrl } from "../api/client.ts";
 import { reportError } from "../api/crashLog.ts";
 import { sequenceDuration } from "../project/createProject.ts";
 import { buildComposePreviewProject } from "../playback/composePreview.ts";
@@ -255,6 +255,12 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
         // project's own media.
         if (asset.bundledSfx) return sfxAssetUrl(asset.relPath);
         return mediaUrl(state.projectId, asset.relPath, Boolean(asset.libraryMediaId));
+      },
+      spriteUrlFor: (assetId) => {
+        const state = useEditorStore.getState();
+        const asset = state.project?.assets.find((a) => a.id === assetId);
+        if (!asset || !state.projectId) return null;
+        return stickerSpriteUrl(state.projectId, asset);
       },
       lutUrlFor: (lutId) => {
         const state = useEditorStore.getState();
