@@ -549,6 +549,71 @@ const DRIFT_CORRECTION_TOLERANCE = 0.03;
  *  jarring as the seek-induced silence gap it replaces, and it tapers back toward a barely-perceptible
  *  nudge as drift shrinks back toward `DRIFT_CORRECTION_TOLERANCE`. */
 const MAX_DRIFT_CORRECTION_RATE_DELTA = 0.5;
+/** A seek still pending after this long is re-issued once. Only a backstop: WebKit can drop a seek's
+ *  completion when something interrupts it, leaving `seeking` true forever with the data fully
+ *  buffered (reported from an iPhone: readyState 4, buffered end-to-end, no error, stuck seeking).
+ *  Generous so a genuinely slow network seek isn't restarted into a livelock. */
+const SEEK_STUCK_MS = 2000;
+/** Smallest `playbackRate` change worth issuing. Drift moves a little every frame, so an unthrottled
+ *  correction rewrites the rate ~60 times a second; on Safari each write reaches the native player. */
+const PLAYBACK_RATE_EPSILON = 0.02;
+
+export interface MediaSyncState {
+  currentTime: number;
+  playbackRate: number;
+  seeking: boolean;
+  /** How long the element has been continuously seeking; 0 when it isn't. */
+  seekingForMs: number;
+}
+
+export interface MediaSyncAction {
+  /** `playbackRate` to assign, or null to leave it. Callers must apply this BEFORE `seekTo`. */
+  playbackRate: number | null;
+  /** `currentTime` to seek to, or null for no seek. */
+  seekTo: number | null;
+}
+
+/** Decides how to pull one video element back onto the master clock — pure, so the rules below are
+ *  unit-tested rather than trusted.
+ *
+ *  The load-bearing rule is the first branch: an element that is mid-seek is left completely alone.
+ *  While a seek is in flight `currentTime` already reads as the target, so the clock pulls ahead and
+ *  the drift branch below used to nudge `playbackRate` on every frame for the whole seek. On an iPhone
+ *  that produced a seek that never finished — `seeking: true` indefinitely with the file fully
+ *  buffered and no media error — freezing the picture after a few seconds of normal playback; the
+ *  hard reseek every `DRIFT_TOLERANCE` seconds that followed was interrupted the same way. */
+export function planMediaSync(state: MediaSyncState, sourceTime: number, playing: boolean): MediaSyncAction {
+  const none: MediaSyncAction = { playbackRate: null, seekTo: null };
+
+  if (state.seeking) {
+    if (state.seekingForMs < SEEK_STUCK_MS) return none;
+    return { playbackRate: state.playbackRate !== 1 ? 1 : null, seekTo: sourceTime };
+  }
+
+  // Positive: the element is AHEAD of where it should be (needs to slow down/seek back). Negative:
+  // it's BEHIND (needs to speed up/seek forward).
+  const drift = state.currentTime - sourceTime;
+  const absDrift = Math.abs(drift);
+
+  if (absDrift > DRIFT_TOLERANCE) {
+    // A real jump (scrub, clip switch, a tab that was throttled/backgrounded) — nothing gradual could
+    // close a gap this size fast enough to matter, so snap, resetting any in-progress nudge first.
+    return { playbackRate: state.playbackRate !== 1 ? 1 : null, seekTo: sourceTime };
+  }
+
+  if (playing && absDrift > DRIFT_CORRECTION_TOLERANCE) {
+    // Proportional, not flat — see `MAX_DRIFT_CORRECTION_RATE_DELTA`'s own doc comment. Interpolates
+    // from ~0 at the dead-zone edge up to the max rate at `DRIFT_TOLERANCE` itself.
+    const t = Math.min(1, (absDrift - DRIFT_CORRECTION_TOLERANCE) / (DRIFT_TOLERANCE - DRIFT_CORRECTION_TOLERANCE));
+    const delta = MAX_DRIFT_CORRECTION_RATE_DELTA * t;
+    const target = drift > 0 ? Math.max(0.1, 1 - delta) : 1 + delta;
+    return Math.abs(target - state.playbackRate) >= PLAYBACK_RATE_EPSILON ? { playbackRate: target, seekTo: null } : none;
+  }
+
+  // Back within the dead zone (or paused) — stop nudging.
+  return state.playbackRate !== 1 ? { playbackRate: 1, seekTo: null } : none;
+}
+
 /** How long a video element may stay paused/seeking/under-buffered while the transport is playing
  *  before `watchForStall` reports it. Long enough that ordinary start-up buffering never trips it. */
 const STALL_REPORT_MS = 4000;
@@ -1139,6 +1204,9 @@ export class PlaybackEngine {
   private playOutcome = new Map<string, string>();
   private stallWatch = new Map<string, { startedAt: number; lastSeenAt: number; notProgressingSince: number | null; hardSeeks: number }>();
   private stallReported = new Set<string>();
+  /** When each clip's element was first seen seeking (or last told to seek) — feeds `planMediaSync`'s
+   *  stuck-seek backstop. Cleared the moment the element reports it is no longer seeking. */
+  private seekStartedAt = new Map<string, number>();
 
   /** Must be called synchronously from the Play control's own event handler, BEFORE `playing` flips
    *  on. WebKit (every iOS browser) only lets audio start and unmuted media play from inside a real
@@ -1222,6 +1290,7 @@ export class PlaybackEngine {
       errorMessage: element.error?.message ?? null,
       playOutcome: this.playOutcome.get(clipId) ?? "never-called",
       hardSeeks: watch.hardSeeks,
+      seekingForMs: Math.round(now - (this.seekStartedAt.get(clipId) ?? now)),
       playedMs: Math.round(playedMs),
       audioContextState: this.audioMixEngine.contextState,
       userActivation: activation ? { hasBeenActive: activation.hasBeenActive, isActive: activation.isActive } : "unsupported",
@@ -1278,39 +1347,36 @@ export class PlaybackEngine {
     // real reseek.
     if (element.readyState === 0) return;
 
-    // Positive: the element is AHEAD of where it should be (needs to slow down/seek back). Negative:
-    // it's BEHIND (needs to speed up/seek forward).
-    const drift = element.currentTime - sourceTime;
-    const absDrift = Math.abs(drift);
+    const now = performance.now();
+    if (element.seeking) {
+      if (!this.seekStartedAt.has(clipId)) this.seekStartedAt.set(clipId, now);
+    } else {
+      this.seekStartedAt.delete(clipId);
+    }
+    const seekStartedAt = this.seekStartedAt.get(clipId);
 
-    if (absDrift > DRIFT_TOLERANCE) {
-      // A real jump (scrub, clip switch, a tab that was throttled/backgrounded) — nothing gradual
-      // could close a gap this size fast enough to matter, so just snap. `playbackRate` is reset here
-      // too: if this element was already mid-correction from a smaller drift, jumping straight to the
-      // target makes that in-progress nudge stale. Ducked first — this clip's audio (if it has any and
-      // is currently routed) goes silent for the reseek's own brief re-buffer instead of clicking
-      // through it; see `duckAroundSeek`'s own doc comment for why this only mitigates rather than
-      // eliminates this specific category's click.
+    const action = planMediaSync(
+      {
+        currentTime: element.currentTime,
+        playbackRate: element.playbackRate,
+        seeking: element.seeking,
+        seekingForMs: seekStartedAt === undefined ? 0 : now - seekStartedAt,
+      },
+      sourceTime,
+      playing
+    );
+    // Rate BEFORE seek, never after: a rate change issued right behind a seek lands while that seek is
+    // still in flight, which is exactly the interruption `planMediaSync` exists to stop.
+    if (action.playbackRate !== null) element.playbackRate = action.playbackRate;
+    if (action.seekTo !== null) {
+      // Ducked first — see `duckAroundSeek`'s own doc comment for the click this mitigates.
       this.audioMixEngine.duckAroundSeek(clipId);
-      element.currentTime = sourceTime;
-      element.playbackRate = 1;
+      element.currentTime = action.seekTo;
+      this.seekStartedAt.set(clipId, now);
       if (playing) {
         const watch = this.stallWatch.get(clipId);
         if (watch) watch.hardSeeks++;
       }
-    } else if (playing && absDrift > DRIFT_CORRECTION_TOLERANCE) {
-      // Proportional, not flat — see `MAX_DRIFT_CORRECTION_RATE_DELTA`'s own doc comment for why a
-      // fixed small nudge couldn't close the startup-latency spike `DRIFT_TOLERANCE` documents fast
-      // enough to matter. Interpolates from ~0 right at the dead-zone edge up to the max rate right at
-      // `DRIFT_TOLERANCE` itself, so a small ordinary wobble gets a gentle nudge and a large one gets a
-      // genuinely fast catch-up, without ever needing a third tier of its own.
-      const t = Math.min(1, (absDrift - DRIFT_CORRECTION_TOLERANCE) / (DRIFT_TOLERANCE - DRIFT_CORRECTION_TOLERANCE));
-      const delta = MAX_DRIFT_CORRECTION_RATE_DELTA * t;
-      element.playbackRate = drift > 0 ? Math.max(0.1, 1 - delta) : 1 + delta;
-    } else if (element.playbackRate !== 1) {
-      // Back within the dead zone (or paused) — stop nudging. Explicit rather than relying on the
-      // element to already be at 1: the branch above may have left it offset from the previous tick.
-      element.playbackRate = 1;
     }
   }
 
