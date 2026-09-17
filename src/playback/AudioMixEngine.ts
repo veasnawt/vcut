@@ -80,6 +80,30 @@ interface BufferInfo {
   error?: string;
 }
 
+/** An audio-track clip played through an `<audio>` element instead of a decoded buffer — see
+ *  `elementFallbackAssets`. Routed into the same per-track chain as a buffer source, so track/master
+ *  gain, pan and metering all still apply. */
+interface ElementClipNode {
+  assetId: string;
+  element: HTMLAudioElement;
+  source: MediaElementAudioSourceNode;
+  gainNode: GainNode;
+  playPending: boolean;
+  /** The last rejected `play()`'s error name — diagnostics, and why `syncElementClip` stops retrying. */
+  playError?: string;
+  seeks: number;
+}
+
+/** How far an `<audio>`-element clip may drift from the transport before it's re-seeked. Looser than
+ *  the buffer path's own seek detection: an element's clock drifts a little on its own, and a seek on
+ *  a streaming element is audible, so small drift is left alone. */
+const ELEMENT_DRIFT_TOLERANCE = 0.5;
+
+/** How long after a failed DOWNLOAD (not decode) an audio file may be fetched again. A failure used to
+ *  clear the cache and refetch on the very next animation frame — every frame, for as long as playback
+ *  sat over the clip. */
+const BUFFER_RETRY_DELAY_MS = 5000;
+
 /** How long an audio file's request may go without response headers before it's abandoned and retried
  *  once. On an iPhone, an extracted audio clip's request was seen still waiting for headers three
  *  seconds into playback, never reaching the server at all, leaving the clip silent. Headers only —
@@ -155,10 +179,25 @@ export class AudioMixEngine {
    *  to `PlaybackEngine`'s own three-second audio report. Diagnostics only. */
   private onBufferReport: ((details: Record<string, unknown>) => void) | undefined;
   private bufferReported = new Set<string>();
+  /** Assets whose file downloaded but couldn't be DECODED here — played through an `<audio>` element
+   *  instead (`syncElementClip`). Seen on iOS Safari: an AAC .m4a extracted from a video, which a media
+   *  element plays fine, failed `decodeAudioData` with "EncodingError: Decoding failed" on every attempt,
+   *  leaving the clip silent. */
+  private elementFallbackAssets = new Set<string>();
+  private elementClipNodes = new Map<string, ElementClipNode>();
+  private bufferRetryAfter = new Map<string, number>();
+  /** Called when an `<audio>`-element clip's `play()` is refused (autoplay policy) — the host stops the
+   *  transport, so the next Play tap (a real gesture, `primeElementClipsFromGesture`) can start it. */
+  private onElementBlocked: (() => void) | undefined;
 
-  constructor(getMediaUrl: (assetId: string) => string | null, onBufferReport?: (details: Record<string, unknown>) => void) {
+  constructor(
+    getMediaUrl: (assetId: string) => string | null,
+    onBufferReport?: (details: Record<string, unknown>) => void,
+    onElementBlocked?: () => void
+  ) {
     this.getMediaUrl = getMediaUrl;
     this.onBufferReport = onBufferReport;
+    this.onElementBlocked = onElementBlocked;
     // Room for more than the default 250 entries — media range requests can use those up quickly,
     // and `resourceTimingFor` needs the audio file's own entry to still be there.
     if (typeof performance !== "undefined" && typeof performance.setResourceTimingBufferSize === "function") {
@@ -222,11 +261,28 @@ export class AudioMixEngine {
       baseLatency: this.audioContext.baseLatency,
       audioSessionType: audioSession?.type ?? null,
       masterGain: this.masterGain.gain.value,
+      // Actual output, not just "a node started": above the -60 floor means sound is really leaving
+      // the mix right now.
+      masterLevelDb: Math.round(this.getMasterLevelDb() * 10) / 10,
       clips: active.map(({ clipId, assetId }) => {
         const info = this.bufferInfo.get(assetId);
+        const node = this.elementClipNodes.get(clipId);
         return {
-          playing: this.trackClipNodes.has(clipId),
+          playing: this.trackClipNodes.has(clipId) || (node !== undefined && !node.element.paused),
           starts: this.trackClipStarts.get(clipId) ?? 0,
+          elementFallback: this.elementFallbackAssets.has(assetId),
+          element: node
+            ? {
+                paused: node.element.paused,
+                readyState: node.element.readyState,
+                networkState: node.element.networkState,
+                currentTime: Math.round(node.element.currentTime * 100) / 100,
+                seeks: node.seeks,
+                playPending: node.playPending,
+                playError: node.playError ?? null,
+                mediaError: node.element.error?.code ?? null,
+              }
+            : null,
           buffer: info ? this.describeBuffer(info) : null,
         };
       }),
@@ -343,9 +399,16 @@ export class AudioMixEngine {
     for (const [clipId, node] of this.trackClipNodes) {
       if (!playing || !activeIds.has(clipId)) this.stopTrackClipNode(clipId, node);
     }
+    for (const [clipId, node] of this.elementClipNodes) {
+      if ((!playing || !activeIds.has(clipId)) && !node.element.paused) node.element.pause();
+    }
     if (!playing) return;
 
     for (const { trackId, clip, sourceTime, gain } of active) {
+      if (this.elementFallbackAssets.has(clip.assetId)) {
+        this.syncElementClip(trackId, clip, sourceTime, gain);
+        continue;
+      }
       const existing = this.trackClipNodes.get(clip.id);
       if (!existing) {
         this.startTrackClip(trackId, clip, sourceTime, gain);
@@ -367,6 +430,74 @@ export class AudioMixEngine {
       // `startTrackClip`), so `setTrackGain` can move the whole track without touching any clip node.
       existing.gainNode.gain.setTargetAtTime(gain, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
     }
+  }
+
+  /** Starts every active clip that plays through an `<audio>` element, synchronously inside the Play
+   *  tap — iOS only lets a media element start from a real gesture (see `PlaybackEngine.primeFromGesture`,
+   *  which calls this). Clips still on the buffer path are untouched. */
+  primeElementClipsFromGesture(active: ActiveAudioTrackClip[]): void {
+    for (const { trackId, clip, sourceTime, gain } of active) {
+      if (!this.elementFallbackAssets.has(clip.assetId)) continue;
+      const node = this.elementClipFor(trackId, clip);
+      if (!node) continue;
+      node.gainNode.gain.value = gain;
+      if (node.element.readyState >= 1) node.element.currentTime = sourceTime;
+      node.playError = undefined;
+      if (node.element.paused) this.playElement(node);
+    }
+  }
+
+  private syncElementClip(trackId: string, clip: Clip, sourceTime: number, gain: number): void {
+    const node = this.elementClipFor(trackId, clip);
+    if (!node) return;
+    node.gainNode.gain.setTargetAtTime(gain, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
+    const element = node.element;
+    if (element.readyState >= 1 && !element.seeking && Math.abs(element.currentTime - sourceTime) > ELEMENT_DRIFT_TOLERANCE) {
+      element.currentTime = sourceTime;
+      node.seeks += 1;
+    }
+    // A refused `play()` isn't retried every frame — nothing short of a new gesture will change the answer.
+    if (element.paused && !node.playPending && !node.playError) this.playElement(node);
+  }
+
+  private elementClipFor(trackId: string, clip: Clip): ElementClipNode | null {
+    const existing = this.elementClipNodes.get(clip.id);
+    if (existing && existing.assetId === clip.assetId) return existing;
+    if (existing) this.releaseElementClip(clip.id, existing);
+    const url = this.getMediaUrl(clip.assetId);
+    if (!url) return null;
+    const element = document.createElement("audio");
+    element.preload = "auto";
+    element.src = url;
+    const source = this.audioContext.createMediaElementSource(element);
+    const gainNode = this.audioContext.createGain();
+    source.connect(gainNode).connect(this.getOrCreateTrackChain(trackId).gain);
+    const node: ElementClipNode = { assetId: clip.assetId, element, source, gainNode, playPending: false, seeks: 0 };
+    this.elementClipNodes.set(clip.id, node);
+    return node;
+  }
+
+  private playElement(node: ElementClipNode): void {
+    node.playPending = true;
+    node.element.play().then(
+      () => {
+        node.playPending = false;
+      },
+      (err: unknown) => {
+        node.playPending = false;
+        node.playError = err instanceof Error ? err.name : String(err);
+        if (node.playError === "NotAllowedError") this.onElementBlocked?.();
+      }
+    );
+  }
+
+  private releaseElementClip(clipId: string, node: ElementClipNode): void {
+    node.element.pause();
+    node.element.removeAttribute("src");
+    node.element.load();
+    node.source.disconnect();
+    node.gainNode.disconnect();
+    this.elementClipNodes.delete(clipId);
   }
 
   private startTrackClip(trackId: string, clip: Clip, sourceTime: number, gain: number): void {
@@ -477,7 +608,8 @@ export class AudioMixEngine {
    *  `PlaybackEngine`'s own low-frequency scan of upcoming audio-track clips, not called every rAF.
    *  Safe to call redundantly; `getOrDecodeBuffer` dedupes via its own cache. */
   prefetchAsset(assetId: string, url: string): void {
-    void this.getOrDecodeBuffer(assetId, url);
+    if (this.elementFallbackAssets.has(assetId)) return;
+    void this.getOrDecodeBuffer(assetId, url).catch(() => {});
   }
 
   private getOrDecodeBuffer(assetId: string, url: string): Promise<AudioBuffer> {
@@ -486,6 +618,8 @@ export class AudioMixEngine {
       this.bufferLastUsed.set(assetId, performance.now());
       return existing;
     }
+    const retryAfter = this.bufferRetryAfter.get(assetId);
+    if (retryAfter !== undefined && performance.now() < retryAfter) return Promise.reject(new Error("Waiting to retry this audio file"));
     const info: BufferInfo = { status: "pending", startedAt: performance.now(), url, attempts: 0 };
     this.bufferInfo.set(assetId, info);
     const promise = this.fetchAudioBytes(url, info)
@@ -518,6 +652,10 @@ export class AudioMixEngine {
     promise.catch(() => {
       this.bufferCache.delete(assetId);
       this.bufferLastUsed.delete(assetId);
+      // Downloaded but undecodable: no amount of retrying changes that, so this asset switches to an
+      // `<audio>` element for good. A failed download may just be the network — retry, but not at once.
+      if (info.bytes !== undefined) this.elementFallbackAssets.add(assetId);
+      else this.bufferRetryAfter.set(assetId, performance.now() + BUFFER_RETRY_DELAY_MS);
     });
     return promise;
   }
@@ -565,6 +703,7 @@ export class AudioMixEngine {
    *  closes the context. Called from `PlaybackEngine.detach()`. */
   dispose(): void {
     for (const [clipId, node] of this.trackClipNodes) this.stopTrackClipNode(clipId, node);
+    for (const [clipId, node] of [...this.elementClipNodes]) this.releaseElementClip(clipId, node);
     for (const clipId of [...this.videoClipNodes.keys()]) this.releaseVideoClipAudio(clipId);
     for (const node of this.trackGainNodes.values()) node.disconnect();
     this.trackGainNodes.clear();

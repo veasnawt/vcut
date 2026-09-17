@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { assetFromBundledSfx, isSoundEffectAsset, SFX_REGISTRY, sfxById } from "../src/project/sfx.ts";
+import { assetFromBundledSfx, isSoundEffectAsset, isSoundEffectName, SFX_REGISTRY, sfxById } from "../src/project/sfx.ts";
 import { deserializeProject, serializeProject } from "../src/project/serialize.ts";
 import { audioAsset, emptyProject } from "./fixture.ts";
 import { SFX_METADATA } from "../src/project/sfxMetadata.generated.ts";
@@ -126,5 +126,15 @@ describe("isSoundEffectAsset", () => {
     const project = emptyProject([{ ...audioAsset("sfx", 1), soundEffect: true }]);
     const loaded = deserializeProject(serializeProject(project));
     assert.equal(loaded.assets[0].soundEffect, true);
+  });
+});
+
+describe("isSoundEffectName", () => {
+  it("matches a catalog label with or without a file extension, and nothing else", () => {
+    const label = SFX_REGISTRY[1].label;
+    assert.equal(isSoundEffectName(label), true);
+    assert.equal(isSoundEffectName(`${label}.m4a`), true);
+    assert.equal(isSoundEffectName("My Song.mp3"), false);
+    assert.equal(isSoundEffectName(`${label} remix.mp3`), false);
   });
 });

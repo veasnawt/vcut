@@ -278,5 +278,12 @@ const SFX_LABELS = new Set(SFX_REGISTRY.map((def) => def.label.toLowerCase()));
 export function isSoundEffectAsset(asset: Asset): boolean {
   if (asset.kind !== "audio") return false;
   if (asset.soundEffect || asset.bundledSfx) return true;
-  return SFX_LABELS.has(asset.name.replace(/\.[a-z0-9]{2,4}$/i, "").trim().toLowerCase());
+  return isSoundEffectName(asset.name);
+}
+
+/** Whether a file name is a catalog sound's label plus an optional extension — the only thing left to
+ *  go on for a library item (`user_media` rows carry no `soundEffect` marker), e.g. a template's sound
+ *  effect copied into someone's library when they started a project from it. */
+export function isSoundEffectName(name: string): boolean {
+  return SFX_LABELS.has(name.replace(/\.[a-z0-9]{2,4}$/i, "").trim().toLowerCase());
 }

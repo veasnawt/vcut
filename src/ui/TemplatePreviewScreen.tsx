@@ -5,7 +5,7 @@ import { Add, Close, Image as ImageIcon, Music, Pause, Play, Text as TextIcon, V
 import { assetFromLibraryMedia, mediaUrl, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
 import { SetClipMutedCommand } from "../commands/index.ts";
 import { fontById } from "../project/fonts.ts";
-import { isSoundEffectAsset } from "../project/sfx.ts";
+import { isSoundEffectAsset, isSoundEffectName } from "../project/sfx.ts";
 import { sequenceDuration } from "../project/createProject.ts";
 import { templateAudioAssets, templateClips, templateSlotRequiredLength, type TemplateClipEntry } from "../project/template.ts";
 import type { Asset, Project } from "../project/types.ts";
@@ -516,7 +516,12 @@ function ReplaceMediaDialog({ target, onClose, onPick }: { target: ReplaceTarget
   const library = useLibraryMedia(true);
   const [uploading, setUploading] = useState(false);
 
-  const items = library.items?.filter((i) => target.kinds.includes(i.kind) && i.id !== target.assetId) ?? [];
+  // Sound effects left out of an audio replacement's choices, same as the Audio tab's own rows — a
+  // template's sound effects land in the library when a project is started from it.
+  const items =
+    library.items?.filter(
+      (i) => target.kinds.includes(i.kind) && i.id !== target.assetId && !(i.kind === "audio" && isSoundEffectName(i.name))
+    ) ?? [];
   const isGrid = target.kinds.includes("video") || target.kinds.includes("image");
 
   async function uploadReplacement(file: File) {

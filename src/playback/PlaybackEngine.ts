@@ -1176,7 +1176,8 @@ export class PlaybackEngine {
           phase: "buffer-settled",
           buffer: details,
           userAgent: typeof navigator === "undefined" ? null : navigator.userAgent,
-        })
+        }),
+      () => this.host.onPlaybackBlocked()
     );
   }
 
@@ -1400,6 +1401,7 @@ export class PlaybackEngine {
     const playhead = this.host.getPlayhead();
     // `togglePlay` rewinds to 0 when starting from the very end — prime the clip that will actually play.
     const time = playhead >= this.totalDuration(project) - 1e-6 ? 0 : playhead;
+    this.audioMixEngine.primeElementClipsFromGesture(this.activeAudioClips(project, time));
     for (const { clip } of visibleVideoClips(project)) {
       if (time < clip.timelineStart || time >= clipEnd(clip)) continue;
       if (project.assets.find((a) => a.id === clip.assetId)?.kind !== "video") continue;
@@ -1788,7 +1790,10 @@ export class PlaybackEngine {
     ) {
       this.lastPrefetchScanAt = now;
       for (const { clip } of audibleClips(project)) {
-        if (clip.timelineStart < time || clip.timelineStart > time + AUDIO_PREFETCH_LOOKAHEAD_SECONDS) continue;
+        // Includes a clip already under the playhead, not only ones about to start — so a file this
+        // browser can't decode is found out before Play is pressed, and its `<audio>`-element fallback
+        // can start inside that tap (`primeElementClipsFromGesture`).
+        if (clip.timelineStart + (clip.sourceOut - clip.sourceIn) <= time || clip.timelineStart > time + AUDIO_PREFETCH_LOOKAHEAD_SECONDS) continue;
         const url = this.host.mediaUrlFor(clip.assetId);
         if (url) this.audioMixEngine.prefetchAsset(clip.assetId, url);
       }
