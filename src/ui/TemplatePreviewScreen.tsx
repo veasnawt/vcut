@@ -115,9 +115,11 @@ export function TemplatePreviewScreen({ onBack }: { onBack?: () => void }) {
   const selected = clips.find((e) => e.clip.id === selectedClipId) ?? null;
   const isFootage = (entry: TemplateClipEntry) => entry.asset.kind === "video" || entry.asset.kind === "image";
 
-  // Video and image tiles belong with the Video tab only — asked for directly: on Audio or Text they
-  // were just clutter between the preview and the tab's own controls.
-  const filmstripClips = activeTab === "video" ? clips : clips.filter((entry) => !isFootage(entry));
+  // Each tab shows only its own clips — video/image tiles on Video, text tiles on Text, and none on
+  // Audio (its rows live in the tab itself). Asked for directly: other kinds were just clutter between
+  // the preview and the tab's own controls.
+  const filmstripClips =
+    activeTab === "video" ? clips.filter(isFootage) : activeTab === "text" ? clips.filter((entry) => entry.asset.kind === "text") : [];
 
   // Switching to Text or Video lands on that tab's first clip when the current selection belongs to
   // the other one — otherwise the tab would open on "select a clip above" with the right tile possibly

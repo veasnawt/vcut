@@ -69,11 +69,45 @@ interface VideoClipNode {
 interface BufferInfo {
   status: "pending" | "decoded" | "failed";
   startedAt: number;
+  url: string;
+  attempts: number;
+  /** When the (last) attempt's response headers arrived, relative to `startedAt`. */
+  headersMs?: number;
   httpStatus?: number;
   bytes?: number;
   decodeMs?: number;
   duration?: number;
   error?: string;
+}
+
+/** How long an audio file's request may go without response headers before it's abandoned and retried
+ *  once. On an iPhone, an extracted audio clip's request was seen still waiting for headers three
+ *  seconds into playback, never reaching the server at all, leaving the clip silent. Headers only —
+ *  the body of a long file on a slow connection legitimately takes longer. */
+const AUDIO_FETCH_HEADERS_TIMEOUT_MS = 8000;
+
+/** The browser's own Resource Timing record for a URL (compared without its `token` param), rounded —
+ *  whether the request went out, when its first byte came back, how much arrived and over what
+ *  protocol. `null` while the request hasn't finished (no entry exists yet) or when none was kept. */
+function resourceTimingFor(url: string): Record<string, unknown> | null {
+  if (typeof performance === "undefined" || typeof location === "undefined") return null;
+  const strip = (value: string) => value.replace(/([?&])token=[^&]*&?/, "$1").replace(/[?&]$/, "");
+  const target = strip(new URL(url, location.href).href);
+  const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+  const entry = [...entries].reverse().find((e) => strip(e.name) === target);
+  if (!entry) return null;
+  const round = (value: number) => Math.round(value);
+  return {
+    startTime: round(entry.startTime),
+    requestStart: round(entry.requestStart),
+    responseStart: round(entry.responseStart),
+    responseEnd: round(entry.responseEnd),
+    transferSize: entry.transferSize,
+    encodedBodySize: entry.encodedBodySize,
+    nextHopProtocol: entry.nextHopProtocol,
+    responseStatus: (entry as PerformanceResourceTiming & { responseStatus?: number }).responseStatus ?? null,
+    entries: entries.length,
+  };
 }
 
 export class AudioMixEngine {
@@ -117,8 +151,19 @@ export class AudioMixEngine {
    *  pass-through reasoning as the per-track analysers, just for the final summed mix. */
   private masterAnalyser: AnalyserNode;
 
-  constructor(getMediaUrl: (assetId: string) => string | null) {
+  /** Called once per asset whose buffer took unusually long, needed a retry, or failed — the follow-up
+   *  to `PlaybackEngine`'s own three-second audio report. Diagnostics only. */
+  private onBufferReport: ((details: Record<string, unknown>) => void) | undefined;
+  private bufferReported = new Set<string>();
+
+  constructor(getMediaUrl: (assetId: string) => string | null, onBufferReport?: (details: Record<string, unknown>) => void) {
     this.getMediaUrl = getMediaUrl;
+    this.onBufferReport = onBufferReport;
+    // Room for more than the default 250 entries — media range requests can use those up quickly,
+    // and `resourceTimingFor` needs the audio file's own entry to still be there.
+    if (typeof performance !== "undefined" && typeof performance.setResourceTimingBufferSize === "function") {
+      performance.setResourceTimingBufferSize(2000);
+    }
     this.audioContext = new AudioContext();
     this.masterGain = this.audioContext.createGain();
     this.masterAnalyser = this.audioContext.createAnalyser();
@@ -182,9 +227,24 @@ export class AudioMixEngine {
         return {
           playing: this.trackClipNodes.has(clipId),
           starts: this.trackClipStarts.get(clipId) ?? 0,
-          buffer: info ? { status: info.status, httpStatus: info.httpStatus, bytes: info.bytes, decodeMs: info.decodeMs, duration: info.duration, error: info.error } : null,
+          buffer: info ? this.describeBuffer(info) : null,
         };
       }),
+    };
+  }
+
+  private describeBuffer(info: BufferInfo): Record<string, unknown> {
+    return {
+      status: info.status,
+      ageMs: Math.round(performance.now() - info.startedAt),
+      attempts: info.attempts,
+      headersMs: info.headersMs,
+      httpStatus: info.httpStatus,
+      bytes: info.bytes,
+      decodeMs: info.decodeMs,
+      duration: info.duration,
+      error: info.error,
+      resourceTiming: resourceTimingFor(info.url),
     };
   }
 
@@ -426,13 +486,9 @@ export class AudioMixEngine {
       this.bufferLastUsed.set(assetId, performance.now());
       return existing;
     }
-    const info: BufferInfo = { status: "pending", startedAt: performance.now() };
+    const info: BufferInfo = { status: "pending", startedAt: performance.now(), url, attempts: 0 };
     this.bufferInfo.set(assetId, info);
-    const promise = fetch(url)
-      .then((r) => {
-        info.httpStatus = r.status;
-        return r.arrayBuffer();
-      })
+    const promise = this.fetchAudioBytes(url, info)
       .then((data) => {
         info.bytes = data.byteLength;
         return this.audioContext.decodeAudioData(data);
@@ -450,6 +506,10 @@ export class AudioMixEngine {
           throw err;
         }
       );
+    promise.then(
+      () => this.reportBuffer(assetId, info),
+      () => this.reportBuffer(assetId, info)
+    );
     this.bufferCache.set(assetId, promise);
     this.bufferLastUsed.set(assetId, performance.now());
     this.evictStaleBuffers();
@@ -460,6 +520,37 @@ export class AudioMixEngine {
       this.bufferLastUsed.delete(assetId);
     });
     return promise;
+  }
+
+  /** The file's bytes — abandoning and retrying once (bypassing the HTTP cache) a request that gets no
+   *  response headers within `AUDIO_FETCH_HEADERS_TIMEOUT_MS`. */
+  private async fetchAudioBytes(url: string, info: BufferInfo): Promise<ArrayBuffer> {
+    for (;;) {
+      info.attempts += 1;
+      const firstAttempt = info.attempts === 1;
+      const controller = new AbortController();
+      const timer = firstAttempt ? setTimeout(() => controller.abort(), AUDIO_FETCH_HEADERS_TIMEOUT_MS) : null;
+      try {
+        const response = await fetch(url, firstAttempt ? { signal: controller.signal } : { cache: "no-store" });
+        if (timer) clearTimeout(timer);
+        info.headersMs = Math.round(performance.now() - info.startedAt);
+        info.httpStatus = response.status;
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.arrayBuffer();
+      } catch (err) {
+        if (timer) clearTimeout(timer);
+        if (firstAttempt && controller.signal.aborted) continue;
+        throw err;
+      }
+    }
+  }
+
+  private reportBuffer(assetId: string, info: BufferInfo): void {
+    if (!this.onBufferReport || this.bufferReported.has(assetId)) return;
+    const totalMs = performance.now() - info.startedAt;
+    if (info.status !== "failed" && info.attempts <= 1 && totalMs < 3000) return;
+    this.bufferReported.add(assetId);
+    this.onBufferReport(this.describeBuffer(info));
   }
 
   private evictStaleBuffers(): void {

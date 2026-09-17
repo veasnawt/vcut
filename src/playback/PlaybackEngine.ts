@@ -1020,7 +1020,8 @@ export interface PlaybackHost {
    *  especially, which can't be reproduced off-device) arrives as evidence rather than a guess. */
   onPlaybackStall?: (details: Record<string, unknown>) => void;
   /** Called once per page load, three seconds into playback over an audio-track clip, with the audio
-   *  engine's own state — see `maybeReportAudio`. */
+   *  engine's own state (`phase: "playing-3s"` — see `maybeReportAudio`), and once per audio file whose
+   *  load was slow, retried or failed (`phase: "buffer-settled"`). */
   onAudioReport?: (details: Record<string, unknown>) => void;
   /** Resolves an asset to a streamable URL — injected so this class needs no knowledge of the API. */
   mediaUrlFor: (assetId: string) => string | null;
@@ -1168,7 +1169,15 @@ export class PlaybackEngine {
 
   constructor(host: PlaybackHost) {
     this.host = host;
-    this.audioMixEngine = new AudioMixEngine((assetId) => this.host.mediaUrlFor(assetId));
+    this.audioMixEngine = new AudioMixEngine(
+      (assetId) => this.host.mediaUrlFor(assetId),
+      (details) =>
+        this.host.onAudioReport?.({
+          phase: "buffer-settled",
+          buffer: details,
+          userAgent: typeof navigator === "undefined" ? null : navigator.userAgent,
+        })
+    );
   }
 
   /** See `lastFrameComplete`. Read by the export dialog (`ExportDialog.tsx`), which scrubs this engine
@@ -2618,6 +2627,7 @@ export class PlaybackEngine {
         return { clipId, paused: element.paused, muted: element.muted, volume: element.volume, readyState: element.readyState };
       });
     this.host.onAudioReport({
+      phase: "playing-3s",
       ...this.audioMixEngine.diagnostics(active.map(({ clip }) => ({ clipId: clip.id, assetId: clip.assetId }))),
       assetKinds: active.map(({ clip }) => project.assets.find((a) => a.id === clip.assetId)?.kind ?? null),
       audioClockAdvanced: Number((this.audioMixEngine.contextTime - this.audioReportContextTime).toFixed(3)),
