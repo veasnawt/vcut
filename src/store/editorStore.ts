@@ -662,12 +662,13 @@ let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
  *  discarded rather than overwriting the project the user actually switched to. */
 let loadSeq = 0;
 
-/** Same "not reactive state" reasoning `undoStack` above already gives — `watchAiVideo`'s own unwatch
- *  closure isn't serializable and doesn't need to trigger a re-render itself (the `aiGenerations` patch
- *  it drives already does). Single-flight (one at a time, matching `startAiVideoGeneration`'s own doc
- *  comment) is exactly why a single pair of variables is enough rather than a map keyed by job id. */
+/** Same "not reactive state" reasoning `undoStack` above already gives — the running job's id doesn't
+ *  need to trigger a re-render itself (the `aiGenerations` patch its watcher drives already does).
+ *  Single-flight (one at a time, matching `startAiVideoGeneration`'s own doc comment) is exactly why a
+ *  single variable is enough rather than a map keyed by job id. The watcher's own unwatch function isn't
+ *  kept: nothing ever needs to stop it early (see `cancelAiVideoGeneration`), and a write-only variable
+ *  holding it failed the mobile app's stricter `noUnusedLocals` type check. */
 let activeAiVideoJobId: string | null = null;
-let unwatchActiveAiVideo: (() => void) | null = null;
 
 export const useEditorStore = create<EditorState>((set, get) => {
   /** Copies the undo stack's derived state into the store after any change to it. */
@@ -1316,7 +1317,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
       try {
         const started = await api.startAiVideo(projectId, prompt, aspectRatio);
         activeAiVideoJobId = started.jobId;
-        unwatchActiveAiVideo = api.watchAiVideo(
+        api.watchAiVideo(
           started.jobId,
           (update: AiVideoProgress) => {
             // See `generateAiImage`'s own identical comment on `hiddenFromLibrary`/`aiGeneration` —
@@ -1335,15 +1336,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
               const current = get().project;
               if (current) applyProject({ ...current, assets: [...current.assets, asset] });
             }
-            if (update.status !== "running") {
-              activeAiVideoJobId = null;
-              unwatchActiveAiVideo = null;
-            }
+            if (update.status !== "running") activeAiVideoJobId = null;
           },
           (message) => {
             patchAiGeneration(id, { status: "failed", error: message });
             activeAiVideoJobId = null;
-            unwatchActiveAiVideo = null;
           }
         );
       } catch (err) {
@@ -1352,10 +1349,10 @@ export const useEditorStore = create<EditorState>((set, get) => {
     },
 
     cancelAiVideoGeneration() {
-      // No need to also patch the item or call `unwatchActiveAiVideo` here — cancelling races the
-      // job's own completion (same tolerance `cancelInpaint` already documents), and the SSE stream
-      // itself delivers one final "cancelled" update through the exact same `onUpdate` handler above,
-      // which already clears both module variables once `update.status !== "running"`.
+      // No need to also patch the item or stop the watcher here — cancelling races the job's own
+      // completion (same tolerance `cancelInpaint` already documents), and the SSE stream itself
+      // delivers one final "cancelled" update through the exact same `onUpdate` handler above, which
+      // already clears `activeAiVideoJobId` once `update.status !== "running"`.
       if (activeAiVideoJobId) void api.cancelAiVideo(activeAiVideoJobId);
     },
 
