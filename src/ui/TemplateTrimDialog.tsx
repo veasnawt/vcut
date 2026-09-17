@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Close } from "@veasnawt/vicons";
+import { Close, Pause, Play } from "@veasnawt/vicons";
 import { mediaUrl } from "../api/client.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import type { Asset } from "../project/types.ts";
@@ -38,10 +38,66 @@ export function TemplateTrimDialog({
   const videoRef = useRef<HTMLVideoElement>(null);
   const maxSourceIn = Math.max(0, asset.duration - requiredLength);
   const [sourceIn, setSourceIn] = useState(() => Math.min(currentSourceIn, maxSourceIn));
+  // Plays just the selected window, on a loop — so a pick can be judged by watching it, not only by
+  // scrubbing its first frame. Read through a ref inside the playback loop, since the window can move
+  // while it plays.
+  const [playing, setPlaying] = useState(false);
+  const [playFraction, setPlayFraction] = useState(0);
+  const sourceInRef = useRef(sourceIn);
+  sourceInRef.current = sourceIn;
 
   function seekPreview(value: number) {
     if (videoRef.current) videoRef.current.currentTime = value;
   }
+
+  function pausePreview() {
+    videoRef.current?.pause();
+    setPlaying(false);
+  }
+
+  function togglePlay() {
+    const video = videoRef.current;
+    if (!video) return;
+    if (playing) {
+      pausePreview();
+      return;
+    }
+    const start = sourceInRef.current;
+    if (video.currentTime < start || video.currentTime >= start + requiredLength - 0.05) video.currentTime = start;
+    // With sound — the tap itself is the gesture that allows it. Falls back to silent playback if the
+    // browser still refuses, rather than not playing at all.
+    video.muted = false;
+    video.play().then(
+      () => setPlaying(true),
+      () => {
+        video.muted = true;
+        video.play().then(
+          () => setPlaying(true),
+          () => setPlaying(false)
+        );
+      }
+    );
+  }
+
+  // Loops the window: checked every frame rather than on `timeupdate` (only ~4 times a second, which
+  // would run a quarter-second past the window's end before jumping back).
+  useEffect(() => {
+    if (!playing) return;
+    let frame = 0;
+    const tick = () => {
+      const video = videoRef.current;
+      if (!video) return;
+      const start = sourceInRef.current;
+      if (video.currentTime >= start + requiredLength || video.ended) {
+        video.currentTime = start;
+        if (video.paused) void video.play().catch(() => setPlaying(false));
+      }
+      setPlayFraction(Math.min(1, Math.max(0, (video.currentTime - start) / requiredLength)));
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [playing, requiredLength]);
 
   // `onLoadedMetadata` alone missed a real case: if the browser already had this video's metadata
   // cached (a re-open of the same dialog, or the asset was recently played elsewhere), `loadedmetadata`
@@ -60,6 +116,8 @@ export function TemplateTrimDialog({
     const track = trackRef.current;
     if (!track || maxSourceIn <= 0) return;
     preventDefaultIfMouse(event);
+    // Moving the window means choosing a new spot — stop playing and scrub instead.
+    if (playing) pausePreview();
     const trackRect = track.getBoundingClientRect();
     const start = clientPoint(event);
     // Where inside the window the drag actually grabbed, in seconds — keeps the window from jumping
@@ -100,15 +158,26 @@ export function TemplateTrimDialog({
         </div>
 
         <div className="p-4">
-          <video
-            ref={videoRef}
-            src={mediaUrl(projectId, asset.relPath, Boolean(asset.libraryMediaId))}
-            muted
-            playsInline
-            preload="auto"
-            onLoadedMetadata={() => seekPreview(sourceIn)}
-            className="aspect-video w-full rounded-lg bg-black object-contain"
-          />
+          <div className="relative">
+            <video
+              ref={videoRef}
+              src={mediaUrl(projectId, asset.relPath, Boolean(asset.libraryMediaId))}
+              muted
+              playsInline
+              preload="auto"
+              onLoadedMetadata={() => seekPreview(sourceIn)}
+              onClick={togglePlay}
+              className="aspect-video w-full cursor-pointer rounded-lg bg-black object-contain"
+            />
+            <button
+              onClick={togglePlay}
+              aria-label={playing ? t("Pause") : t("Play")}
+              title={playing ? t("Pause") : t("Play")}
+              className="absolute bottom-2 left-2 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-sm transition hover:bg-black/80"
+            >
+              {playing ? <Pause size={16} /> : <Play size={16} />}
+            </button>
+          </div>
 
           <p className="mt-3 text-center text-xs text-white/60">
             {t("Showing {start} – {end} of {total}", {
@@ -127,6 +196,13 @@ export function TemplateTrimDialog({
               }}
             >
               <span className="text-[10px] font-medium">{formatDuration(requiredLength)}</span>
+              {playing && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-y-1 w-0.5 rounded-full bg-white shadow"
+                  style={{ left: `${playFraction * 100}%` }}
+                />
+              )}
             </div>
           </div>
 

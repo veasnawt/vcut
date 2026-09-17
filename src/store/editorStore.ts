@@ -467,7 +467,7 @@ export interface EditorState {
    *  can, while every other caller (plain drag-drop/file-picker import) is free to still ignore it.
    *  `hiddenFromLibrary`: stamped onto every asset from this call (see `Asset.hiddenFromLibrary`'s own
    *  comment) — used by `VoiceoverRecorder` so a quick take doesn't clutter the Media Library. */
-  importFiles: (files: File[], options?: { hiddenFromLibrary?: boolean }) => Promise<Asset[]>;
+  importFiles: (files: File[], options?: { hiddenFromLibrary?: boolean; soundEffect?: boolean }) => Promise<Asset[]>;
   /** Downloads one chosen Pixabay stock search result server-side and lands it in `project.assets` —
    *  same "not undo-able, an import is more like an asset creation than a timeline edit" reasoning
    *  `importFiles` itself follows. Singular (one result at a time), matching a user clicking exactly
@@ -1230,7 +1230,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
               get().setStatus(label);
             },
           });
-          imported.push(options?.hiddenFromLibrary ? { ...asset, hiddenFromLibrary: true } : asset);
+          imported.push({
+            ...asset,
+            ...(options?.hiddenFromLibrary ? { hiddenFromLibrary: true } : null),
+            ...(options?.soundEffect ? { soundEffect: true as const } : null),
+          });
         } catch (err) {
           failures.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
         }

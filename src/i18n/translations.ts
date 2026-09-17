@@ -373,6 +373,7 @@ export const KM_TRANSLATIONS: Record<string, string> = {
   "Fade in": "លេចឡើងបន្តិចម្តងៗ",
   Duration: "រយៈពេល",
   "Mute clip": "ស្ងាត់ឈុត",
+  "Unmute clip": "បើកសំឡេងឈុត",
   Volume: "កម្រិតសំឡេង",
   Start: "ចាប់ផ្តើម",
   End: "បញ្ចប់",

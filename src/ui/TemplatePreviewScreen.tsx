@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Add, Close, Image as ImageIcon, Music, Pause, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
+import { Add, Close, Image as ImageIcon, Music, Pause, Play, Text as TextIcon, Video, Volume } from "@veasnawt/vicons";
 import { assetFromLibraryMedia, mediaUrl, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
+import { SetClipMutedCommand } from "../commands/index.ts";
 import { fontById } from "../project/fonts.ts";
+import { isSoundEffectAsset } from "../project/sfx.ts";
 import { sequenceDuration } from "../project/createProject.ts";
 import { templateAudioAssets, templateClips, templateSlotRequiredLength, type TemplateClipEntry } from "../project/template.ts";
 import type { Asset, Project } from "../project/types.ts";
@@ -68,9 +70,12 @@ export function TemplatePreviewScreen({ onBack }: { onBack?: () => void }) {
   const trimTemplateSlot = useEditorStore((s) => s.trimTemplateSlot);
   const setTemplateClipText = useEditorStore((s) => s.setTemplateClipText);
   const setPlaying = useEditorStore((s) => s.setPlaying);
+  const run = useEditorStore((s) => s.run);
 
   const clips = project ? templateClips(project) : [];
-  const audioRows = project ? templateAudioAssets(project) : [];
+  // Music and other audio only — a template's sound effects stay in the video but aren't offered for
+  // replacing: a whoosh or a click is part of the edit's own timing, not a track someone swaps out.
+  const audioRows = project ? templateAudioAssets(project).filter((asset) => !isSoundEffectAsset(asset)) : [];
   const hasVideo = clips.some((e) => e.asset.kind === "video" || e.asset.kind === "image");
   const hasText = clips.some((e) => e.asset.kind === "text");
   const hasAudio = audioRows.length > 0;
@@ -156,6 +161,8 @@ export function TemplatePreviewScreen({ onBack }: { onBack?: () => void }) {
                   key={selected.asset.id}
                   asset={selected.asset}
                   project={project}
+                  muted={selected.clip.mutedAudio ?? false}
+                  onToggleMute={() => run(new SetClipMutedCommand(selected.clip.id, !(selected.clip.mutedAudio ?? false)))}
                   onTrim={() => setTrimmingAsset(selected.asset)}
                   onReplace={() => setReplaceTarget({ ...REPLACE_FOOTAGE, assetId: selected.asset.id })}
                 />
@@ -374,6 +381,11 @@ function FilmstripTile({
           {asset.kind === "video" ? <Video size={16} /> : <ImageIcon size={16} />}
         </div>
       )}
+      {clip.mutedAudio && asset.kind === "video" && (
+        <span aria-hidden className="absolute left-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded bg-black/80 text-white">
+          <MutedIcon size={10} />
+        </span>
+      )}
       <span className="absolute bottom-0.5 right-0.5 rounded bg-black/80 px-1 text-[9px] tabular-nums text-white">
         {formatDuration(clip.sourceOut - clip.sourceIn)}
       </span>
@@ -381,24 +393,59 @@ function FilmstripTile({
   );
 }
 
+/** The speaker glyph struck through — same look as the editor toolbar's own sequence-mute button. */
+function MutedIcon({ size }: { size: number }) {
+  return (
+    <span className="relative inline-flex">
+      <Volume size={size} />
+      <span
+        aria-hidden
+        style={{ width: size * 1.25 }}
+        className="absolute left-1/2 top-1/2 h-[1.5px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current"
+      />
+    </span>
+  );
+}
+
 function VideoTabContent({
   asset,
   project,
+  muted,
+  onToggleMute,
   onTrim,
   onReplace,
 }: {
   asset: Asset;
   project: Project;
+  /** The SELECTED clip's own audio mute (`Clip.mutedAudio`) — per clip, not per footage group like Trim
+   *  and Replace, so one copy of a duplicated clip can stay audible while another is silenced. */
+  muted: boolean;
+  onToggleMute: () => void;
   onTrim: () => void;
   onReplace: () => void;
 }) {
   const t = useTranslation();
   const requiredLength = templateSlotRequiredLength(project, asset.id);
   const canTrim = asset.kind === "video" && asset.duration > requiredLength;
+  // Only footage that actually has sound — a still or a silent video has nothing to mute.
+  const canMute = asset.kind === "video" && asset.hasAudio;
   return (
     <div className="flex items-center justify-between gap-2 rounded-lg bg-white/5 px-3 py-2">
       <span className="truncate text-xs text-white/80">{asset.name}</span>
       <div className="flex shrink-0 items-center gap-1.5">
+        {canMute && (
+          <button
+            onClick={onToggleMute}
+            aria-pressed={muted}
+            title={muted ? t("Unmute clip") : t("Mute clip")}
+            className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-medium transition ${
+              muted ? "bg-sky-500/25 text-sky-100 hover:bg-sky-500/35" : "bg-white/10 text-white/80 hover:bg-white/20"
+            }`}
+          >
+            {muted ? <MutedIcon size={12} /> : <Volume size={12} />}
+            {muted ? t("Muted") : t("Mute")}
+          </button>
+        )}
         {canTrim && (
           <button onClick={onTrim} className="rounded-md bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white/80 transition hover:bg-white/20">
             {t("Trim")}

@@ -146,6 +146,13 @@ export interface Asset {
    *  reached it in the first place; kept for symmetry with older bundled-SFX clips placed before this
    *  field existed, which DID go through the ordinary import path. */
   bundledSfx?: true;
+  /** Set on any audio asset added as a SOUND EFFECT — a bundled catalog entry or a "My Sounds" pick
+   *  (`SfxPanel.tsx`) — as opposed to music, a voiceover or an ordinary audio import. `bundledSfx` alone
+   *  can't say this: a "My Sounds" pick is a plain import, and saving a template (then starting a
+   *  project from it) re-imports every audio file as a fresh, ordinary asset, dropping `bundledSfx`
+   *  along the way. This one is carried through both steps, so a template project can still tell its
+   *  sound effects apart from its music (`isSoundEffectAsset`). */
+  soundEffect?: true;
 }
 
 /** Visual style for a text asset. Simpler than `ClipTransform`: font size already controls "how big"

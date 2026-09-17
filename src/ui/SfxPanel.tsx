@@ -159,7 +159,7 @@ export function SfxPanel({ onClose }: { onClose: () => void }) {
       // clutter rather than a convenience. Once it's on the timeline it's still a completely ordinary
       // clip — droppable/duplicable/trimmable exactly like any other — this flag only keeps it out of
       // the LIBRARY LISTING, never off the timeline itself.
-      const [asset] = await importFiles([file], { hiddenFromLibrary: true });
+      const [asset] = await importFiles([file], { hiddenFromLibrary: true, soundEffect: true });
       if (!asset) return;
       const trackId = targetAudioTrackId(defaultClipDuration(asset));
       // Not `avoidOverlap: true` — `targetAudioTrackId` above already guaranteed the playhead spot on

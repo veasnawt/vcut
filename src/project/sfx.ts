@@ -265,5 +265,18 @@ export function assetFromBundledSfx(def: SfxDefinition): Asset | null {
     importedAt: Date.now(),
     hiddenFromLibrary: true,
     bundledSfx: true,
+    soundEffect: true,
   };
+}
+
+const SFX_LABELS = new Set(SFX_REGISTRY.map((def) => def.label.toLowerCase()));
+
+/** Whether an audio asset is a sound effect rather than music or other audio — see
+ *  `Asset.soundEffect`. Also recognizes a catalog sound saved into a template BEFORE that marker
+ *  existed: re-importing one kept only its name, which is the catalog label plus a file extension
+ *  (`bundleTemplateAudio`'s own naming) — so a name matching a catalog label counts too. */
+export function isSoundEffectAsset(asset: Asset): boolean {
+  if (asset.kind !== "audio") return false;
+  if (asset.soundEffect || asset.bundledSfx) return true;
+  return SFX_LABELS.has(asset.name.replace(/\.[a-z0-9]{2,4}$/i, "").trim().toLowerCase());
 }

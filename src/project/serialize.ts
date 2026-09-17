@@ -168,6 +168,7 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     // not a placeholder, so (unlike `templatePlaceholder`) this DOES legitimately persist in an
     // ordinary project's own project.json indefinitely, for as long as the clip stays placed.
     ...(raw.bundledSfx === true ? { bundledSfx: true as const } : null),
+    ...(raw.soundEffect === true ? { soundEffect: true as const } : null),
   };
 }
 
