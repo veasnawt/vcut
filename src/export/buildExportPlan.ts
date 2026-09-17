@@ -1691,6 +1691,51 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
   const videoInputRefs = new Map<number, string>();
   const videoRef = (index: number): string => videoInputRefs.get(index) ?? `${index}:v`;
 
+  /** Every "I need N seconds of silence" request across the whole export — deferred rather than each
+   *  becoming its own `anullsrc` input immediately (see `pushSilentAudio`'s own doc comment for why). */
+  const pendingSilentAudio: { label: string; duration: number }[] = [];
+
+  /** Reserves `duration` seconds of silence for `outputLabel`. The spec (48kHz stereo) never varies
+   *  anywhere in this file, so every request — one per gap, per image/color/text/muted clip needing an
+   *  audio leg to concat/mix against real audio elsewhere — shares exactly ONE real `anullsrc` input,
+   *  resolved once at the very end (`flushPendingSilentAudio`) via `asplit=` fanned out and trimmed
+   *  per request, same "one real source, many independently-trimmed copies" shape
+   *  `pushKeyframedClipVideoFilters`'s own `split=`/`trim=` already uses for keyframe slices.
+   *
+   *  This is what removed the single largest contributor to a REAL, reported hosted export crash:
+   *  confirmed live (a container-side `/sys/fs/cgroup/pids.current` trace, idle ~29, spiking toward
+   *  this container's cgroup `pids.max` of 1000 — the WHOLE container's process/thread budget) that
+   *  FFmpeg's own scheduler spawns roughly one thread PER INPUT (decoder+demuxer) essentially all at
+   *  once at startup, independent of any `-threads` cap (which only bounds a given codec's own
+   *  INTERNAL worker count, not the scheduler's fixed per-input overhead) — see
+   *  `pushKhmerTextOverlay`'s own doc comment for the first time this exact failure (identical
+   *  signature: `pthread_create() failed` → `Could not open encoder before EOF` → `-22` on BOTH
+   *  encoders) was diagnosed this way, for a different input-count contributor. Reproduced directly
+   *  against a real user's own project (79 total inputs, 34 of them otherwise-identical `anullsrc`
+   *  legs) before this fix and confirmed fixed after, on the actual bundled FFmpeg binary. */
+  function pushSilentAudio(duration: number, outputLabel: string): void {
+    pendingSilentAudio.push({ label: outputLabel, duration });
+  }
+
+  /** Resolves every `pushSilentAudio` request into the one shared `anullsrc` input — called once,
+   *  right before `inputs`/`filters` are assembled into the final args. */
+  function flushPendingSilentAudio(): void {
+    if (pendingSilentAudio.length === 0) return;
+    const maxDuration = Math.max(...pendingSilentAudio.map((p) => p.duration));
+    const anullIndex = inputIndex++;
+    inputs.push("-f", "lavfi", "-t", t(maxDuration), "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
+    if (pendingSilentAudio.length === 1) {
+      const [only] = pendingSilentAudio;
+      filters.push(`[${anullIndex}:a]atrim=start=0:end=${t(only.duration)},asetpts=PTS-STARTPTS[${only.label}]`);
+      return;
+    }
+    const pads = pendingSilentAudio.map((_, i) => `silentsplit${i}`);
+    filters.push(`[${anullIndex}:a]asplit=${pendingSilentAudio.length}${pads.map((p) => `[${p}]`).join("")}`);
+    pendingSilentAudio.forEach((p, i) => {
+      filters.push(`[${pads[i]}]atrim=start=0:end=${t(p.duration)},asetpts=PTS-STARTPTS[${p.label}]`);
+    });
+  }
+
   /** Adds a still image's input for `duration` seconds, as input number `index` — or, for an ANIMATED
    *  image (a sticker/GIF: `Asset.animation`), its animated PNG looped from wherever `clip` is inside
    *  the animation at source time `sourceStart`. Preview picks a sticker's frame with
@@ -2044,8 +2089,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       const volumeStage = gain !== 1 ? `,volume=${n(gain)}` : "";
       filters.push(`[${videoIndex}:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${volumeStage}${fadeStage}[${outputLabel}]`);
     } else {
-      inputs.push("-f", "lavfi", "-t", t(sliceDuration), "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
-      filters.push(`[${inputIndex++}:a]asetpts=PTS-STARTPTS[${outputLabel}]`);
+      pushSilentAudio(sliceDuration, outputLabel);
     }
   }
 
@@ -2450,8 +2494,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           `color=c=${gapColor}:s=${width}x${height}:r=${fps}${transparent ? ",format=rgba" : ""}`
         );
         filters.push(`[${inputIndex++}:v]setsar=1,setpts=PTS-STARTPTS[${videoLabel}]`);
-        inputs.push("-f", "lavfi", "-t", t(segment.duration), "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
-        filters.push(`[${inputIndex++}:a]asetpts=PTS-STARTPTS[${audioLabel}]`);
+        pushSilentAudio(segment.duration, audioLabel);
       }
 
       concatLabels.push(`[${videoLabel}][${audioLabel}]`);
@@ -2520,8 +2563,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
 
         filters.push(`[${fromAudioLabel}][${toAudioLabel}]acrossfade=d=${t(D)}[${audioLabel}]`);
       } else {
-        inputs.push("-f", "lavfi", "-t", t(segment.duration), "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
-        filters.push(`[${inputIndex++}:a]asetpts=PTS-STARTPTS[${audioLabel}]`);
+        pushSilentAudio(segment.duration, audioLabel);
       }
 
       concatLabels.push(`[${audioLabel}]`);
@@ -2908,6 +2950,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     );
     videoOut = "[conformed]";
   }
+
+  flushPendingSilentAudio();
 
   return {
     duration,
