@@ -1485,6 +1485,31 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, load]);
 
+  // The editor must never show a project other than the one in the URL. Reported on vcut.io: creating
+  // a blank project opened the editor showing the PREVIOUS project's name and video, while the new
+  // project on the server was empty and never reproduced locally. Whatever leaves the store holding
+  // the wrong project, this shows the loading state instead, reloads the right one, and reports it.
+  const heldProjectId = project?.bpProjectId ?? null;
+  const projectMismatch = !loading && heldProjectId !== null && heldProjectId !== projectId;
+  useEffect(() => {
+    if (!projectMismatch) return;
+    // Re-read the store rather than trusting `projectMismatch` from render: on the first render after
+    // navigating here it's true only because the load effect above hadn't switched the store yet, and
+    // by the time this effect runs that effect already has (store now loading, holding no project).
+    // Only a store that has switched to this id, finished loading, and still holds another project is
+    // the real anomaly.
+    const state = useEditorStore.getState();
+    const heldNow = state.project?.bpProjectId ?? null;
+    if (state.loading || state.projectId !== projectId || heldNow === null || heldNow === projectId) return;
+    reportError("editor-project-mismatch", new Error("Editor held a different project than the URL"), {
+      url: projectId,
+      held: heldNow,
+      heldName: state.project?.name ?? null,
+    });
+    void load(projectId, projectName);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectMismatch]);
+
   // Flush on unmount and on window close, so the autosave debounce can never swallow the final edit.
   useEffect(() => {
     const onBeforeUnload = () => void flushPendingSave();
@@ -1617,7 +1642,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  if (loading) {
+  if (loading || projectMismatch) {
     return (
       <div className="flex h-full items-center justify-center bg-[#0a0c10] text-xs text-white/40">
         {t("Opening VCut…")}

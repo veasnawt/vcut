@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import * as api from "../api/client.ts";
 import { ApiRequestError } from "../api/client.ts";
+import { reportError } from "../api/crashLog.ts";
 import type { AiAspectRatio, AiImageModel, AiVideoProgress, CaptionSegment, SourceRect, StockSearchResult } from "../api/client.ts";
 import type { Command } from "../commands/index.ts";
 import {
@@ -624,6 +625,9 @@ export interface EditorState {
 const undoStack = new UndoStack();
 
 let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+/** Incremented by every `load` call; a load whose response arrives after a newer one started is
+ *  discarded rather than overwriting the project the user actually switched to. */
+let loadSeq = 0;
 
 /** Same "not reactive state" reasoning `undoStack` above already gives — `watchAiVideo`'s own unwatch
  *  closure isn't serializable and doesn't need to trigger a re-render itself (the `aiGenerations` patch
@@ -654,6 +658,19 @@ export const useEditorStore = create<EditorState>((set, get) => {
   /** Applies a project change from an edit, keeping the playhead inside the (possibly shortened)
    *  timeline and dropping selections for clips the edit removed. */
   function applyProject(project: Project) {
+    // Every edit, import and removal lands here. One that was started against a previous project and
+    // finishes after the editor has switched to another (an upload completing after navigating away)
+    // must not replace the project now open. Reported: a freshly created blank project showed the
+    // previous project's name and video, even though the new project was empty on the server.
+    const openProjectId = get().projectId;
+    if (openProjectId && project.bpProjectId !== openProjectId) {
+      reportError("editor-project-mismatch", new Error("Dropped an edit to a project other than the one open"), {
+        writing: project.bpProjectId,
+        writingName: project.name,
+        open: openProjectId,
+      });
+      return;
+    }
     const total = sequenceDuration(project);
     const alive = new Set(project.sequence.tracks.flatMap((t) => t.clips.map((c) => c.id)));
     set((state) => ({
@@ -723,9 +740,32 @@ export const useEditorStore = create<EditorState>((set, get) => {
     previewCanvas: null,
 
     async load(projectId, projectName) {
-      set({ loading: true, loadError: null, loadErrorStatus: null, projectId });
+      const seq = ++loadSeq;
+      const previous = get();
+      const switching = previous.projectId !== projectId;
+      if (switching) {
+        // The store outlives page navigations, so without this the previous project stays in memory —
+        // name, clips, media — until the new one arrives. Its unsaved edits are flushed to ITS OWN id
+        // first rather than dropped with the pending autosave.
+        if (autosaveTimer) {
+          clearTimeout(autosaveTimer);
+          autosaveTimer = null;
+        }
+        if (previous.dirty && previous.project && previous.projectId) {
+          void api.saveProject(previous.projectId, previous.project).catch(() => {});
+        }
+        undoStack.clear();
+      }
+      set({
+        loading: true,
+        loadError: null,
+        loadErrorStatus: null,
+        projectId,
+        ...(switching ? { project: null, dirty: false, playing: false, playhead: 0, selectedClipIds: [] } : null),
+      });
       try {
         const project = await api.loadProject(projectId, projectName);
+        if (seq !== loadSeq) return;
         // History from a previously-open project references clip ids that don't exist in this one.
         undoStack.clear();
         set({
@@ -759,6 +799,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
         });
         syncUndoState();
       } catch (err) {
+        if (seq !== loadSeq) return;
         set({
           loading: false,
           loadError: err instanceof Error ? err.message : String(err),
