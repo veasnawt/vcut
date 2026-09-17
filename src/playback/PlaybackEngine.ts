@@ -1177,7 +1177,8 @@ export class PlaybackEngine {
           buffer: details,
           userAgent: typeof navigator === "undefined" ? null : navigator.userAgent,
         }),
-      () => this.host.onPlaybackBlocked()
+      () => this.host.onPlaybackBlocked(),
+      (assetId) => this.prepareElementClips(assetId)
     );
   }
 
@@ -1789,13 +1790,14 @@ export class PlaybackEngine {
       now - this.lastPrefetchScanAt >= AUDIO_PREFETCH_SCAN_INTERVAL_MS
     ) {
       this.lastPrefetchScanAt = now;
-      for (const { clip } of audibleClips(project)) {
+      for (const { track, clip } of audibleClips(project)) {
         // Includes a clip already under the playhead, not only ones about to start — so a file this
         // browser can't decode is found out before Play is pressed, and its `<audio>`-element fallback
         // can start inside that tap (`primeElementClipsFromGesture`).
         if (clip.timelineStart + (clip.sourceOut - clip.sourceIn) <= time || clip.timelineStart > time + AUDIO_PREFETCH_LOOKAHEAD_SECONDS) continue;
         const url = this.host.mediaUrlFor(clip.assetId);
         if (url) this.audioMixEngine.prefetchAsset(clip.assetId, url);
+        this.audioMixEngine.prepareElementClip(track.id, clip);
       }
 
       // Same reasoning, video-track clips — confirmed a real, reported gap: unlike audio,
@@ -2640,6 +2642,19 @@ export class PlaybackEngine {
       videoElements,
       userAgent: typeof navigator === "undefined" ? null : navigator.userAgent,
     });
+  }
+
+  /** Creates the `<audio>` elements for an asset's clips near the playhead the moment it switches to
+   *  element playback (`AudioMixEngine.onElementFallback`), so they're already loading before Play. */
+  private prepareElementClips(assetId: string): void {
+    const project = this.host.getProject();
+    if (!project) return;
+    const time = this.host.getPlayhead();
+    for (const { track, clip } of audibleClips(project)) {
+      if (clip.assetId !== assetId) continue;
+      if (clip.timelineStart + (clip.sourceOut - clip.sourceIn) <= time || clip.timelineStart > time + AUDIO_PREFETCH_LOOKAHEAD_SECONDS) continue;
+      this.audioMixEngine.prepareElementClip(track.id, clip);
+    }
   }
 
   private syncAudioTracks(project: Project, time: number, playing: boolean): void {
