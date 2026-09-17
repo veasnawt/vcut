@@ -2,7 +2,8 @@
 
 import { Capacitor } from "@capacitor/core";
 import { Share } from "@capacitor/share";
-import { useEffect, useRef, useState } from "react";
+import { Check, Close } from "@veasnawt/vicons";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   ApiRequestError,
   cancelExport,
@@ -18,10 +19,16 @@ import { useTranslation } from "../i18n/useTranslation.ts";
 import { sequenceDuration } from "../project/createProject.ts";
 import { FPS_PRESETS, RESOLUTION_PRESETS } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
-import { formatTimecode } from "../timeline/time.ts";
+import { formatDuration, formatTimecode } from "../timeline/time.ts";
 import { Dropdown } from "./Dropdown.tsx";
 
 type Phase = "idle" | "running" | "done" | "failed" | "cancelled";
+
+/** Gap between the preview's own edge and the progress stroke that travels around it, and that
+ *  stroke's width — the stroke sits OUTSIDE the video, never over its pixels. */
+const RING_GAP = 7;
+const RING_STROKE = 3.5;
+const PREVIEW_RADIUS = 14;
 
 export function ExportDialog({ onClose }: { onClose: () => void }) {
   const t = useTranslation();
@@ -32,8 +39,10 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const exportRangeEnd = useEditorStore((s) => s.exportRangeEnd);
   const clearExportRange = useEditorStore((s) => s.clearExportRange);
 
-  const total = project ? sequenceDuration(project) : 0;
   const hasRange = exportRangeStart !== null || exportRangeEnd !== null;
+  // Read through the store's own clamped/sorted resolver (re-evaluated on every render — the
+  // `exportRangeStart`/`exportRangeEnd`/`project` subscriptions above are what trigger those).
+  const { start: rangeStart, end: rangeEnd } = useEditorStore.getState().exportRange();
 
   const [width, setWidth] = useState(project?.exportSettings.width ?? 1080);
   const [height, setHeight] = useState(project?.exportSettings.height ?? 1920);
@@ -49,6 +58,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   // sub-state of "running" specifically, not a new top-level phase the rest of the UI needs to branch
   // on.
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [available, setAvailable] = useState<boolean | null>(null);
@@ -64,6 +74,12 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   const jobIdRef = useRef<string | null>(null);
   const unwatchRef = useRef<(() => void) | null>(null);
+  // Where encoding progress was first seen, for the time-left estimate — measured from the first real
+  // FFmpeg number rather than from the click, so the save/upload/text-render lead-in (which reports no
+  // numeric progress at all) doesn't inflate every estimate after it.
+  const encodeStartRef = useRef<{ at: number; progress: number } | null>(null);
+
+  useExportPreviewPlayback(phase === "running" || phase === "done", rangeStart, rangeEnd);
 
   // Checked up front rather than on click: if export can't work, the dialog says so plainly instead
   // of presenting a button that fails.
@@ -113,6 +129,8 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     setError(null);
     setPhase("running");
     jobIdRef.current = jobId;
+    encodeStartRef.current = null;
+    setEtaSeconds(null);
     if (knownFileName) setFileName(knownFileName);
 
     unwatchRef.current = watchExport(
@@ -121,6 +139,15 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
         setProgress(update.progress);
         setStatusMessage(update.message ?? null);
         if (!knownFileName) setFileName(update.fileName);
+        if (update.status === "running" && !update.message && update.progress > 0) {
+          const now = performance.now();
+          encodeStartRef.current ??= { at: now, progress: update.progress };
+          const elapsed = (now - encodeStartRef.current.at) / 1000;
+          const advanced = update.progress - encodeStartRef.current.progress;
+          // Too little measured yet and the estimate swings wildly — better to say nothing for the
+          // first moment than to flash "about 9:41 left" and then correct itself to "0:12".
+          setEtaSeconds(advanced > 0.02 && elapsed > 1.5 ? (elapsed / advanced) * (1 - update.progress) : null);
+        }
         if (update.status === "done") {
           setPhase("done");
           if (isNative) void autoSaveToGallery(update.fileName);
@@ -159,6 +186,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     if (!project || !projectId) return;
     setError(null);
     setProgress(0);
+    setEtaSeconds(null);
     setStatusMessage(t("Saving project…"));
     setPhase("running");
     setGallerySave("idle");
@@ -227,10 +255,28 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   }
 
   const busy = phase === "running";
+  // Settings stay editable whenever nothing is rendering and nothing just finished — a failed or
+  // cancelled export is exactly when someone wants to try a smaller resolution or a lower quality.
+  const showSettings = phase === "idle" || phase === "failed" || phase === "cancelled";
+  const qualityLabel = crf <= 18 ? t("High") : crf >= 26 ? t("Small file") : t("Balanced");
+  const seqWidth = project?.sequence.width ?? width;
+  const seqHeight = project?.sequence.height ?? height;
+  const percent = Math.round((phase === "done" ? 1 : progress) * 100);
+
+  const title =
+    phase === "running"
+      ? t("Exporting…")
+      : phase === "done"
+        ? t("Export complete")
+        : phase === "failed"
+          ? t("Export failed")
+          : phase === "cancelled"
+            ? t("Export cancelled")
+            : t("Export");
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm"
       onClick={() => {
         if (!busy) onClose();
       }}
@@ -240,12 +286,40 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="w-full max-w-md rounded-xl border border-white/10 bg-[#12151c] p-5 shadow-2xl"
+        className="relative max-h-[calc(100dvh-2rem)] w-full max-w-md overflow-y-auto overflow-x-hidden rounded-2xl border border-white/10 bg-[#101318] shadow-2xl"
       >
-        <h2 className="text-sm font-semibold text-white">{t("Export")}</h2>
+        {/* Soft color wash behind the preview — tinted by state, so the whole card reads "working",
+            "done" or "failed" at a glance before any text is read. */}
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute left-1/2 top-10 h-64 w-64 -translate-x-1/2 rounded-full blur-3xl transition-colors duration-700 ${
+            phase === "done"
+              ? "bg-emerald-500/20"
+              : phase === "failed"
+                ? "bg-rose-500/15"
+                : phase === "running"
+                  ? "bg-sky-500/20"
+                  : "bg-sky-500/10"
+          }`}
+        />
+
+        <div className="relative flex items-center justify-between px-5 pt-4">
+          <h2 className="text-sm font-semibold text-white" aria-live="polite">
+            {title}
+          </h2>
+          {!busy && (
+            <button
+              onClick={onClose}
+              aria-label={t("Close")}
+              className="-mr-1.5 rounded-full p-1.5 text-white/50 transition hover:bg-white/10 hover:text-white"
+            >
+              <Close size={16} />
+            </button>
+          )}
+        </div>
 
         {available === false ? (
-          <div className="mt-3 rounded-lg bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-200">
+          <div className="relative mx-5 mb-5 mt-3 rounded-lg bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-200">
             <p>
               {t("FFmpeg isn't available on this machine, so VCut can't render a file. Reinstall dependencies")} (
               <code className="font-mono">pnpm install</code>
@@ -262,108 +336,59 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             )}
           </div>
         ) : (
-          <>
-            {hasRange && (
-              <div className="mt-4 flex items-center justify-between rounded-lg bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
-                <span>
-                  {t("Exporting range")} {formatTimecode(Math.min(exportRangeStart ?? 0, exportRangeEnd ?? total), fps)}{" "}
-                  – {formatTimecode(Math.max(exportRangeStart ?? 0, exportRangeEnd ?? total), fps)}
-                </span>
-                <button
-                  disabled={busy}
-                  onClick={clearExportRange}
-                  className="font-medium text-amber-100 underline decoration-amber-100/40 underline-offset-2 transition hover:text-white disabled:opacity-50"
-                >
-                  {t("Reset to full timeline")}
-                </button>
-              </div>
-            )}
-
-            <div className="mt-4 space-y-3">
-              <label className="block">
-                <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-white/50">
-                  {t("Resolution")}
-                </span>
-                <Dropdown
-                  disabled={busy}
-                  ariaLabel={t("Resolution")}
-                  value={`${width}x${height}`}
-                  onChange={(next) => {
-                    const [w, h] = next.split("x").map(Number);
-                    setWidth(w);
-                    setHeight(h);
-                  }}
-                  options={RESOLUTION_PRESETS.map((preset) => ({
-                    value: `${preset.width}x${preset.height}`,
-                    label: preset.label,
-                  }))}
-                />
-              </label>
-
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block">
-                  <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-white/50">
-                    {t("Frame rate")}
-                  </span>
-                  <Dropdown
-                    disabled={busy}
-                    ariaLabel={t("Frame rate")}
-                    value={String(fps)}
-                    onChange={(next) => setFps(Number(next))}
-                    options={FPS_PRESETS.map((value) => ({ value: String(value), label: t("{value} fps", { value }) }))}
+          <div className="relative px-5 pb-5">
+            <div className="flex justify-center pt-5" style={{ paddingInline: RING_GAP, paddingBottom: RING_GAP }}>
+              <div
+                className="relative transition-[width] duration-500 ease-out"
+                style={{
+                  aspectRatio: `${seqWidth} / ${seqHeight}`,
+                  // Height-led for portrait, width-led for landscape — whichever limit binds first. The
+                  // preview grows once settings are out of the way, since it's the only thing left to look at.
+                  width: `min(100%, calc(${showSettings ? "min(30vh, 250px)" : "min(48vh, 400px)"} * ${seqWidth / seqHeight}))`,
+                }}
+              >
+                <PreviewMirror radius={PREVIEW_RADIUS} />
+                {phase !== "idle" && (
+                  <ProgressFrame
+                    progress={phase === "done" ? 1 : progress}
+                    indeterminate={phase === "running" && statusMessage !== null}
+                    tone={phase === "done" ? "done" : phase === "failed" ? "failed" : phase === "cancelled" ? "muted" : "active"}
                   />
-                </label>
-
-                <label className="block">
-                  <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-white/50">
-                    {t("Quality")}
+                )}
+                {showSettings && (
+                  <span className="absolute bottom-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-white/80 backdrop-blur">
+                    {formatDuration(rangeEnd - rangeStart)}
                   </span>
-                  {/* CRF is inverted (lower = better), which is unintuitive — the labels say what the
-                      user actually cares about and keep the numbers out of the way. */}
-                  <Dropdown
-                    disabled={busy}
-                    ariaLabel={t("Quality")}
-                    value={String(crf)}
-                    onChange={(next) => setCrf(Number(next))}
-                    options={[
-                      { value: "18", label: t("High") },
-                      { value: "20", label: t("Balanced") },
-                      { value: "26", label: t("Small file") },
-                    ]}
-                  />
-                </label>
+                )}
+                {phase === "done" && (
+                  <span className="absolute -bottom-3 left-1/2 flex h-7 w-7 -translate-x-1/2 items-center justify-center rounded-full bg-emerald-400 text-[#0b1a14] shadow-[0_0_20px_rgba(52,211,153,0.6)]">
+                    <Check size={16} strokeWidth={3} />
+                  </span>
+                )}
               </div>
             </div>
 
-            {phase !== "idle" && (
-              <div className="mt-4">
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
-                  <div
-                    // `statusMessage` set means FFmpeg doesn't exist yet — `progress` is still 0 and
-                    // would otherwise render as an empty bar that never seems to move, exactly the
-                    // "is this stuck?" impression this whole change exists to fix. A full-width pulse
-                    // reads as "actively working, nothing to measure yet" instead, switching to the
-                    // real determinate width the moment `phase` reaches `encoding` and progress
-                    // becomes a meaningful number.
-                    className={`h-full rounded-full transition-all ${
-                      statusMessage
-                        ? "w-full animate-pulse bg-sky-400/50"
-                        : phase === "failed"
-                          ? "bg-rose-400"
-                          : phase === "done"
-                            ? "bg-emerald-400"
-                            : "bg-sky-400"
-                    }`}
-                    style={statusMessage ? undefined : { width: `${Math.round((phase === "done" ? 1 : progress) * 100)}%` }}
-                  />
-                </div>
-                <p className="mt-2 text-[11px] text-white/60">
-                  {phase === "running" &&
-                    (statusMessage ?? t("Rendering… {percent}%", { percent: Math.round(progress * 100) }))}
-                  {phase === "done" && t("Export complete")}
-                  {phase === "cancelled" && t("Export cancelled")}
-                  {phase === "failed" && <span className="text-rose-300">{error}</span>}
-                </p>
+            {!showSettings && (
+              <div className="mt-5 text-center">
+                {phase === "running" && (
+                  <>
+                    {/* Fixed height either way, so the jump from a sub-phase message to the first real
+                        percentage doesn't shift the whole card. No "0%" while nothing is measurable yet
+                        — a frozen zero is exactly the "is this stuck?" read the orbiting ring avoids. */}
+                    <div className="flex h-9 items-center justify-center">
+                      {statusMessage ? (
+                        <p className="text-sm font-medium text-white/80">{statusMessage}</p>
+                      ) : (
+                        <p className="text-3xl font-semibold tabular-nums tracking-tight text-white">{percent}%</p>
+                      )}
+                    </div>
+                    <p className="mt-1 h-4 text-[11px] text-white/50">
+                      {!statusMessage &&
+                        (etaSeconds !== null ? t("About {time} left", { time: formatDuration(Math.max(1, etaSeconds)) }) : t("Rendering…"))}
+                    </p>
+                  </>
+                )}
+                {phase === "done" && fileName && <p className="mt-2 truncate text-[11px] text-white/50">{fileName}</p>}
                 {phase === "done" && isNative && (
                   <p className="mt-1 text-[11px] text-white/40">
                     {gallerySave === "saving" && t("Saving to Gallery…")}
@@ -373,16 +398,109 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                     )}
                   </p>
                 )}
+                <p className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] tabular-nums text-white/55">
+                  {width} × {height}
+                  <span className="text-white/20">•</span>
+                  {t("{value} fps", { value: fps })}
+                  <span className="text-white/20">•</span>
+                  {qualityLabel}
+                </p>
               </div>
             )}
 
-            <div className="mt-5 flex items-center justify-end gap-2">
+            {showSettings && (
+              <>
+                {(phase === "failed" || phase === "cancelled") && (
+                  <p className={`mt-4 text-center text-[11px] ${phase === "failed" ? "text-rose-300" : "text-white/50"}`}>
+                    {phase === "failed" ? error : t("Export cancelled")}
+                  </p>
+                )}
+
+                {hasRange && (
+                  <div className="mt-4 flex items-center justify-between rounded-lg bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+                    <span>
+                      {t("Exporting range")} {formatTimecode(rangeStart, fps)} – {formatTimecode(rangeEnd, fps)}
+                    </span>
+                    <button
+                      onClick={clearExportRange}
+                      className="font-medium text-amber-100 underline decoration-amber-100/40 underline-offset-2 transition hover:text-white"
+                    >
+                      {t("Reset to full timeline")}
+                    </button>
+                  </div>
+                )}
+
+                <div className="mt-4 space-y-3">
+                  <label className="block">
+                    <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-white/50">
+                      {t("Resolution")}
+                    </span>
+                    <Dropdown
+                      ariaLabel={t("Resolution")}
+                      value={`${width}x${height}`}
+                      onChange={(next) => {
+                        const [w, h] = next.split("x").map(Number);
+                        setWidth(w);
+                        setHeight(h);
+                      }}
+                      options={RESOLUTION_PRESETS.map((preset) => ({
+                        value: `${preset.width}x${preset.height}`,
+                        label: preset.label,
+                      }))}
+                    />
+                  </label>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-white/50">
+                        {t("Frame rate")}
+                      </span>
+                      <Dropdown
+                        ariaLabel={t("Frame rate")}
+                        value={String(fps)}
+                        onChange={(next) => setFps(Number(next))}
+                        options={FPS_PRESETS.map((value) => ({ value: String(value), label: t("{value} fps", { value }) }))}
+                      />
+                    </label>
+
+                    <label className="block">
+                      <span className="mb-1 block text-[11px] font-medium uppercase tracking-wide text-white/50">
+                        {t("Quality")}
+                      </span>
+                      {/* CRF is inverted (lower = better), which is unintuitive — the labels say what the
+                          user actually cares about and keep the numbers out of the way. */}
+                      <Dropdown
+                        ariaLabel={t("Quality")}
+                        value={String(crf)}
+                        onChange={(next) => setCrf(Number(next))}
+                        options={[
+                          { value: "18", label: t("High") },
+                          { value: "20", label: t("Balanced") },
+                          { value: "26", label: t("Small file") },
+                        ]}
+                      />
+                    </label>
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div className="mt-5 space-y-2">
+              {phase === "running" && (
+                <button
+                  onClick={() => void stop()}
+                  className="w-full rounded-lg bg-white/10 px-3 py-2.5 text-xs font-medium text-white transition hover:bg-white/15"
+                >
+                  {t("Cancel export")}
+                </button>
+              )}
+
               {phase === "done" && fileName && projectId && (
                 isNative ? (
                   <button
                     onClick={() => void shareNative()}
                     disabled={sharing}
-                    className="mr-auto rounded-md bg-emerald-500/20 px-3 py-1.5 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/30 disabled:opacity-50"
+                    className="w-full rounded-lg bg-emerald-400 px-3 py-2.5 text-xs font-semibold text-[#0b1a14] transition hover:bg-emerald-300 disabled:opacity-50"
                   >
                     {sharing ? t("Sharing…") : t("Save / Share")}
                   </button>
@@ -390,41 +508,246 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                   <a
                     href={exportUrl(projectId, fileName)}
                     download={fileName}
-                    className="mr-auto rounded-md bg-emerald-500/20 px-3 py-1.5 text-xs font-medium text-emerald-200 transition hover:bg-emerald-500/30"
+                    className="block w-full rounded-lg bg-emerald-400 px-3 py-2.5 text-center text-xs font-semibold text-[#0b1a14] transition hover:bg-emerald-300"
                   >
                     {t("Save video")}
                   </a>
                 )
               )}
-
-              {busy ? (
-                <button
-                  onClick={() => void stop()}
-                  className="rounded-md bg-white/10 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-white/20"
-                >
-                  {t("Cancel export")}
-                </button>
-              ) : (
-                <>
+              {phase === "done" && error && <p className="text-center text-[11px] text-rose-300">{error}</p>}
+              {phase === "done" && (
+                <div className="grid grid-cols-2 gap-2">
+                  {/* Back to the settings rather than straight into a second identical render — a
+                      repeat export is almost always about changing something first. */}
+                  <button
+                    onClick={() => setPhase("idle")}
+                    className="rounded-lg bg-white/[0.06] px-3 py-2 text-xs font-medium text-white/80 transition hover:bg-white/10 hover:text-white"
+                  >
+                    {t("Export again")}
+                  </button>
                   <button
                     onClick={onClose}
-                    className="rounded-md px-3 py-1.5 text-xs font-medium text-white/60 transition hover:bg-white/10 hover:text-white"
+                    className="rounded-lg bg-white/[0.06] px-3 py-2 text-xs font-medium text-white/80 transition hover:bg-white/10 hover:text-white"
                   >
                     {t("Close")}
                   </button>
-                  <button
-                    onClick={() => void begin()}
-                    disabled={available === null}
-                    className="rounded-md bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-sky-400 disabled:opacity-50"
-                  >
-                    {phase === "idle" ? t("Export") : t("Export again")}
-                  </button>
-                </>
+                </div>
+              )}
+
+              {showSettings && (
+                <button
+                  onClick={() => void begin()}
+                  disabled={available === null}
+                  className="w-full rounded-lg bg-sky-500 px-3 py-2.5 text-xs font-semibold text-white shadow-[0_8px_24px_-8px_rgba(14,165,233,0.7)] transition hover:bg-sky-400 disabled:opacity-50"
+                >
+                  {phase === "idle" ? t("Export") : t("Try again")}
+                </button>
               )}
             </div>
-          </>
+          </div>
         )}
       </div>
     </div>
+  );
+}
+
+/** Plays the editor's own preview — muted, looping over the export range — for as long as `active`
+ *  is true, then puts the transport back exactly how it was (playhead, playing, mute) when the dialog
+ *  closes. Drives the ONE existing `PlaybackEngine` through the store, the same as pressing Play,
+ *  rather than spinning up a second engine: a second set of decoding video elements is real extra
+ *  memory/decoder load on exactly the devices (iPad/iPhone) where preview playback has been most
+ *  fragile, and `PreviewMirror` below can show the existing engine's frames just as well. */
+function useExportPreviewPlayback(active: boolean, rangeStart: number, rangeEnd: number): void {
+  const savedRef = useRef<{ playhead: number; muted: boolean } | null>(null);
+
+  useEffect(() => {
+    if (!active) return;
+    const initial = useEditorStore.getState();
+    if (!initial.project) return;
+    savedRef.current ??= { playhead: initial.playhead, muted: initial.previewMuted };
+    const loopsAtRangeEnd = rangeEnd < sequenceDuration(initial.project) - 1e-3;
+
+    if (!initial.previewMuted) initial.togglePreviewMuted();
+    initial.setPlayhead(rangeStart);
+    initial.setPlaying(true);
+
+    const unsubscribe = useEditorStore.subscribe((state, prev) => {
+      if (!state.project) return;
+      if (state.playing && loopsAtRangeEnd && state.playhead >= rangeEnd) {
+        state.setPlayhead(rangeStart);
+        return;
+      }
+      // Ran off the end of the timeline (`onEnded` leaves the playhead AT the end) → go round again.
+      // Stopping anywhere else is autoplay policy blocking playback (`onPlaybackBlocked`) — retrying
+      // that with no fresh gesture would only be blocked again, so the preview just holds its frame.
+      if (prev.playing && !state.playing && state.playhead >= sequenceDuration(state.project) - 1e-3) {
+        state.setPlayhead(rangeStart);
+        state.setPlaying(true);
+      }
+    });
+    return () => {
+      unsubscribe();
+      useEditorStore.getState().setPlaying(false);
+    };
+  }, [active, rangeStart, rangeEnd]);
+
+  useEffect(
+    () => () => {
+      const saved = savedRef.current;
+      if (!saved) return;
+      const state = useEditorStore.getState();
+      state.setPlaying(false);
+      if (state.previewMuted !== saved.muted) state.togglePreviewMuted();
+      state.setPlayhead(saved.playhead);
+    },
+    []
+  );
+}
+
+/** A live copy of the editor's own preview canvas (`EditorState.previewCanvas`, the same source
+ *  `ScopesPanel` samples), redrawn every animation frame — so whatever the real preview shows, this
+ *  shows too, with no second render pipeline. Its backing store is capped at the source canvas's own
+ *  size: upscaling past that adds no detail, only work. */
+function PreviewMirror({ radius }: { radius: number }) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const target = canvasRef.current;
+    const context = target?.getContext("2d");
+    if (!target || !context) return;
+    let frame = 0;
+    const draw = () => {
+      frame = requestAnimationFrame(draw);
+      const source = useEditorStore.getState().previewCanvas;
+      if (!source || source.width === 0 || source.height === 0) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.max(1, Math.round(Math.min(target.clientWidth * dpr, source.width)));
+      const h = Math.max(1, Math.round(Math.min(target.clientHeight * dpr, source.height)));
+      if (target.width !== w || target.height !== h) {
+        target.width = w;
+        target.height = h;
+      }
+      context.drawImage(source, 0, 0, w, h);
+    };
+    frame = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(frame);
+  }, []);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="absolute inset-0 h-full w-full bg-black ring-1 ring-white/10"
+      style={{ borderRadius: radius }}
+    />
+  );
+}
+
+/** Rounded-rectangle path starting at top-center and running clockwise — so progress grows from the
+ *  top like a clock hand, rather than from the top-left corner where SVG's own `<rect>` would start. */
+function roundedRectPath(w: number, h: number, r: number): string {
+  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+  return [
+    `M ${w / 2} 0`,
+    `H ${w - rr}`,
+    `A ${rr} ${rr} 0 0 1 ${w} ${rr}`,
+    `V ${h - rr}`,
+    `A ${rr} ${rr} 0 0 1 ${w - rr} ${h}`,
+    `H ${rr}`,
+    `A ${rr} ${rr} 0 0 1 0 ${h - rr}`,
+    `V ${rr}`,
+    `A ${rr} ${rr} 0 0 1 ${rr} 0`,
+    "Z",
+  ].join(" ");
+}
+
+const RING_COLORS = {
+  active: ["#38bdf8", "#818cf8", "rgba(56,189,248,0.55)"],
+  done: ["#34d399", "#5eead4", "rgba(52,211,153,0.55)"],
+  failed: ["#fb7185", "#f43f5e", "rgba(251,113,133,0.45)"],
+  muted: ["rgba(255,255,255,0.45)", "rgba(255,255,255,0.3)", "transparent"],
+} as const;
+
+/** The progress stroke that travels around the preview's frame. Sized from the wrapper's real pixel
+ *  box (`ResizeObserver`) rather than percentage SVG geometry, since a rounded path's arcs need
+ *  absolute numbers. `pathLength={100}` makes the dash math plain percentages regardless of the
+ *  preview's actual size or aspect ratio. `indeterminate` (nothing to measure yet — saving, uploading,
+ *  rendering text) swaps the fill for a short segment orbiting the frame. */
+function ProgressFrame({
+  progress,
+  indeterminate,
+  tone,
+}: {
+  progress: number;
+  indeterminate: boolean;
+  tone: keyof typeof RING_COLORS;
+}) {
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [box, setBox] = useState<{ width: number; height: number } | null>(null);
+  const gradientId = useId();
+
+  useEffect(() => {
+    const el = svgRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => {
+      const rect = el.getBoundingClientRect();
+      setBox({ width: rect.width, height: rect.height });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const [from, to, glow] = RING_COLORS[tone];
+  const inset = RING_STROKE / 2;
+  const d = box
+    ? roundedRectPath(box.width - RING_STROKE, box.height - RING_STROKE, PREVIEW_RADIUS + RING_GAP - inset)
+    : null;
+  const filled = Math.max(0, Math.min(100, progress * 100));
+
+  return (
+    <svg
+      ref={svgRef}
+      aria-hidden
+      className="pointer-events-none absolute overflow-visible"
+      style={{ inset: -RING_GAP, width: `calc(100% + ${RING_GAP * 2}px)`, height: `calc(100% + ${RING_GAP * 2}px)`, filter: `drop-shadow(0 0 6px ${glow})` }}
+    >
+      <style>{`@keyframes vcut-export-orbit { to { stroke-dashoffset: -100; } }`}</style>
+      <defs>
+        <linearGradient id={gradientId} x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stopColor={from} />
+          <stop offset="100%" stopColor={to} />
+        </linearGradient>
+      </defs>
+      {d && (
+        <g transform={`translate(${inset} ${inset})`}>
+          <path d={d} pathLength={100} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth={RING_STROKE} />
+          {indeterminate ? (
+            <path
+              d={d}
+              pathLength={100}
+              fill="none"
+              stroke={`url(#${gradientId})`}
+              strokeWidth={RING_STROKE}
+              strokeLinecap="round"
+              strokeDasharray="16 84"
+              style={{ animation: "vcut-export-orbit 1.6s linear infinite" }}
+            />
+          ) : (
+            filled > 0.5 && (
+              <path
+                d={d}
+                pathLength={100}
+                fill="none"
+                stroke={`url(#${gradientId})`}
+                strokeWidth={RING_STROKE}
+                strokeLinecap="round"
+                strokeDasharray="100 100"
+                strokeDashoffset={100 - filled}
+                style={{ transition: "stroke-dashoffset 450ms ease-out, stroke 300ms" }}
+              />
+            )
+          )}
+        </g>
+      )}
+    </svg>
   );
 }
