@@ -618,9 +618,21 @@ export function planMediaSync(state: MediaSyncState, sourceTime: number, playing
  *  before `watchForStall` reports it. Long enough that ordinary start-up buffering never trips it. */
 const STALL_REPORT_MS = 4000;
 /** Hard reseeks per second of playback past which an element counts as stalled even though its
- *  `currentTime` keeps changing — a frozen element gets yanked to the clock every tick, which reads
- *  as "advancing" if you only watch `currentTime`. */
-const STALL_RESEEKS_PER_SECOND = 1;
+ *  `currentTime` keeps changing. An element whose own clock is frozen drifts 1s per second and gets
+ *  hard-reseeked each time drift passes `DRIFT_TOLERANCE`, i.e. roughly every 1.5s; normal playback
+ *  only reseeks at clip starts and scrubs. */
+const STALL_RESEEKS_PER_SECOND = 0.4;
+
+interface StallWatchEntry {
+  startedAt: number;
+  lastSeenAt: number;
+  notProgressingSince: number | null;
+  hardSeeks: number;
+  lastProbeAt: number;
+  pixelHash: number | null;
+  pixelChangedAt: number;
+  timeAtPixelChange: number;
+}
 /** Media elements kept alive after they stop being needed. Keeping a few around makes scrubbing back
  *  and forth across a cut smooth, since the element is already decoded and buffered. */
 const POOL_LIMIT = 8;
@@ -1115,6 +1127,8 @@ export class PlaybackEngine {
     this.stop();
     for (const { element } of this.pool.values()) this.release(element);
     this.pool.clear();
+    this.mediaHostElement?.remove();
+    this.mediaHostElement = null;
     this.audioMixEngine.dispose();
     this.canvas = null;
     this.context = null;
@@ -1160,13 +1174,19 @@ export class PlaybackEngine {
 
     const element = kind === "image" ? document.createElement("img") : document.createElement("video");
     element.src = url;
-    // Never attached to the document: the canvas is what the user sees, and an off-DOM element still
-    // decodes and plays audio perfectly well (routed through `AudioMixEngine`, not its own native
-    // output — see `syncVideoClipAudio`).
+    // Audio is routed through `AudioMixEngine`, not the element's own output — see `syncVideoClipAudio`.
     if (element instanceof HTMLVideoElement) {
       element.preload = "auto";
       element.playsInline = true;
       element.muted = false;
+      // Attached to the document (1px, invisible — see `mediaHost`), not left detached. Chrome/Firefox
+      // decode a detached video into canvas `drawImage` indefinitely; iPhone/iPad (WebKit) do not:
+      // reported as preview video freezing on iOS only, while Android and desktop web played the same
+      // project fine, with the element itself looking healthy (buffered, not paused, not seeking).
+      element.setAttribute("aria-hidden", "true");
+      element.tabIndex = -1;
+      element.style.cssText = "width:1px;height:1px;";
+      this.mediaHost().appendChild(element);
     }
 
     this.pool.set(clip.id, { element, lastUsed: performance.now(), assetId: clip.assetId });
@@ -1185,6 +1205,22 @@ export class PlaybackEngine {
     element.pause();
     element.removeAttribute("src");
     element.load();
+    element.remove();
+  }
+
+  private mediaHostElement: HTMLDivElement | null = null;
+
+  /** The invisible container pooled video elements live in. Kept inside the viewport at 1px with
+   *  near-zero (not zero) opacity rather than `display:none`/`visibility:hidden`/off-screen, since
+   *  WebKit treats a media element it considers not visible as one it may stop rendering frames for. */
+  private mediaHost(): HTMLDivElement {
+    if (this.mediaHostElement?.isConnected) return this.mediaHostElement;
+    const host = document.createElement("div");
+    host.setAttribute("aria-hidden", "true");
+    host.style.cssText = "position:fixed;left:0;top:0;width:1px;height:1px;overflow:hidden;opacity:0.01;pointer-events:none;z-index:-1;";
+    document.body.appendChild(host);
+    this.mediaHostElement = host;
+    return host;
   }
 
   private evictStale(): void {
@@ -1202,7 +1238,7 @@ export class PlaybackEngine {
   }
 
   private playOutcome = new Map<string, string>();
-  private stallWatch = new Map<string, { startedAt: number; lastSeenAt: number; notProgressingSince: number | null; hardSeeks: number }>();
+  private stallWatch = new Map<string, StallWatchEntry>();
   private stallReported = new Set<string>();
   /** When each clip's element was first seen seeking (or last told to seek) — feeds `planMediaSync`'s
    *  stuck-seek backstop. Cleared the moment the element reports it is no longer seeking. */
@@ -1249,7 +1285,16 @@ export class PlaybackEngine {
     // `syncMedia` only runs for the clip under the playhead, so an entry left behind when playback
     // moved off this clip would otherwise resume with a stale timer and report instantly on return.
     if (!watch || now - watch.lastSeenAt > 500) {
-      watch = { startedAt: now, lastSeenAt: now, notProgressingSince: null, hardSeeks: 0 };
+      watch = {
+        startedAt: now,
+        lastSeenAt: now,
+        notProgressingSince: null,
+        hardSeeks: 0,
+        lastProbeAt: 0,
+        pixelHash: null,
+        pixelChangedAt: now,
+        timeAtPixelChange: element.currentTime,
+      };
       this.stallWatch.set(clipId, watch);
     }
     watch.lastSeenAt = now;
@@ -1258,8 +1303,10 @@ export class PlaybackEngine {
 
     const playedMs = now - watch.startedAt;
     const stuckTooLong = watch.notProgressingSince !== null && now - watch.notProgressingSince >= STALL_REPORT_MS;
-    const reseekStorm = playedMs >= STALL_REPORT_MS && watch.hardSeeks / (playedMs / 1000) > STALL_RESEEKS_PER_SECOND;
-    if (!stuckTooLong && !reseekStorm) return;
+    const reseekStorm =
+      playedMs >= STALL_REPORT_MS && watch.hardSeeks >= 3 && watch.hardSeeks / (playedMs / 1000) > STALL_RESEEKS_PER_SECOND;
+    const pictureFrozen = this.pictureFrozen(watch, element, now);
+    if (!stuckTooLong && !reseekStorm && !pictureFrozen) return;
 
     this.stallReported.add(clipId);
     let src: string | null = null;
@@ -1272,7 +1319,10 @@ export class PlaybackEngine {
     }
     const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean; isActive: boolean } }).userActivation;
     this.host.onPlaybackStall({
-      reason: stuckTooLong ? "not-progressing" : "reseek-storm",
+      reason: stuckTooLong ? "not-progressing" : reseekStorm ? "reseek-storm" : "picture-frozen",
+      pictureUnchangedMs: Math.round(now - watch.pixelChangedAt),
+      currentTimeAdvancedWhilePictureUnchanged: Number((element.currentTime - watch.timeAtPixelChange).toFixed(3)),
+      inDocument: element.isConnected,
       readyState: element.readyState,
       networkState: element.networkState,
       paused: element.paused,
@@ -1297,6 +1347,51 @@ export class PlaybackEngine {
       src,
       userAgent: navigator.userAgent,
     });
+  }
+
+  private probeContext: CanvasRenderingContext2D | null = null;
+
+  /** True when the element claims to be playing — not paused, not seeking, frames decoded, and its
+   *  `currentTime` has moved on by more than 2.5s — yet what `drawImage` gets from it hasn't changed
+   *  for `STALL_REPORT_MS`. That combination is invisible to every media-state check above, and is
+   *  exactly what iOS preview kept doing after the seek fix: frozen picture, no stall report at all.
+   *  Samples an 8×8 downscale twice a second; real footage never hashes identically for seconds. */
+  private pictureFrozen(watch: StallWatchEntry, element: HTMLVideoElement, now: number): boolean {
+    if (element.paused || element.seeking || element.readyState < 2) {
+      watch.pixelChangedAt = now;
+      watch.timeAtPixelChange = element.currentTime;
+      return false;
+    }
+    if (now - watch.lastProbeAt >= 500) {
+      watch.lastProbeAt = now;
+      const hash = this.framePixelHash(element);
+      if (hash !== null && hash !== watch.pixelHash) {
+        watch.pixelHash = hash;
+        watch.pixelChangedAt = now;
+        watch.timeAtPixelChange = element.currentTime;
+      }
+    }
+    return now - watch.pixelChangedAt >= STALL_REPORT_MS && element.currentTime - watch.timeAtPixelChange >= 2.5;
+  }
+
+  private framePixelHash(element: HTMLVideoElement): number | null {
+    try {
+      if (!this.probeContext) {
+        const probe = document.createElement("canvas");
+        probe.width = 8;
+        probe.height = 8;
+        this.probeContext = probe.getContext("2d", { willReadFrequently: true });
+      }
+      const context = this.probeContext;
+      if (!context) return null;
+      context.drawImage(element, 0, 0, 8, 8);
+      const data = context.getImageData(0, 0, 8, 8).data;
+      let hash = 0;
+      for (let i = 0; i < data.length; i++) hash = (hash * 31 + data[i]) | 0;
+      return hash;
+    } catch {
+      return null;
+    }
   }
 
   /** Slaves one video element's PICTURE timing to the master clock — `currentTime`/`playbackRate`/
