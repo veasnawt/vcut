@@ -258,6 +258,13 @@ export function TextTransformHandles({
     if (editingAssetId && editingAssetId !== resolved?.assetId) setEditingAssetId(null);
   }, [resolved?.assetId, editingAssetId]);
 
+  // Published for `TemplatePreviewScreen` — see `inlineTextEditAssetId`'s own doc comment. Cleared on
+  // unmount too, since deselecting the text removes this component mid-edit without an exit event.
+  useEffect(() => {
+    useEditorStore.getState().setInlineTextEditAssetId(editingAssetId);
+  }, [editingAssetId]);
+  useEffect(() => () => useEditorStore.getState().setInlineTextEditAssetId(null), []);
+
   if (!resolved || !canvas) return null;
   const context = canvas.getContext("2d");
   if (!context) return null;

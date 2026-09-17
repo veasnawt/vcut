@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Add, Close, Image as ImageIcon, Music, Pause, Play, Text as TextIcon, Video } from "@veasnawt/vicons";
 import { assetFromLibraryMedia, mediaUrl, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
 import { fontById } from "../project/fonts.ts";
@@ -10,10 +10,10 @@ import type { Asset, Project } from "../project/types.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration, formatTimecode } from "../timeline/time.ts";
-import { EditableProjectTitle } from "./EditableProjectTitle.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { Preview } from "./Preview.tsx";
+import { TemplateScreenHeader } from "./TemplateScreenHeader.tsx";
 import { TemplateTrimDialog } from "./TemplateTrimDialog.tsx";
 import { useLibraryMedia } from "./useLibraryMedia.ts";
 import { VideoFrameThumbnail } from "./VideoFrameThumbnail.tsx";
@@ -57,7 +57,7 @@ const REPLACE_FOOTAGE: Omit<ReplaceTarget, "assetId"> = {
  *  concept). A filmstrip (`templateClips`, one tile per clip INSTANCE, mirroring the actual sequence)
  *  drives a Video/Audio/Text tab strip below it, each tab shown ONLY when the project actually has
  *  that kind of content — a text-free template never shows a Text tab with nothing to do in it. */
-export function TemplatePreviewScreen() {
+export function TemplatePreviewScreen({ onBack }: { onBack?: () => void }) {
   const t = useTranslation();
   const [exportOpen, setExportOpen] = useState(false);
   const [replaceTarget, setReplaceTarget] = useState<ReplaceTarget | null>(null);
@@ -109,14 +109,23 @@ export function TemplatePreviewScreen() {
 
   const selected = clips.find((e) => e.clip.id === selectedClipId) ?? null;
 
+  // Editing a text on the preview itself (its Edit button) — follow it here, so the filmstrip and tabs
+  // show which clip is being edited, while the Text tab stands its own editor down (see below and
+  // `inlineTextEditAssetId`'s own doc comment). Read from the store rather than `clips` so this only
+  // re-runs when an edit starts, not on every project change.
+  const inlineTextEditAssetId = useEditorStore((s) => s.inlineTextEditAssetId);
+  useEffect(() => {
+    const current = useEditorStore.getState().project;
+    if (!inlineTextEditAssetId || !current) return;
+    const entry = templateClips(current).find((e) => e.asset.id === inlineTextEditAssetId);
+    if (!entry) return;
+    setSelectedClipId(entry.clip.id);
+    setActiveTab("text");
+  }, [inlineTextEditAssetId]);
+
   return (
     <div className="flex h-full flex-col bg-[#0a0c10] text-white">
-      <div className="shrink-0 border-b border-white/10 px-4 py-3">
-        {/* Renameable right here — see `EditableProjectTitle`'s own doc comment for why this needs to
-            live somewhere in the guided template flow at all, not just the normal editor's header. */}
-        <EditableProjectTitle variant="title" />
-        <p className="mt-1 text-xs text-white/50">{t("Preview it below, then export when you're happy with it.")}</p>
-      </div>
+      <TemplateScreenHeader onBack={onBack} subtitle={t("Preview it below, then export when you're happy with it.")} />
 
       <div className="min-h-0 flex-1 p-3">
         <Preview onResizeStart={() => {}} />
@@ -189,7 +198,18 @@ export function TemplatePreviewScreen() {
 
             {activeTab === "text" &&
               (selected && selected.asset.kind === "text" ? (
-                <TextTabContent key={selected.asset.id} asset={selected.asset} onSave={(text) => setTemplateClipText(selected.asset.id, text)} />
+                inlineTextEditAssetId === selected.asset.id ? (
+                  <p className="px-1 py-4 text-center text-xs text-white/50">{t("Editing this text on the preview — confirm it there when you're done.")}</p>
+                ) : (
+                  // Keyed by content too, so an edit made on the preview reloads this editor with the
+                  // new words — otherwise it kept the old ones as an unsaved "change", and Save put
+                  // them back.
+                  <TextTabContent
+                    key={`${selected.asset.id}:${selected.asset.textContent ?? ""}`}
+                    asset={selected.asset}
+                    onSave={(text) => setTemplateClipText(selected.asset.id, text)}
+                  />
+                )
               ) : (
                 <p className="px-1 py-4 text-center text-xs text-white/40">{t("Select a text clip above to edit it.")}</p>
               ))}

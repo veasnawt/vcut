@@ -8,8 +8,8 @@ import type { Asset } from "../project/types.ts";
 import { templateSlotRequiredLength, templateSlots, type TemplateSlot } from "../project/template.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
-import { EditableProjectTitle } from "./EditableProjectTitle.tsx";
 import { TemplateTrimDialog } from "./TemplateTrimDialog.tsx";
+import { TemplateScreenHeader } from "./TemplateScreenHeader.tsx";
 import { useLibraryMedia } from "./useLibraryMedia.ts";
 import { VideoFrameThumbnail } from "./VideoFrameThumbnail.tsx";
 
@@ -36,7 +36,7 @@ const KIND_ICON: Record<"video" | "audio" | "image", typeof Video> = { video: Vi
  *  Capturing the full list up front and tracking fill state in `filledBySlotId` (this component's own
  *  state, updated the instant a pick is made — before `project` even finishes propagating the change)
  *  keeps every chip visible for the whole flow, whether still empty or already showing a pick. */
-export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void }) {
+export function TemplateFillScreen({ onAllFilled, onBack }: { onAllFilled: () => void; onBack?: () => void }) {
   const t = useTranslation();
   const project = useEditorStore((s) => s.project);
   const projectId = useEditorStore((s) => s.projectId);
@@ -96,22 +96,19 @@ export function TemplateFillScreen({ onAllFilled }: { onAllFilled: () => void })
 
   return (
     <div className="flex h-full flex-col bg-[#0a0c10] text-white">
-      <div className="shrink-0 border-b border-white/10 px-4 py-3">
-        {/* The project's own name, editable right here — a template-origin project has no normal
-            editor chrome anywhere else to rename it from (see `EditableProjectTitle`'s own doc
-            comment), and this is the first screen it's ever shown on. */}
-        <EditableProjectTitle variant="title" />
-        <p className="mt-1 text-xs text-white/50">
-          {activeSlot
+      <TemplateScreenHeader
+        onBack={onBack}
+        subtitle={
+          activeSlot
             ? t("Pick a photo or video for slot {n} — {duration} needed", {
                 n: allSlots.indexOf(activeSlot) + 1,
                 duration: formatDuration(activeSlot.requiredDuration),
               })
             : allFilled
               ? t("All set — tap Preview below to see your video.")
-              : t("This template keeps its original timing, effects, and music.")}
-        </p>
-      </div>
+              : t("This template keeps its original timing, effects, and music.")
+        }
+      />
 
       <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-3">
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">

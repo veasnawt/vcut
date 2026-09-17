@@ -252,6 +252,13 @@ export interface EditorState {
    *  just during real playback) with zero coupling to `PlaybackEngine`'s own render loop. */
   previewCanvas: HTMLCanvasElement | null;
   setPreviewCanvas: (canvas: HTMLCanvasElement | null) => void;
+  /** Which text asset `TextTransformHandles` is editing inline on the preview right now (its own Edit
+   *  button), or `null`. Published for `TemplatePreviewScreen`, whose Text tab has its own editor for
+   *  the same text: with both live, tapping Edit on the preview showed two inputs for one text at once
+   *  (reported), and the tab's copy went stale underneath the other — saving it wrote the old words
+   *  back. The template screen stands its tab editor down while this points at that text. */
+  inlineTextEditAssetId: string | null;
+  setInlineTextEditAssetId: (assetId: string | null) => void;
 
   /** UI chrome language — the first persisted (localStorage) preference in this store; everything
    *  else here is explicitly session-only. Never affects `project` (a text clip's own font/content is
@@ -738,6 +745,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     importingFont: false,
     mobileSheet: null,
     previewCanvas: null,
+    inlineTextEditAssetId: null,
 
     async load(projectId, projectName) {
       const seq = ++loadSeq;
@@ -1000,6 +1008,9 @@ export const useEditorStore = create<EditorState>((set, get) => {
     },
     setPreviewCanvas(canvas) {
       set({ previewCanvas: canvas });
+    },
+    setInlineTextEditAssetId(assetId) {
+      set({ inlineTextEditAssetId: assetId });
     },
 
     setActiveTrack(trackId) {

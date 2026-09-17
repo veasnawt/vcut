@@ -1700,9 +1700,9 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   if (project.templateOrigin) {
     const hasOpenSlots = templateSlots(project).length > 0;
     if (hasOpenSlots || !confirmedTemplatePreview) {
-      return <TemplateFillScreen onAllFilled={() => setConfirmedTemplatePreview(true)} />;
+      return <TemplateFillScreen onAllFilled={() => setConfirmedTemplatePreview(true)} onBack={onHome} />;
     }
-    return <TemplatePreviewScreen />;
+    return <TemplatePreviewScreen onBack={onHome} />;
   }
 
   return (
