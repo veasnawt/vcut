@@ -62,18 +62,23 @@ export interface TemplateSlot {
  *  actually gets picked, using that clip's own current duration rather than this shared, display-only
  *  number, so two copies needing different lengths of the new footage both still come out right.
  *
+ *  `keepAssetIds` is the author's own choice, made in `SaveAsTemplateDialog.tsx` off
+ *  `templateSlotCandidates` below (same "unchecked = keep this exact clip" idea `RemoveObjectOverlay`'s
+ *  own opt-out checkboxes use) — an asset id in that set is excluded from becoming a slot at all,
+ *  bundled instead exactly like a fixed logo/background clip that isn't meant to be swapped out.
+ *
  *  An AUDIO asset is never turned into a slot at all — it carries over marked `templateBundledAudio:
  *  true` (and so does an animated sticker/GIF — `Asset.animation` — which is decoration, part of the
  *  edit, not footage to swap: its files get bundled the same way), its real `relPath` left UNCHANGED (still relative to the SOURCE project's own `mediaDir` at
  *  this point) specifically so `templates/route.ts`'s own POST handler, which calls this function,
  *  knows exactly which file to actually copy into the template's own storage next — this function
  *  itself never touches the filesystem. */
-export function sanitizeProjectForTemplate(project: Project): TemplateProjectData {
+export function sanitizeProjectForTemplate(project: Project, keepAssetIds: ReadonlySet<string> = new Set()): TemplateProjectData {
   const mediaClipOrder = project.sequence.tracks
     .flatMap((track) => track.clips.map((clip) => ({ track, clip })))
     .filter(({ clip }) => {
       const asset = project.assets.find((a) => a.id === clip.assetId);
-      return Boolean(asset) && (asset!.kind === "video" || asset!.kind === "image") && !asset!.animation;
+      return Boolean(asset) && (asset!.kind === "video" || asset!.kind === "image") && !asset!.animation && !keepAssetIds.has(asset!.id);
     })
     .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
 
@@ -105,8 +110,9 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
     });
   }
 
-  // Covers text/color (carried over verbatim) AND audio (carried over as a real, still-to-be-bundled
-  // file — see this function's own doc comment) — everything that ISN'T becoming a placeholder slot.
+  // Covers text/color (carried over verbatim), audio (carried over as a real, still-to-be-bundled
+  // file — see this function's own doc comment), and any `keepAssetIds` pick — everything that ISN'T
+  // becoming a placeholder slot.
   const keptAssetIds = new Set<string>();
   const tracks: Track[] = project.sequence.tracks.map((track) => ({
     ...track,
@@ -122,11 +128,37 @@ export function sanitizeProjectForTemplate(project: Project): TemplateProjectDat
   const assets: Asset[] = [
     ...project.assets
       .filter((a) => keptAssetIds.has(a.id))
-      .map((a) => (a.kind === "audio" || a.animation ? { ...a, templateBundledAudio: true as const } : a)),
+      .map((a) => (a.kind === "audio" || a.animation || keepAssetIds.has(a.id) ? { ...a, templateBundledAudio: true as const } : a)),
     ...placeholderByOriginalAssetId.values(),
   ];
 
   return { width: project.sequence.width, height: project.sequence.height, fps: project.sequence.fps, tracks, assets };
+}
+
+/** Every video/image asset that WOULD become a fill-in-your-own-media slot if the author saves this
+ *  project as a template right now, in the same order `sanitizeProjectForTemplate` would assign
+ *  `slotIndex` — what `SaveAsTemplateDialog.tsx` shows as a checklist so an author can opt specific
+ *  clips OUT (a fixed intro/logo/background that shouldn't be swappable) before saving. Read-only and
+ *  side-effect-free — computing this never mutates `project` or creates any placeholder itself; the
+ *  ids it returns are fed back into `sanitizeProjectForTemplate`'s own `keepAssetIds` param once the
+ *  author actually saves. */
+export function templateSlotCandidates(project: Project): { asset: Asset; requiredDuration: number }[] {
+  const order = project.sequence.tracks
+    .flatMap((track) => track.clips)
+    .filter((clip) => {
+      const asset = project.assets.find((a) => a.id === clip.assetId);
+      return Boolean(asset) && (asset!.kind === "video" || asset!.kind === "image") && !asset!.animation;
+    })
+    .sort((a, b) => a.timelineStart - b.timelineStart);
+
+  const byAssetId = new Map<string, { asset: Asset; requiredDuration: number }>();
+  for (const clip of order) {
+    const asset = project.assets.find((a) => a.id === clip.assetId)!;
+    const existing = byAssetId.get(asset.id);
+    if (existing) existing.requiredDuration = Math.max(existing.requiredDuration, clipDuration(clip));
+    else byAssetId.set(asset.id, { asset, requiredDuration: clipDuration(clip) });
+  }
+  return [...byAssetId.values()];
 }
 
 /** The reverse of `sanitizeProjectForTemplate` — builds a brand-new, fully valid `Project` seeded

@@ -1289,11 +1289,13 @@ export async function captionsAvailable(): Promise<boolean> {
  *  desktop "Pro" concept to save a template against, so this isn't given an `isNative` branch the way
  *  LUT/font import are — the button that calls this simply doesn't render outside a hosted, Pro
  *  session in the first place. */
-export async function saveAsTemplate(projectId: string, name: string): Promise<{ id: string; name: string }> {
+/** `keepAssetIds`: which of `templateSlotCandidates`' own candidates the author chose to keep FIXED
+ *  rather than let become a fillable slot — see `SaveAsTemplateDialog.tsx`'s own checklist. */
+export async function saveAsTemplate(projectId: string, name: string, keepAssetIds?: string[]): Promise<{ id: string; name: string }> {
   const response = await apiFetch(`${BASE}/templates`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ projectId, name }),
+    body: JSON.stringify({ projectId, name, keepAssetIds }),
   });
   return unwrap<{ id: string; name: string }>(response);
 }

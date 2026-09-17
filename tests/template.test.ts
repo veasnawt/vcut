@@ -7,6 +7,7 @@ import {
   setTemplateClipText,
   templateAudioAssets,
   templateClips,
+  templateSlotCandidates,
   templateSlotRequiredLength,
   templateSlots,
   templateVideoAssets,
@@ -203,6 +204,56 @@ describe("sanitizeProjectForTemplate", () => {
     assert.equal(template.width, base.sequence.width);
     assert.equal(template.height, base.sequence.height);
     assert.equal(template.fps, base.sequence.fps);
+  });
+});
+
+describe("templateSlotCandidates / keepAssetIds", () => {
+  it("lists every video/image clip that would become a slot, in timeline order, one entry per shared asset", () => {
+    let base = emptyProject([videoAsset("v2", 5), audioAsset("a1"), videoAsset("v1"), colorAsset(), textAsset()]);
+    base = addTrack(base, "text");
+    let project = addClip(base, videoTrackId(base), "v1", 20); // starts last
+    project = addClip(project, videoTrackId(project), "v2", 0); // starts first
+    project = addClip(project, videoTrackId(project), "v2", 6); // second use of the SAME asset
+    project = addClip(project, audioTrackId(project), "a1", 0);
+    project = addClip(project, videoTrackId(project), "color1", 12);
+    project = addClip(project, textTrackId(project), "text1", 0);
+
+    const candidates = templateSlotCandidates(project);
+
+    // v2 (used twice) is one candidate, in FIRST-USE order — v2 before v1 — never audio/color/text.
+    assert.deepEqual(candidates.map((c) => c.asset.id), ["v2", "v1"]);
+    // requiredDuration is the LONGEST of every clip sharing that asset.
+    const v2 = candidates.find((c) => c.asset.id === "v2")!;
+    assert.equal(v2.requiredDuration, 5);
+  });
+
+  it("keeps a chosen candidate fixed (bundled, no placeholder) instead of turning it into a slot", () => {
+    const base = emptyProject([videoAsset("v1"), videoAsset("v2", 5)]);
+    let project = addClip(base, videoTrackId(base), "v1", 0);
+    project = addClip(project, videoTrackId(project), "v2", 10);
+
+    const template = sanitizeProjectForTemplate(project, new Set(["v1"]));
+
+    assert.equal(templateSlots(buildProjectFromTemplate("bp-keep", "Keep", template)).length, 1);
+    const kept = template.assets.find((a) => a.id === "v1")!;
+    assert.equal(kept.templatePlaceholder, undefined);
+    assert.equal(kept.templateBundledAudio, true);
+    assert.equal(kept.relPath, "v1.mp4", "kept asset's real relPath survives, same as bundled audio");
+    // v2 (not in keepAssetIds) still becomes a normal, fillable placeholder.
+    const v2Slot = template.assets.find((a) => a.templatePlaceholder);
+    assert.ok(v2Slot);
+    assert.notEqual(v2Slot!.id, "v2");
+  });
+
+  it("keeping every candidate leaves a template with zero fillable slots", () => {
+    const base = emptyProject([videoAsset("v1"), imageAsset("img1")]);
+    let project = addClip(base, videoTrackId(base), "v1", 0);
+    project = addClip(project, videoTrackId(project), "img1", 10);
+
+    const template = sanitizeProjectForTemplate(project, new Set(["v1", "img1"]));
+
+    assert.equal(template.assets.some((a) => a.templatePlaceholder), false);
+    assert.equal(templateSlots(buildProjectFromTemplate("bp-keep-all", "Keep All", template)).length, 0);
   });
 });
 
