@@ -1,3 +1,5 @@
+import { apiFetch } from "./client.ts";
+
 declare global {
   interface Window {
     /** Only defined inside the packaged/dev Electron shell (`apps/vcut-desktop`), wired up by its
@@ -29,7 +31,10 @@ export function reportError(context: string, error: unknown, extra?: Record<stri
   if (window.veasnaCrashReporter) {
     void window.veasnaCrashReporter.report(payload).catch(() => {});
   } else {
-    void fetch("/api/vcut/crash-report", {
+    // `apiFetch`, not plain `fetch`: on the hosted deploy this route sits behind `localRoute`'s session
+    // check, and a bare `fetch` carries no bearer token — every web crash report there was silently
+    // rejected with a 401.
+    void apiFetch("/api/vcut/crash-report", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),

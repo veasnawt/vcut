@@ -549,6 +549,13 @@ const DRIFT_CORRECTION_TOLERANCE = 0.03;
  *  jarring as the seek-induced silence gap it replaces, and it tapers back toward a barely-perceptible
  *  nudge as drift shrinks back toward `DRIFT_CORRECTION_TOLERANCE`. */
 const MAX_DRIFT_CORRECTION_RATE_DELTA = 0.5;
+/** How long a video element may stay paused/seeking/under-buffered while the transport is playing
+ *  before `watchForStall` reports it. Long enough that ordinary start-up buffering never trips it. */
+const STALL_REPORT_MS = 4000;
+/** Hard reseeks per second of playback past which an element counts as stalled even though its
+ *  `currentTime` keeps changing — a frozen element gets yanked to the clock every tick, which reads
+ *  as "advancing" if you only watch `currentTime`. */
+const STALL_RESEEKS_PER_SECOND = 1;
 /** Media elements kept alive after they stop being needed. Keeping a few around makes scrubbing back
  *  and forth across a cut smooth, since the element is already decoded and buffered. */
 const POOL_LIMIT = 8;
@@ -872,6 +879,10 @@ export interface PlaybackHost {
    *  reflects reality and the user's very next tap is a genuine, fresh gesture — which autoplay policy
    *  DOES allow — instead of the clock and the picture silently drifting apart forever. */
   onPlaybackBlocked: () => void;
+  /** Called at most once per clip per page load when a video element stays stuck while the transport
+   *  is playing. Carries the element's own media state so a platform-specific failure (iOS Safari
+   *  especially, which can't be reproduced off-device) arrives as evidence rather than a guess. */
+  onPlaybackStall?: (details: Record<string, unknown>) => void;
   /** Resolves an asset to a streamable URL — injected so this class needs no knowledge of the API. */
   mediaUrlFor: (assetId: string) => string | null;
   /** Resolves a `LutAsset.id` to a fetchable URL for its raw `.cube` text — mirrors `mediaUrlFor`'s
@@ -1125,24 +1136,112 @@ export class PlaybackEngine {
     }
   }
 
+  private playOutcome = new Map<string, string>();
+  private stallWatch = new Map<string, { startedAt: number; lastSeenAt: number; notProgressingSince: number | null; hardSeeks: number }>();
+  private stallReported = new Set<string>();
+
+  /** Must be called synchronously from the Play control's own event handler, BEFORE `playing` flips
+   *  on. WebKit (every iOS browser) only lets audio start and unmuted media play from inside a real
+   *  user gesture; everything else in this class starts playback later, from `tick`'s animation
+   *  frame, where iOS no longer counts the tap. Starts the audio context and the video element(s)
+   *  under the playhead while the gesture is still live; `tick` takes over syncing from there. */
+  primeFromGesture(): void {
+    this.audioMixEngine.resumeFromGesture();
+    const project = this.host.getProject();
+    if (!project) return;
+    const playhead = this.host.getPlayhead();
+    // `togglePlay` rewinds to 0 when starting from the very end — prime the clip that will actually play.
+    const time = playhead >= this.totalDuration(project) - 1e-6 ? 0 : playhead;
+    for (const { clip } of visibleVideoClips(project)) {
+      if (time < clip.timelineStart || time >= clipEnd(clip)) continue;
+      if (project.assets.find((a) => a.id === clip.assetId)?.kind !== "video") continue;
+      const element = this.mediaFor(clip, "video");
+      if (!(element instanceof HTMLVideoElement) || !element.paused) continue;
+      this.playOutcome.set(clip.id, "pending(gesture)");
+      void element.play().then(
+        () => this.playOutcome.set(clip.id, "resolved(gesture)"),
+        (err: unknown) => this.playOutcome.set(clip.id, `rejected(gesture):${err instanceof Error ? err.name : String(err)}`)
+      );
+    }
+  }
+
+  /** Reports a video element that isn't actually playing while the transport is — once per clip per
+   *  page load, through `host.onPlaybackStall`. Exists because the iOS preview freeze couldn't be
+   *  reproduced off-device and two reasoned fixes both missed; this ships the element's real state
+   *  back instead. The `src` has its `token` query param stripped before it leaves the page. */
+  private watchForStall(clipId: string, element: HTMLVideoElement, sourceTime: number, playing: boolean): void {
+    if (!playing) {
+      this.stallWatch.delete(clipId);
+      return;
+    }
+    if (!this.host.onPlaybackStall || this.stallReported.has(clipId)) return;
+
+    const now = performance.now();
+    let watch = this.stallWatch.get(clipId);
+    // `syncMedia` only runs for the clip under the playhead, so an entry left behind when playback
+    // moved off this clip would otherwise resume with a stale timer and report instantly on return.
+    if (!watch || now - watch.lastSeenAt > 500) {
+      watch = { startedAt: now, lastSeenAt: now, notProgressingSince: null, hardSeeks: 0 };
+      this.stallWatch.set(clipId, watch);
+    }
+    watch.lastSeenAt = now;
+    const notProgressing = element.paused || element.seeking || element.readyState < 3;
+    watch.notProgressingSince = notProgressing ? (watch.notProgressingSince ?? now) : null;
+
+    const playedMs = now - watch.startedAt;
+    const stuckTooLong = watch.notProgressingSince !== null && now - watch.notProgressingSince >= STALL_REPORT_MS;
+    const reseekStorm = playedMs >= STALL_REPORT_MS && watch.hardSeeks / (playedMs / 1000) > STALL_RESEEKS_PER_SECOND;
+    if (!stuckTooLong && !reseekStorm) return;
+
+    this.stallReported.add(clipId);
+    let src: string | null = null;
+    try {
+      const url = new URL(element.currentSrc || element.src, window.location.href);
+      url.searchParams.delete("token");
+      src = url.pathname + url.search;
+    } catch {
+      src = null;
+    }
+    const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean; isActive: boolean } }).userActivation;
+    this.host.onPlaybackStall({
+      reason: stuckTooLong ? "not-progressing" : "reseek-storm",
+      readyState: element.readyState,
+      networkState: element.networkState,
+      paused: element.paused,
+      seeking: element.seeking,
+      ended: element.ended,
+      currentTime: element.currentTime,
+      sourceTime,
+      duration: element.duration,
+      buffered:
+        element.buffered.length > 0
+          ? `${element.buffered.start(0).toFixed(2)}-${element.buffered.end(element.buffered.length - 1).toFixed(2)} (${element.buffered.length} ranges)`
+          : "none",
+      videoSize: `${element.videoWidth}x${element.videoHeight}`,
+      errorCode: element.error?.code ?? null,
+      errorMessage: element.error?.message ?? null,
+      playOutcome: this.playOutcome.get(clipId) ?? "never-called",
+      hardSeeks: watch.hardSeeks,
+      playedMs: Math.round(playedMs),
+      audioContextState: this.audioMixEngine.contextState,
+      userActivation: activation ? { hasBeenActive: activation.hasBeenActive, isActive: activation.isActive } : "unsupported",
+      src,
+      userAgent: navigator.userAgent,
+    });
+  }
+
   /** Slaves one video element's PICTURE timing to the master clock — `currentTime`/`playbackRate`/
    *  play-pause only. No longer touches `.muted`/`.volume` at all: a video clip's audio is routed
    *  through `AudioMixEngine.syncVideoClipAudio` instead (called separately, right after this, from
    *  `drawVideoClip`), since `createMediaElementSource` captures the element's native output entirely —
    *  setting `.volume` on an element already routed through Web Audio would have no audible effect. */
   private syncMedia(clipId: string, element: HTMLVideoElement, sourceTime: number, playing: boolean): void {
-    // Transport runs BEFORE the readyState gate below, not after it with the rest of the sync work.
-    // On iOS Safari `preload` is ignored outright (treated as "none" — a deliberate WebKit policy, not
-    // a bug): an element that has only ever had its `src` assigned fetches NOTHING on its own there and
-    // sits at readyState 0 indefinitely, unlike every desktop browser, where `preload="auto"` moves it
-    // off 0 by itself within a tick or two and makes that gate purely transient. With the `play()` call
-    // below sequenced after the gate, those two facts deadlock on iOS: the element never loads because
-    // `play()` is never called, and `play()` is never called because the element never loads. Nothing
-    // breaks the tie — `mediaFor` only assigns `src`, and the prefetch pass in `tick` is itself gated on
-    // `readyState >= 1`. The reported symptom is the whole deadlock visible at once: the master clock
-    // (independent of any element) keeps advancing so the playhead moves normally, while EVERY video
-    // clip stays frozen on its last drawn frame with no audio, and `onPlaybackBlocked` never fires to
-    // explain it because no `play()` was ever issued to be rejected in the first place.
+    // Transport runs BEFORE the readyState gate below. iOS Safari ignores `preload`, so an element
+    // that has only had its `src` assigned can sit at readyState 0 until playback is requested; with
+    // `play()` behind that gate nothing would ever request it. This ordering alone did NOT fix the
+    // reported iOS freeze (confirmed on-device), so it is a hazard removed, not the established cause —
+    // `watchForStall` below exists to capture what that cause actually is.
+    this.watchForStall(clipId, element, sourceTime, playing);
     if (playing) {
       // `play()` rejects if the browser blocks autoplay before a user gesture. The transport button's
       // own click IS a real gesture, but a clip cut deep into a long, uninterrupted play session can
@@ -1158,7 +1257,16 @@ export class PlaybackEngine {
       // what actually recovers — it stops the whole transport, so the UI honestly reflects "paused"
       // and the user's very next tap is a genuine, fresh, definitely-allowed gesture instead of the
       // clock and the picture silently drifting apart forever.
-      if (element.paused) void element.play().catch(() => this.host.onPlaybackBlocked());
+      if (element.paused) {
+        this.playOutcome.set(clipId, "pending");
+        void element.play().then(
+          () => this.playOutcome.set(clipId, "resolved"),
+          (err: unknown) => {
+            this.playOutcome.set(clipId, `rejected:${err instanceof Error ? err.name : String(err)}`);
+            this.host.onPlaybackBlocked();
+          }
+        );
+      }
     } else if (!element.paused) {
       element.pause();
     }
@@ -1186,6 +1294,10 @@ export class PlaybackEngine {
       this.audioMixEngine.duckAroundSeek(clipId);
       element.currentTime = sourceTime;
       element.playbackRate = 1;
+      if (playing) {
+        const watch = this.stallWatch.get(clipId);
+        if (watch) watch.hardSeeks++;
+      }
     } else if (playing && absDrift > DRIFT_CORRECTION_TOLERANCE) {
       // Proportional, not flat — see `MAX_DRIFT_CORRECTION_RATE_DELTA`'s own doc comment for why a
       // fixed small nudge couldn't close the startup-latency spike `DRIFT_TOLERANCE` documents fast

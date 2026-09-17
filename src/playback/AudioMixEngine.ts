@@ -120,7 +120,22 @@ export class AudioMixEngine {
    *  handling"), always after a real click has already happened, but the rejection still needs
    *  swallowing rather than surfacing as an unhandled promise rejection. */
   resume(): void {
-    if (this.audioContext.state === "suspended") void this.audioContext.resume().catch(() => {});
+    if (this.audioContext.state !== "running") void this.audioContext.resume().catch(() => {});
+  }
+
+  /** Same call as `resume`, but meant to run synchronously INSIDE the Play control's own event
+   *  handler. WebKit (every iOS browser) only lets an `AudioContext` start from within a real user
+   *  gesture and ignores a `resume()` issued from a later animation frame, which is the only place
+   *  `resume` above ever ran from. iOS also parks the context in a non-standard `"interrupted"` state
+   *  that the old `=== "suspended"` check never matched. Every video clip's audio is captured into
+   *  this context (`syncVideoClipAudio`), so a context that never starts can hold those elements back
+   *  too, not just silence them. */
+  resumeFromGesture(): void {
+    if (this.audioContext.state !== "running") void this.audioContext.resume().catch(() => {});
+  }
+
+  get contextState(): string {
+    return this.audioContext.state;
   }
 
   /** Lazily creates (once — see `trackGainNodes`' own comment) and wires an audio track's whole mixing

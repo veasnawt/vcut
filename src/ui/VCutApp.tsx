@@ -1550,6 +1550,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
       switch (event.key) {
         case " ": {
           event.preventDefault();
+          if (!state.playing) state.playbackEngine?.primeFromGesture();
           state.togglePlay();
           break;
         }

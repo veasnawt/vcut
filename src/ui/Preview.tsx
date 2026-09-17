@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Maximize, Pause, Play, Redo, SkipBack, SkipForward, StepBack, StepForward, Undo } from "@veasnawt/vicons";
 import { mediaUrl, outroAssetUrl, sfxAssetUrl } from "../api/client.ts";
+import { reportError } from "../api/crashLog.ts";
 import { sequenceDuration } from "../project/createProject.ts";
 import { buildComposePreviewProject } from "../playback/composePreview.ts";
 import { OUTRO_BG_ASSET_ID, OUTRO_BG_FILE, OUTRO_DURATION_SECONDS, OUTRO_LOGO_ASSET_ID, OUTRO_LOGO_FILE } from "../export/outro.ts";
@@ -235,6 +236,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
         state.setPlaying(false);
         state.setStatus(translateText(state.language, "Playback stopped — tap Play to resume"));
       },
+      onPlaybackStall: (details) => reportError("preview-video-stall", new Error("Preview video element not progressing while playing"), details),
       mediaUrlFor: (assetId) => {
         // Same two fixed ids `export/route.ts`'s own `inputPathFor` special-cases server-side —
         // these synthetic assets (`buildOutroPreviewProject`) have no real project `relPath` to look
@@ -508,7 +510,15 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
           <ControlButton onClick={() => stepFrames(-1)} label={t("Previous frame")} disabled={empty} holdRepeat>
             <StepBack size={16} />
           </ControlButton>
-          <ControlButton onClick={togglePlay} label={playing ? t("Pause (Space)") : t("Play (Space)")} disabled={empty} primary>
+          <ControlButton
+            onClick={() => {
+              if (!playing) engineRef.current?.primeFromGesture();
+              togglePlay();
+            }}
+            label={playing ? t("Pause (Space)") : t("Play (Space)")}
+            disabled={empty}
+            primary
+          >
             {playing ? <Pause size={22} /> : <Play size={22} />}
           </ControlButton>
           <ControlButton onClick={() => stepFrames(1)} label={t("Next frame")} disabled={empty} holdRepeat>
