@@ -1708,7 +1708,20 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
    *  - `fps=...:round=up` puts each frame on the first output frame at or after its start (the frame
    *    preview shows at that instant); `trim=duration` then cuts to exactly the length a still gets. */
   function pushImageInput(clip: Clip, path: string, sourceStart: number, duration: number, index: number): void {
-    const animation = findAsset(project, clip.assetId)?.animation;
+    const asset = findAsset(project, clip.assetId);
+    // A color-matte asset has no real file at all — `Asset.relPath` is `""` (see that field's own doc
+    // comment), so `path` (from `options.inputPathFor`) is never something FFmpeg can actually open;
+    // in hosted mode it resolves to the project's own media DIRECTORY, which fails with "Is a
+    // directory" (confirmed as a real, reported export failure, not hypothetical — every project with
+    // a color-background clip failed to export). Synthesized directly as a `color=` lavfi source
+    // instead, `format=rgba` unconditionally: harmless where nothing downstream needs alpha, and
+    // required where it does (a transparent overlay track, or `format=rgba` immediately after in
+    // `pushClipVideoFilters`'s own "real transform/effects" branch, which otherwise re-adds it anyway).
+    if (asset?.kind === "color") {
+      inputs.push("-f", "lavfi", "-t", t(duration), "-i", `color=c=${asset.color ?? "#000000"}:s=${width}x${height}:r=${fps},format=rgba`);
+      return;
+    }
+    const animation = asset?.animation;
     if (!animation) {
       inputs.push("-loop", "1", "-framerate", String(fps), "-t", t(duration), "-i", path);
       return;

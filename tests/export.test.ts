@@ -327,31 +327,37 @@ describe("buildExportPlan with images", () => {
 });
 
 describe("buildExportPlan with a color-matte clip", () => {
-  it("treats a color asset exactly like a still image — looped, no seek, explicit duration", () => {
+  it("synthesizes its fill as a lavfi color= source — no seek, explicit duration, no real file involved", () => {
     const base = emptyProject([colorAsset("color1", "#224466")]);
     const project = addClip(base, videoTrackId(base), "color1", 0);
 
     const { args, duration } = plan(project);
     const inputIndex = args.indexOf("-i");
 
-    assert.equal(args[0], "-loop");
-    assert.equal(args[1], "1");
+    assert.equal(args[0], "-f");
+    assert.equal(args[1], "lavfi");
+    assert.match(args[inputIndex + 1], /^color=c=#224466:s=\d+x\d+:r=\d+,format=rgba$/);
     assert.ok(!args.slice(0, inputIndex).includes("-ss"), "a color-matte input must not be given -ss");
     assert.ok(args.slice(0, inputIndex).includes("-t"), "a color-matte input needs an explicit duration");
     // IMAGE_DEFAULT_DURATION — same "no intrinsic length" default an image gets when placed.
     assert.ok(closeTo(duration, 5), `expected the default 5s color-matte duration, got ${duration}`);
   });
 
-  it("resolves the input path via inputPathFor, same seam every other asset kind goes through", () => {
+  it("never resolves a color-matte's video content through inputPathFor — a color asset has no real file", () => {
     const base = emptyProject([colorAsset("color1", "#224466")]);
     const project = addClip(base, videoTrackId(base), "color1", 0);
 
     const { args } = buildExportPlan(project, {
       ...options,
-      inputPathFor: (assetId) => (assetId === "color1" ? "/media/color-224466-1080x1920.png" : `/media/${assetId}.mp4`),
+      // Simulates the real, reported bug this closes: `Asset.relPath` is `""` for a color matte, so a
+      // naive `inputPathFor` resolves to the project's own media DIRECTORY, not a file — confirmed live
+      // in production as an export failing with "Is a directory" the instant a project placed a color
+      // background. The fix must never feed whatever this returns to FFmpeg for a color asset.
+      inputPathFor: () => "/media",
     });
 
-    assert.ok(args.includes("/media/color-224466-1080x1920.png"));
+    assert.ok(!args.includes("/media"), "the color asset's own hex color feeds the source, never inputPathFor's result");
+    assert.match(args.join(" "), /color=c=#224466:s=\d+x\d+:r=\d+/);
   });
 
   it("gives a silent color-matte a generated audio pad so concat still pairs up, same as an image", () => {
@@ -372,7 +378,7 @@ describe("buildExportPlan with a color-matte clip", () => {
     const { args } = plan(project);
 
     assert.match(filterGraph(args), /concat=n=2:v=1:a=1/);
-    assert.ok(args.includes("-loop"), "the color-matte still needs looping alongside the video clip");
+    assert.ok(args.some((a) => a.startsWith("color=c=")), "the color-matte still synthesizes its own lavfi source alongside the video clip");
   });
 
   it("applies Transform/Effects to a color-matte clip through the exact same filter chain a video clip gets", () => {
