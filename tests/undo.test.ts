@@ -17,6 +17,7 @@ import {
   SetClipEffectsCommand,
   SetClipEffectsKeyframesCommand,
   SetClipGainCommand,
+  ReplaceClipAssetCommand,
   SetClipLutCommand,
   SetClipMutedCommand,
   SetClipTextCropKeyframesCommand,
@@ -39,7 +40,7 @@ import type { Project } from "../src/project/types.ts";
 import { DEFAULT_TEXT_STYLE, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../src/project/types.ts";
 import { addClip, addTrack } from "../src/timeline/operations.ts";
 import { UndoStack } from "../src/undo/UndoStack.ts";
-import { audioAsset, audioTrackId, clipsOf, comparable, emptyProject, textAsset, videoAsset, videoTrackId } from "./fixture.ts";
+import { audioAsset, audioTrackId, clipsOf, comparable, emptyProject, imageAsset, textAsset, videoAsset, videoTrackId } from "./fixture.ts";
 
 /** Asserts the central undo guarantee: applying a command and then reverting it returns the project
  *  to exactly the state it started in, and redoing gets back to the post-apply state. */
@@ -839,6 +840,39 @@ describe("ExtractAudioCommand", () => {
     const project = addClip(base, videoTrackId(base), "asset1", 0);
     const [clip] = clipsOf(project, videoTrackId(project));
     assertRoundTrips(project, new ExtractAudioCommand(clip.id));
+  });
+});
+
+describe("ReplaceClipAssetCommand", () => {
+  it("resets a video clip to span its new asset's whole duration", () => {
+    const base = emptyProject([videoAsset()]);
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    const applied = new ReplaceClipAssetCommand(clip.id, videoAsset("erased", 4)).apply(project);
+    const replaced = clipsOf(applied, videoTrackId(applied)).find((c) => c.id === clip.id);
+    assert.equal(replaced?.assetId, "erased");
+    assert.equal(replaced?.sourceIn, 0);
+    assert.equal(replaced?.sourceOut, 4);
+  });
+
+  it("keeps an image clip's own length — a still has no duration to reset it to", () => {
+    const base = emptyProject([imageAsset()]);
+    const project = addClip(base, videoTrackId(base), "img1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    const erased = { ...imageAsset("img-erased"), duration: 0 };
+    const applied = new ReplaceClipAssetCommand(clip.id, erased).apply(project);
+    const replaced = clipsOf(applied, videoTrackId(applied)).find((c) => c.id === clip.id);
+    assert.equal(replaced?.assetId, "img-erased");
+    assert.equal(replaced?.sourceIn, clip.sourceIn);
+    assert.equal(replaced?.sourceOut, clip.sourceOut);
+    assert.ok(clip.sourceOut > clip.sourceIn, "fixture image clip should have a real length");
+  });
+
+  it("round-trips like every other command", () => {
+    const base = emptyProject([imageAsset()]);
+    const project = addClip(base, videoTrackId(base), "img1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    assertRoundTrips(project, new ReplaceClipAssetCommand(clip.id, { ...imageAsset("img-erased"), duration: 0 }));
   });
 });
 

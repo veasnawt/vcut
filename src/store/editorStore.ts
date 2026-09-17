@@ -1672,15 +1672,20 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const originalAsset = project ? findAsset(project, findClip(project, clipId)?.clip.assetId ?? "") : undefined;
       if (!projectId || !originalAsset?.relPath) return;
       void api
-        .extractAudioAsset(projectId, originalAsset.relPath, originalAsset.name)
+        .extractAudioAsset(projectId, originalAsset)
         .then((asset) => {
           if (!asset) return;
           const current = get().project;
           if (!current || !findClip(current, newClipId)) return; // clip deleted meanwhile
           get().run(new SwapClipAssetCommand(newClipId, asset));
         })
-        .catch(() => {
-          // Silent — see this block's own opening comment for why a failure here isn't worth surfacing.
+        .catch((err: unknown) => {
+          // Not shown to the user — the extracted clip still plays — but reported: a silent failure here
+          // is exactly how every library-backed video's extraction broke unnoticed.
+          reportError("extract-audio-failed", err instanceof Error ? err : new Error(String(err)), {
+            library: Boolean(originalAsset.libraryMediaId),
+            kind: originalAsset.kind,
+          });
         });
     },
 

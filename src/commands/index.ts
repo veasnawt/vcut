@@ -228,8 +228,12 @@ export class ReplaceClipAssetCommand implements Command {
     draft.assets = [...draft.assets, this.newAsset];
     const clip = findClip(draft, this.clipId)!.clip;
     clip.assetId = this.newAsset.id;
-    clip.sourceIn = 0;
-    clip.sourceOut = this.newAsset.duration;
+    // A still has no duration of its own — an image clip's length lives entirely in its own
+    // `sourceIn`/`sourceOut`, so resetting those to the new asset's (zero) duration would collapse it.
+    if (this.newAsset.kind !== "image") {
+      clip.sourceIn = 0;
+      clip.sourceOut = this.newAsset.duration;
+    }
     draft.updatedAt = Date.now();
     return draft;
   }

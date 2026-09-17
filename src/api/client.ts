@@ -239,26 +239,27 @@ export async function importMedia(
   return body.asset;
 }
 
-/** Asks the server to derive a genuinely independent audio-only asset from an already-imported file's
- *  `relPath` — the async cosmetic upgrade `editorStore.ts`'s `extractAudioFromClip` fires off after
- *  `ExtractAudioCommand` already ran (see that command's own doc comment for why the clip already
- *  plays correctly without this, and this route's own doc comment for why a real, separate file is
- *  needed at all rather than just relaxing a client-side kind check). Returns `null` on native (no
- *  server to ask) or on any failure — this is a "nicer library entry" enhancement, never something a
- *  caller should treat as required for the extraction to have worked. */
-export async function extractAudioAsset(projectId: string, relPath: string, name: string): Promise<Asset | null> {
+/** Asks the server to derive a genuinely independent audio-only asset from an already-imported one —
+ *  the upgrade `editorStore.ts`'s `extractAudioFromClip` fires off after `ExtractAudioCommand` already
+ *  ran (see that command's own doc comment for why the clip already plays without this, and the route's
+ *  own doc comment for why a real, separate file is needed at all). Sends where the source file LIVES
+ *  (`libraryMediaId`, `bundledSfx`), not just its `relPath` — the route resolves it the same way export
+ *  does. Returns `null` on native (no server to ask); throws on failure, so the caller can report it —
+ *  this used to swallow every error, which is how a library-backed video never extracting went unseen. */
+export async function extractAudioAsset(projectId: string, asset: Asset): Promise<Asset | null> {
   if (isNative) return null;
-  try {
-    const response = await apiFetch(`${BASE}/media/extract-audio?projectId=${encodeURIComponent(projectId)}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ relPath, name }),
-    });
-    const body = await unwrap<{ asset: Asset }>(response);
-    return body.asset;
-  } catch {
-    return null;
-  }
+  const response = await apiFetch(`${BASE}/media/extract-audio?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      relPath: asset.relPath,
+      name: asset.name,
+      ...(asset.libraryMediaId ? { libraryMediaId: asset.libraryMediaId } : null),
+      ...(asset.bundledSfx ? { bundledSfx: true } : null),
+    }),
+  });
+  const body = await unwrap<{ asset: Asset }>(response);
+  return body.asset;
 }
 
 export async function deleteMedia(projectId: string, asset: Asset): Promise<void> {

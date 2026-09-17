@@ -52,10 +52,8 @@ export function RemoveObjectOverlay({ canvas }: { canvas: HTMLCanvasElement | nu
     if (!found || found.track.kind !== "video") return null;
     if (clipAtTime(found.track, playhead)?.id !== found.clip.id) return null;
     const asset = findAsset(project, found.clip.assetId);
-    // Video only, matching the Inspector's own gating for this tool — ProPainter has no still-image
-    // mode, and animating a single image through a video-inpainting model has nothing to propagate
-    // across (see the Inspector section's own comment on why this is a v1 scope cut, not an oversight).
-    if (!asset || asset.kind !== "video" || !asset.width || !asset.height) return null;
+    // Video or image, matching the Inspector's own gating for this tool.
+    if (!asset || (asset.kind !== "video" && asset.kind !== "image") || !asset.width || !asset.height) return null;
     return { clipId: found.clip.id, transform: found.clip.transform ?? IDENTITY_TRANSFORM, assetWidth: asset.width, assetHeight: asset.height, sequence: project.sequence };
   })();
 

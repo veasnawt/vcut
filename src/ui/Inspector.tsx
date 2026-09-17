@@ -511,11 +511,15 @@ function RemoveObjectSection({
   assetName,
   projectId,
   clipDurationSeconds,
+  isImage,
 }: {
   clipId: string;
   assetName: string;
   projectId: string | null;
   clipDurationSeconds: number;
+  /** An image clip: one erase of one still (see `removeObjectFromImage` in `inpaint/route.ts`) — no
+   *  chunking, no audio, and a flat price rather than one per second of clip. */
+  isImage: boolean;
 }) {
   const t = useTranslation();
   const armRemoveObject = useEditorStore((s) => s.armRemoveObject);
@@ -890,15 +894,17 @@ function RemoveObjectSection({
       {!rect ? (
         <>
           <p className="text-[12px] leading-relaxed text-white/50">
-            {t(
-              "Draw a box over the object or watermark on the preview. Works best for a mostly-static background — the same region is erased across the whole clip."
-            )}
+            {isImage
+              ? t("Draw a box over the object or watermark on the preview, and it's erased from the image.")
+              : t(
+                  "Draw a box over the object or watermark on the preview. Works best for a mostly-static background — the same region is erased across the whole clip."
+                )}
           </p>
           {/* Hosted mode's cloud provider (`bria/video-erase-object`) processes in 5-second chunks —
               a real cost and time difference on a long clip, not just a cosmetic note. Local/desktop's
               own providers (local ProPainter, fal's VOID) have no such cap, so this would be
               misleading advice there. */}
-          {hosted && clipDurationSeconds > 5 && (
+          {hosted && !isImage && clipDurationSeconds > 5 && (
             <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300/80">
               {t(
                 "This clip is over 5 seconds — it'll be processed in chunks, which costs more credits and takes longer. If you only need to fix a short section, trimming the clip first is faster and cheaper."
@@ -924,7 +930,7 @@ function RemoveObjectSection({
               only option and also what "Replicate" now means locally too) keeps the source clip's
               own audio via `preserve_audio` — see `buildExtractClipArgs`'s own comment for why
               extraction stopped dropping it. */}
-          {selectedProvider === "local" && (
+          {selectedProvider === "local" && !isImage && (
             <p className="mt-1 text-[11px] text-white/35">
               {t('Result has no audio — "{name}"\'s own audio isn\'t affected either way.', { name: assetName })}
             </p>
@@ -944,7 +950,9 @@ function RemoveObjectSection({
               formula (a per-second rate with a one-second minimum) exactly. */}
           {hosted && (
             <p className="mt-1.5 text-[11px] text-white/35">
-              {t("~{n} credits", { n: Math.ceil(Math.max(1, clipDurationSeconds)) * REMOVE_OBJECT_CREDITS_PER_SECOND })}
+              {t("~{n} credits", {
+                n: isImage ? REMOVE_OBJECT_CREDITS_PER_SECOND : Math.ceil(Math.max(1, clipDurationSeconds)) * REMOVE_OBJECT_CREDITS_PER_SECOND,
+              })}
             </p>
           )}
           <div className="mt-2 flex gap-2">
@@ -2063,11 +2071,10 @@ export function Inspector() {
                   </CollapsibleSection>
                 )}
 
-                {/* Video only, stricter than Transform's own "video track" gate above — a video track
-                    can hold an IMAGE clip too, but ProPainter (the model behind this tool) is a video-
-                    inpainting model with no still-image mode, so an image clip has nothing for it to
-                    do. `RemoveObjectOverlay`'s own resolved-clip lookup uses this identical check. */}
-                {activeTab === "transform" && track.kind === "video" && asset?.kind === "video" && (
+                {/* Video and image clips on a video track — an image goes through each provider's own
+                    still-image eraser instead (see `removeObjectFromImage` in `inpaint/route.ts`).
+                    `RemoveObjectOverlay`'s own resolved-clip lookup uses this identical check. */}
+                {activeTab === "transform" && track.kind === "video" && (asset?.kind === "video" || asset?.kind === "image") && (
                   <CollapsibleSection
                     title={t("Remove Object")}
                     accent="bg-teal-400"
@@ -2080,6 +2087,7 @@ export function Inspector() {
                       assetName={asset.name}
                       projectId={projectId}
                       clipDurationSeconds={clip.sourceOut - clip.sourceIn}
+                      isImage={asset.kind === "image"}
                     />
                   </CollapsibleSection>
                 )}
