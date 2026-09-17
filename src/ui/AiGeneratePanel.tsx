@@ -505,8 +505,8 @@ export function AiGeneratePanel({ onAssetAdded }: { onAssetAdded?: () => void } 
                           </div>
                         )
                       ) : item.status === "failed" ? (
-                        <div className="absolute inset-0 flex items-center justify-center bg-rose-950/30 p-2 text-center">
-                          <span className="line-clamp-5 text-[10px] leading-snug text-rose-300">{item.error}</span>
+                        <div className="absolute inset-0 flex items-center justify-center bg-white/[0.04] p-2 text-center">
+                          <span className="line-clamp-5 text-[10px] leading-snug text-amber-200/80">{item.error}</span>
                         </div>
                       ) : (
                         <div className="absolute inset-0 bg-black">

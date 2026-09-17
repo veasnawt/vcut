@@ -533,6 +533,14 @@ function compositeSoloReveal(
  *  `MAX_DRIFT_CORRECTION_RATE_DELTA`) can absorb even that startup-latency spike without ever reaching
  *  this threshold in ordinary use, breaking the cycle instead of just tuning how often it repeats. */
 const DRIFT_TOLERANCE = 1.5;
+/** How far a PAUSED element's frame may sit from the playhead before it's re-seeked, while
+ *  `PlaybackEngine.setPreciseScrub` is on. `DRIFT_TOLERANCE` applies while paused too, so an ordinary
+ *  paused scrub only moves the picture once the playhead has travelled 1.5s — fine for a drag, but the
+ *  export dialog walks the playhead forward in small steps to follow the render, and measured, its
+ *  preview changed once per 1.5s of video. Under half a frame at 24fps, so every step lands. Opt-in
+ *  rather than the paused default: a paused seek briefly blanks the clip until it lands, and nothing
+ *  else in the editor has asked for that trade. */
+const PRECISE_SCRUB_TOLERANCE = 0.02;
 /** Below this, drift is left alone entirely — small enough (one frame or so at 30fps) that neither a
  *  seek nor a rate nudge would be perceptible, and constantly fighting sub-frame jitter would just be
  *  wasted `playbackRate` churn for no audible benefit. Between this and `DRIFT_TOLERANCE`, `syncMedia`
@@ -612,7 +620,13 @@ export function isAppleWebKit(userAgent: string): boolean {
  *
  *  `allowRateCorrection` false (Apple WebKit — see `isAppleWebKit`) turns off the gradual
  *  `playbackRate` nudge entirely; drift is then only ever closed by a hard seek. */
-export function planMediaSync(state: MediaSyncState, sourceTime: number, playing: boolean, allowRateCorrection = true): MediaSyncAction {
+export function planMediaSync(
+  state: MediaSyncState,
+  sourceTime: number,
+  playing: boolean,
+  allowRateCorrection = true,
+  pausedSeekTolerance = DRIFT_TOLERANCE
+): MediaSyncAction {
   const none: MediaSyncAction = { playbackRate: null, seekTo: null };
 
   if (state.seeking) {
@@ -625,7 +639,7 @@ export function planMediaSync(state: MediaSyncState, sourceTime: number, playing
   const drift = state.currentTime - sourceTime;
   const absDrift = Math.abs(drift);
 
-  if (absDrift > DRIFT_TOLERANCE) {
+  if (absDrift > (playing ? DRIFT_TOLERANCE : pausedSeekTolerance)) {
     // A real jump (scrub, clip switch, a tab that was throttled/backgrounded) — nothing gradual could
     // close a gap this size fast enough to matter, so snap, resetting any in-progress nudge first.
     return { playbackRate: state.playbackRate !== 1 ? 1 : null, seekTo: sourceTime };
@@ -1076,6 +1090,20 @@ export class PlaybackEngine {
   private mediaWaitingThisFrame = false;
   private mediaWaitingLastFrame = false;
   private mediaWaitSince: number | null = null;
+  /** Whether the most recent `drawFrame` drew every video/image clip under the playhead from media that
+   *  has settled at the right time. False when a clip was skipped because its media wasn't decoded yet
+   *  (still loading, or mid-seek while scrubbing — which leaves plain black where it belongs), or was
+   *  drawn from a video still seeking (a stale frame from before the seek). `drawIncomplete` is the
+   *  in-progress flag for the frame being drawn; `lastFrameComplete` is what `isLastFrameComplete`
+   *  reports. */
+  private drawIncomplete = false;
+  private lastFrameComplete = true;
+  /** See `setPreciseScrub`. */
+  private preciseScrub = false;
+  /** Precise-scrub only: a copy of the last complete frame, painted back over any frame a seek leaves
+   *  partly black — see `holdLastCompleteFrame`. `null` whenever precise scrub is off. */
+  private scrubHoldCanvas: HTMLCanvasElement | null = null;
+  private scrubHoldValid = false;
   /** Rolling tick intervals and `drawFrame` costs (ms), carried in stall reports — the preview is
    *  reported as laggy on iOS, and these tell a slow render loop apart from a slow video. */
   private frameIntervalsMs: number[] = [];
@@ -1138,6 +1166,48 @@ export class PlaybackEngine {
   constructor(host: PlaybackHost) {
     this.host = host;
     this.audioMixEngine = new AudioMixEngine((assetId) => this.host.mediaUrlFor(assetId));
+  }
+
+  /** See `lastFrameComplete`. Read by the export dialog (`ExportDialog.tsx`), which scrubs this engine
+   *  in step with the render: it holds its preview copy on the last complete frame instead of copying
+   *  the black a seek briefly leaves behind, and waits for a seek to land before asking for the next. */
+  isLastFrameComplete(): boolean {
+    return this.lastFrameComplete;
+  }
+
+  /** While on, a paused video is re-seeked as soon as its frame is off the playhead by more than
+   *  `PRECISE_SCRUB_TOLERANCE`, not only past `DRIFT_TOLERANCE` — see the former for why this is opt-in.
+   *  Playback is unaffected either way. Turned on by the export dialog only while it scrubs this
+   *  engine in step with a render, and off again when it stops. */
+  setPreciseScrub(on: boolean): void {
+    this.preciseScrub = on;
+    if (!on) {
+      this.scrubHoldCanvas = null;
+      this.scrubHoldValid = false;
+    }
+  }
+
+  /** Precise-scrub only. Every seek blanks its clip to black for the few frames until it lands (see
+   *  `drawVideoClip`'s readyState gate), and a precise scrub seeks several times a second — measured,
+   *  that left the preview black in well over half its frames, flickering. So each complete frame is
+   *  kept, and painted back over any frame that isn't: the picture holds on the last real frame until
+   *  the next one is ready. Works in raw backing-store pixels, independent of `drawFrame`'s transform. */
+  private holdLastCompleteFrame(context: CanvasRenderingContext2D): void {
+    const canvas = context.canvas;
+    const hold = (this.scrubHoldCanvas ??= document.createElement("canvas"));
+    if (this.lastFrameComplete) {
+      if (hold.width !== canvas.width || hold.height !== canvas.height) {
+        hold.width = canvas.width;
+        hold.height = canvas.height;
+      }
+      hold.getContext("2d")?.drawImage(canvas, 0, 0);
+      this.scrubHoldValid = true;
+    } else if (this.scrubHoldValid && hold.width === canvas.width && hold.height === canvas.height) {
+      context.save();
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.drawImage(hold, 0, 0);
+      context.restore();
+    }
   }
 
   attach(canvas: HTMLCanvasElement): void {
@@ -1572,7 +1642,8 @@ export class PlaybackEngine {
       },
       sourceTime,
       playing,
-      this.rateCorrection
+      this.rateCorrection,
+      this.preciseScrub ? PRECISE_SCRUB_TOLERANCE : DRIFT_TOLERANCE
     );
     // Rate BEFORE seek, never after: a rate change issued right behind a seek lands while that seek is
     // still in flight, which is exactly the interruption `planMediaSync` exists to stop.
@@ -1816,6 +1887,7 @@ export class PlaybackEngine {
 
     context.fillStyle = "#000";
     context.fillRect(0, 0, frameWidth, frameHeight);
+    this.drawIncomplete = false;
 
     // Computed once and reused by every `pauseInactive` call below, so a gap in the video track and a
     // clip actively playing agree on which audio-track elements are currently supposed to be making
@@ -1826,6 +1898,8 @@ export class PlaybackEngine {
     // a missing asset, no video track at all) — text overlays a video frame OR a gap equally, the
     // same way a caption doesn't disappear just because the footage under it cut to black.
     this.drawTextLayer(project, context, frameWidth, frameHeight, time);
+    this.lastFrameComplete = !this.drawIncomplete;
+    if (this.preciseScrub) this.holdLastCompleteFrame(context);
   }
 
   /** The video/image half of a frame — unchanged from before text existed, just extracted into its
@@ -1896,12 +1970,18 @@ export class PlaybackEngine {
     } else {
       const isImage = asset?.kind === "image";
       const loaded = this.mediaFor(clip, isImage ? "image" : "video");
-      if (!loaded) return;
+      if (!loaded) {
+        this.drawIncomplete = true;
+        return;
+      }
       element = loaded;
 
       if (element instanceof HTMLImageElement) {
         // A still has no clock to sync and nothing to pause — it's ready as soon as it has decoded.
-        if (!element.complete || element.naturalWidth === 0) return;
+        if (!element.complete || element.naturalWidth === 0) {
+          this.drawIncomplete = true;
+          return;
+        }
         sourceWidth = element.naturalWidth;
         sourceHeight = element.naturalHeight;
       } else if (element instanceof HTMLVideoElement) {
@@ -1926,7 +2006,11 @@ export class PlaybackEngine {
         const { gain: transitionGain } = resolveAudioTransitionGain(track, clip, time);
         this.audioMixEngine.syncVideoClipAudio(clip, element, (clip.gain ?? 1) * transitionGain, (clip.mutedAudio ?? false) || track.muted);
         // readyState < 2 means no frame is decoded yet; drawing would throw or paint garbage.
-        if (element.readyState < 2) return;
+        if (element.readyState < 2) {
+          this.drawIncomplete = true;
+          return;
+        }
+        if (element.seeking) this.drawIncomplete = true;
         sourceWidth = element.videoWidth;
         sourceHeight = element.videoHeight;
       } else {

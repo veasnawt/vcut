@@ -154,7 +154,7 @@ export function StockSearchPanel({ onAssetAdded }: { onAssetAdded?: () => void }
             {t("Search free stock photos and videos from Pexels.")}
           </p>
         ) : error ? (
-          <p className="px-2 py-8 text-center text-xs leading-relaxed text-rose-300">{error}</p>
+          <p className="px-2 py-8 text-center text-xs leading-relaxed text-amber-200/80">{error}</p>
         ) : results.length === 0 && !loading ? (
           <p className="px-2 py-8 text-center text-xs leading-relaxed text-white/40">{t("Nothing matches that search.")}</p>
         ) : (

@@ -365,7 +365,7 @@ function AutoCaptionsSection({
           {t("Transcribes this clip's audio and adds the result as editable caption clips. Needs a Replicate account — the clip's audio is sent there for processing.")}
         </p>
         {credentialsBlock}
-        {error && <p className="text-[12px] text-rose-300">{error}</p>}
+        {error && <p className="text-[12px] text-amber-200/80">{error}</p>}
       </>
     );
   }
@@ -374,7 +374,7 @@ function AutoCaptionsSection({
     return (
       <>
         {credentialsBlock}
-        <p className="text-[12px] leading-relaxed text-rose-300">{t("FFmpeg isn't available — reinstall dependencies to use this.")}</p>
+        <p className="text-[12px] leading-relaxed text-amber-200/80">{t("FFmpeg isn't available — reinstall dependencies to use this.")}</p>
       </>
     );
   }
@@ -423,7 +423,7 @@ function AutoCaptionsSection({
     <>
       {credentialsBlock}
       {languagePicker}
-      {error && <p className="mb-2 text-[12px] text-rose-300">{error}</p>}
+      {error && <p className="mb-2 text-[12px] text-amber-200/80">{error}</p>}
       <p className="mb-2 text-[12px] leading-relaxed text-white/50">
         {t("Transcribes this clip's audio and adds the result as editable caption clips on a new track.")}
       </p>
@@ -817,7 +817,7 @@ function RemoveObjectSection({
             : t("Erases an object or watermark from this clip using a cloud AI model. Needs an API key — the clip is sent there for processing.")}
         </p>
         {credentialsBlock}
-        {error && <p className="text-[12px] text-rose-300">{error}</p>}
+        {error && <p className="text-[12px] text-amber-200/80">{error}</p>}
       </>
     );
   }
@@ -826,7 +826,7 @@ function RemoveObjectSection({
     return (
       <>
         {credentialsBlock}
-        <p className="text-[12px] leading-relaxed text-rose-300">{t("FFmpeg isn't available — reinstall dependencies to use this.")}</p>
+        <p className="text-[12px] leading-relaxed text-amber-200/80">{t("FFmpeg isn't available — reinstall dependencies to use this.")}</p>
       </>
     );
   }
@@ -886,7 +886,7 @@ function RemoveObjectSection({
   return (
     <>
       {credentialsBlock}
-      {error && <p className="mb-2 text-[12px] text-rose-300">{error}</p>}
+      {error && <p className="mb-2 text-[12px] text-amber-200/80">{error}</p>}
       {!rect ? (
         <>
           <p className="text-[12px] leading-relaxed text-white/50">

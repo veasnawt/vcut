@@ -106,6 +106,16 @@ describe("planMediaSync", () => {
     assert.deepEqual(planMediaSync({ ...base, currentTime: 4.5, playbackRate: 1.2 }, 5, false), { playbackRate: 1, seekTo: null });
   });
 
+  it("re-seeks a paused element on a small offset only when asked for a precise scrub", () => {
+    assert.deepEqual(planMediaSync({ ...base, currentTime: 4.9 }, 5, false), { playbackRate: null, seekTo: null });
+    assert.deepEqual(planMediaSync({ ...base, currentTime: 4.9 }, 5, false, true, 0.02), { playbackRate: null, seekTo: 5 });
+    assert.deepEqual(planMediaSync({ ...base, currentTime: 4.99 }, 5, false, true, 0.02), { playbackRate: null, seekTo: null });
+    // Playback keeps its own tolerance regardless — a precise scrub never adds seeks while playing.
+    assert.deepEqual(planMediaSync({ ...base, currentTime: 4.9 }, 5, true, false, 0.02), { playbackRate: null, seekTo: null });
+    // And a seek already in flight is still left alone.
+    assert.deepEqual(planMediaSync({ ...base, currentTime: 4.9, seeking: true, seekingForMs: 10 }, 5, false, true, 0.02), { playbackRate: null, seekTo: null });
+  });
+
   it("does nothing when already in sync", () => {
     assert.deepEqual(planMediaSync(base, 5, true), { playbackRate: null, seekTo: null });
   });

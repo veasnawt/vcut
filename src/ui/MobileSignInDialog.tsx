@@ -73,7 +73,7 @@ export function MobileSignInDialog({ onClose }: { onClose: () => void }) {
               autoComplete="email"
               className="mt-3 w-full rounded bg-white/5 px-2.5 py-2 text-[16px] text-white placeholder:text-white/30 outline-none focus:ring-1 focus:ring-sky-400/60"
             />
-            {error && <p className="mt-2 text-xs text-rose-300">{error}</p>}
+            {error && <p className="mt-2 text-xs text-amber-200/80">{error}</p>}
             <div className="mt-4 flex items-center justify-end gap-2">
               <button onClick={onClose} className="rounded-md px-3 py-1.5 text-xs font-medium text-white/60 transition hover:bg-white/10 hover:text-white">
                 {t("Cancel")}
@@ -102,7 +102,7 @@ export function MobileSignInDialog({ onClose }: { onClose: () => void }) {
               autoFocus
               className="mt-3 w-full rounded bg-white/5 px-2.5 py-2 text-center text-[18px] tracking-[0.3em] text-white placeholder:text-white/30 outline-none focus:ring-1 focus:ring-sky-400/60"
             />
-            {error && <p className="mt-2 text-xs text-rose-300">{error}</p>}
+            {error && <p className="mt-2 text-xs text-amber-200/80">{error}</p>}
             <div className="mt-4 flex items-center justify-end gap-2">
               <button onClick={onClose} className="rounded-md px-3 py-1.5 text-xs font-medium text-white/60 transition hover:bg-white/10 hover:text-white">
                 {t("Cancel")}

@@ -14,6 +14,7 @@ import {
   watchExport,
 } from "../api/client.ts";
 import { nativeExportUrl, nativeSaveExportToGallery } from "../api/nativeExport.ts";
+import { OUTRO_DURATION_SECONDS } from "../export/outro.ts";
 import { trimProjectToRange } from "../export/trimForExport.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { sequenceDuration } from "../project/createProject.ts";
@@ -21,6 +22,7 @@ import { FPS_PRESETS, RESOLUTION_PRESETS } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration, formatTimecode } from "../timeline/time.ts";
 import { Dropdown } from "./Dropdown.tsx";
+import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 
 type Phase = "idle" | "running" | "done" | "failed" | "cancelled";
 
@@ -72,14 +74,25 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   const isNative = Capacitor.isNativePlatform();
 
+  // Same rule the server's `shouldIncludeOutro` applies (and `Preview.tsx`'s outro marker mirrors): a
+  // hosted Free-plan export gets the branded end card appended, so FFmpeg's progress fraction spans
+  // the range PLUS the outro. Native exports never add one.
+  const { hosted, credits } = useHostedCreditsGate();
+  const outroSeconds = !isNative && hosted && credits !== null && credits.plan !== "pro" ? OUTRO_DURATION_SECONDS : 0;
+  const shownProgress = useExportPreviewSync({
+    active: phase === "running" || phase === "done",
+    target: phase === "done" ? 1 : phase === "running" && statusMessage !== null ? 0 : progress,
+    rangeStart,
+    rangeEnd,
+    outroSeconds,
+  });
+
   const jobIdRef = useRef<string | null>(null);
   const unwatchRef = useRef<(() => void) | null>(null);
   // Where encoding progress was first seen, for the time-left estimate — measured from the first real
   // FFmpeg number rather than from the click, so the save/upload/text-render lead-in (which reports no
   // numeric progress at all) doesn't inflate every estimate after it.
   const encodeStartRef = useRef<{ at: number; progress: number } | null>(null);
-
-  useExportPreviewPlayback(phase === "running" || phase === "done", rangeStart, rangeEnd);
 
   // Checked up front rather than on click: if export can't work, the dialog says so plainly instead
   // of presenting a button that fails.
@@ -261,7 +274,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   const qualityLabel = crf <= 18 ? t("High") : crf >= 26 ? t("Small file") : t("Balanced");
   const seqWidth = project?.sequence.width ?? width;
   const seqHeight = project?.sequence.height ?? height;
-  const percent = Math.round((phase === "done" ? 1 : progress) * 100);
+  const percent = Math.round(shownProgress * 100);
 
   const title =
     phase === "running"
@@ -296,7 +309,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             phase === "done"
               ? "bg-emerald-500/20"
               : phase === "failed"
-                ? "bg-rose-500/15"
+                ? "bg-amber-500/10"
                 : phase === "running"
                   ? "bg-sky-500/20"
                   : "bg-sky-500/10"
@@ -350,7 +363,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                 <PreviewMirror radius={PREVIEW_RADIUS} />
                 {phase !== "idle" && (
                   <ProgressFrame
-                    progress={phase === "done" ? 1 : progress}
+                    progress={shownProgress}
                     indeterminate={phase === "running" && statusMessage !== null}
                     tone={phase === "done" ? "done" : phase === "failed" ? "failed" : phase === "cancelled" ? "muted" : "active"}
                   />
@@ -411,7 +424,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
             {showSettings && (
               <>
                 {(phase === "failed" || phase === "cancelled") && (
-                  <p className={`mt-4 text-center text-[11px] ${phase === "failed" ? "text-rose-300" : "text-white/50"}`}>
+                  <p className={`mt-4 text-center text-[11px] ${phase === "failed" ? "text-amber-200/80" : "text-white/50"}`}>
                     {phase === "failed" ? error : t("Export cancelled")}
                   </p>
                 )}
@@ -514,7 +527,7 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                   </a>
                 )
               )}
-              {phase === "done" && error && <p className="text-center text-[11px] text-rose-300">{error}</p>}
+              {phase === "done" && error && <p className="text-center text-[11px] text-amber-200/80">{error}</p>}
               {phase === "done" && (
                 <div className="grid grid-cols-2 gap-2">
                   {/* Back to the settings rather than straight into a second identical render — a
@@ -551,57 +564,117 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** Plays the editor's own preview — muted, looping over the export range — for as long as `active`
- *  is true, then puts the transport back exactly how it was (playhead, playing, mute) when the dialog
- *  closes. Drives the ONE existing `PlaybackEngine` through the store, the same as pressing Play,
- *  rather than spinning up a second engine: a second set of decoding video elements is real extra
- *  memory/decoder load on exactly the devices (iPad/iPhone) where preview playback has been most
- *  fragile, and `PreviewMirror` below can show the existing engine's frames just as well. */
-function useExportPreviewPlayback(active: boolean, rangeStart: number, rangeEnd: number): void {
-  const savedRef = useRef<{ playhead: number; muted: boolean } | null>(null);
+/** Walks the editor's own preview through the export range in step with the render — the frame on
+ *  screen is always the frame FFmpeg has just reached — and returns the smoothed progress fraction the
+ *  ring and percentage draw, so picture, ring and number can never disagree. Paused throughout: the
+ *  preview is scrubbed, exactly as dragging the Timeline playhead does, rather than played, so there's
+ *  no sound and no loop. Drives the ONE existing `PlaybackEngine` through the store instead of a second
+ *  engine: a second set of decoding video elements is real extra memory/decoder load on exactly the
+ *  devices (iPad/iPhone) where preview playback has been most fragile, and `PreviewMirror` below shows
+ *  the existing engine's frames just as well. The playhead goes back where it was when this stops.
+ *
+ *  FFmpeg reports progress roughly twice a second; jumping the playhead on each report would read as a
+ *  slideshow. Instead each new report starts a linear tween from wherever the display currently is to
+ *  the new value, lasting as long as the gap since the previous report — so the preview moves steadily
+ *  and arrives about when the next report is due, trailing the real render by at most one report. */
+function useExportPreviewSync({
+  active,
+  target,
+  rangeStart,
+  rangeEnd,
+  outroSeconds,
+}: {
+  active: boolean;
+  /** The latest REAL progress fraction — 0 while nothing is measurable yet, 1 once done. */
+  target: number;
+  rangeStart: number;
+  rangeEnd: number;
+  /** Seconds of branded end card FFmpeg renders after the range, included in its progress fraction. */
+  outroSeconds: number;
+}): number {
+  const [shown, setShown] = useState(0);
+  const shownRef = useRef(0);
+  const tweenRef = useRef({ from: 0, to: 0, startedAt: 0, duration: 1, lastReportAt: 0 });
+
+  useEffect(() => {
+    const now = performance.now();
+    const previous = tweenRef.current;
+    // Going backwards only happens when a new export starts over from 0 — snap, don't rewind visibly.
+    if (target < shownRef.current) {
+      shownRef.current = target;
+      setShown(target);
+    }
+    tweenRef.current = {
+      from: shownRef.current,
+      to: target,
+      startedAt: now,
+      duration: target >= 1 ? 250 : Math.min(1500, Math.max(150, previous.lastReportAt ? now - previous.lastReportAt : 500)),
+      lastReportAt: now,
+    };
+  }, [target]);
 
   useEffect(() => {
     if (!active) return;
     const initial = useEditorStore.getState();
     if (!initial.project) return;
-    savedRef.current ??= { playhead: initial.playhead, muted: initial.previewMuted };
-    const loopsAtRangeEnd = rangeEnd < sequenceDuration(initial.project) - 1e-3;
+    const savedPlayhead = initial.playhead;
+    initial.setPlaying(false);
+    initial.playbackEngine?.setPreciseScrub(true);
 
-    if (!initial.previewMuted) initial.togglePreviewMuted();
-    initial.setPlayhead(rangeStart);
-    initial.setPlaying(true);
+    const frameSeconds = 1 / (initial.project.sequence.fps || 30);
+    const contentEnd = sequenceDuration(initial.project);
+    const rangeLength = Math.max(0, rangeEnd - rangeStart);
+    let lastPlayhead = Number.NaN;
+    let lastSeekAt = 0;
+    let frame = 0;
 
-    const unsubscribe = useEditorStore.subscribe((state, prev) => {
-      if (!state.project) return;
-      if (state.playing && loopsAtRangeEnd && state.playhead >= rangeEnd) {
-        state.setPlayhead(rangeStart);
-        return;
+    const tick = () => {
+      frame = requestAnimationFrame(tick);
+      const { from, to, startedAt, duration } = tweenRef.current;
+      const value = from + (to - from) * Math.min(1, (performance.now() - startedAt) / duration);
+      if (Math.abs(value - shownRef.current) > 0.0005 || (value === to && shownRef.current !== to)) {
+        shownRef.current = value;
+        setShown(value);
       }
-      // Ran off the end of the timeline (`onEnded` leaves the playhead AT the end) → go round again.
-      // Stopping anywhere else is autoplay policy blocking playback (`onPlaybackBlocked`) — retrying
-      // that with no fresh gesture would only be blocked again, so the preview just holds its frame.
-      if (prev.playing && !state.playing && state.playhead >= sequenceDuration(state.project) - 1e-3) {
-        state.setPlayhead(rangeStart);
-        state.setPlaying(true);
-      }
-    });
-    return () => {
-      unsubscribe();
-      useEditorStore.getState().setPlaying(false);
-    };
-  }, [active, rangeStart, rangeEnd]);
 
-  useEffect(
-    () => () => {
-      const saved = savedRef.current;
-      if (!saved) return;
       const state = useEditorStore.getState();
+      // Editor keyboard shortcuts still reach the timeline behind the dialog — Space would otherwise
+      // start playback and fight this loop for the playhead.
+      if (state.playing) state.setPlaying(false);
+
+      // The rendered file is the range followed by the outro, but in the editor the outro preview lives
+      // past the END OF THE WHOLE TIMELINE (`buildOutroPreviewProject`), not after the range — hence the
+      // two branches. Each stops one frame short of its end, whose exact instant is past the last frame.
+      const outputTime = value * (rangeLength + outroSeconds);
+      const playhead =
+        outputTime <= rangeLength || outroSeconds <= 0
+          ? Math.min(rangeStart + outputTime, Math.max(rangeStart, rangeEnd - frameSeconds))
+          : contentEnd + Math.min(outputTime - rangeLength, Math.max(0, outroSeconds - frameSeconds));
+      // Paced by the decoder rather than the display: a new playhead only once the previous seek has
+      // landed and drawn. Seeking every animation frame instead kept the video permanently mid-seek —
+      // measured, the preview copy changed just 12 times across a 20-second render. The time cap keeps
+      // a clip whose media never becomes ready from freezing the sync altogether.
+      const now = performance.now();
+      const settled = !state.playbackEngine || state.playbackEngine.isLastFrameComplete();
+      const canSeek = (settled && now - lastSeekAt > 50) || now - lastSeekAt > 700;
+      if (canSeek && !(Math.abs(playhead - lastPlayhead) < frameSeconds / 2)) {
+        lastPlayhead = playhead;
+        lastSeekAt = now;
+        state.setPlayhead(playhead);
+      }
+    };
+    frame = requestAnimationFrame(tick);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      const state = useEditorStore.getState();
+      state.playbackEngine?.setPreciseScrub(false);
       state.setPlaying(false);
-      if (state.previewMuted !== saved.muted) state.togglePreviewMuted();
-      state.setPlayhead(saved.playhead);
-    },
-    []
-  );
+      state.setPlayhead(savedPlayhead);
+    };
+  }, [active, rangeStart, rangeEnd, outroSeconds]);
+
+  return shown;
 }
 
 /** A live copy of the editor's own preview canvas (`EditorState.previewCanvas`, the same source
@@ -618,8 +691,12 @@ function PreviewMirror({ radius }: { radius: number }) {
     let frame = 0;
     const draw = () => {
       frame = requestAnimationFrame(draw);
-      const source = useEditorStore.getState().previewCanvas;
+      const { previewCanvas: source, playbackEngine } = useEditorStore.getState();
       if (!source || source.width === 0 || source.height === 0) return;
+      // Scrubbing leaves a clip blank (or stale) for the few frames its video is mid-seek — keeping the
+      // last complete frame on screen instead is the difference between a steady preview and a
+      // flickering one (measured: about a quarter of copied frames were black before this).
+      if (playbackEngine && !playbackEngine.isLastFrameComplete()) return;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const w = Math.max(1, Math.round(Math.min(target.clientWidth * dpr, source.width)));
       const h = Math.max(1, Math.round(Math.min(target.clientHeight * dpr, source.height)));
@@ -663,7 +740,7 @@ function roundedRectPath(w: number, h: number, r: number): string {
 const RING_COLORS = {
   active: ["#38bdf8", "#818cf8", "rgba(56,189,248,0.55)"],
   done: ["#34d399", "#5eead4", "rgba(52,211,153,0.55)"],
-  failed: ["#fb7185", "#f43f5e", "rgba(251,113,133,0.45)"],
+  failed: ["#fcd34d", "#fbbf24", "rgba(251,191,36,0.3)"],
   muted: ["rgba(255,255,255,0.45)", "rgba(255,255,255,0.3)", "transparent"],
 } as const;
 
@@ -742,7 +819,9 @@ function ProgressFrame({
                 strokeLinecap="round"
                 strokeDasharray="100 100"
                 strokeDashoffset={100 - filled}
-                style={{ transition: "stroke-dashoffset 450ms ease-out, stroke 300ms" }}
+                // No dashoffset transition: `progress` already arrives smoothed every animation frame
+                // (see `useExportPreviewSync`), and easing on top would lag the stroke behind the frame.
+                style={{ transition: "stroke 300ms" }}
               />
             )
           )}

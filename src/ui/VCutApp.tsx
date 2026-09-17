@@ -1180,7 +1180,7 @@ function StatusToast() {
     >
       <div
         className={`pointer-events-auto flex max-w-[90vw] items-center gap-2 rounded-md py-1.5 pl-3 pr-1.5 text-xs shadow-lg ${
-          status.tone === "error" ? "bg-rose-500/95 text-white" : "border border-white/10 bg-[#181b22] text-white/80"
+          status.tone === "error" ? "border border-amber-200/15 bg-[#1f1c16] text-amber-100/90" : "border border-white/10 bg-[#181b22] text-white/80"
         }`}
       >
         <span className="truncate">{status.message}</span>
@@ -1188,7 +1188,7 @@ function StatusToast() {
           onClick={() => setStatus(null)}
           aria-label="Dismiss"
           className={`shrink-0 rounded p-0.5 leading-none transition ${
-            status.tone === "error" ? "text-white/70 hover:bg-white/15 hover:text-white" : "text-white/40 hover:bg-white/10 hover:text-white/80"
+            status.tone === "error" ? "text-amber-100/50 hover:bg-white/10 hover:text-amber-100" : "text-white/40 hover:bg-white/10 hover:text-white/80"
           }`}
         >
           ✕
@@ -1661,7 +1661,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
     const needsSignIn = loadErrorStatus === 401;
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 bg-[#0a0c10] p-6 text-center">
-        <p className="text-sm font-medium text-rose-300">{t("VCut couldn't open this project")}</p>
+        <p className="text-sm font-medium text-amber-200/90">{t("VCut couldn't open this project")}</p>
         <p className="max-w-md text-xs leading-relaxed text-white/50">
           {needsSignIn ? t("Your session has expired — sign in again to continue.") : loadError}
         </p>

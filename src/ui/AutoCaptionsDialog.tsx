@@ -394,7 +394,7 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
           ) : !available ? (
             <>
               {credentialsBlock}
-              <p className="text-[12px] leading-relaxed text-rose-300">{t("FFmpeg isn't available — reinstall dependencies to use this.")}</p>
+              <p className="text-[12px] leading-relaxed text-amber-200/80">{t("FFmpeg isn't available — reinstall dependencies to use this.")}</p>
             </>
           ) : outOfCredits ? (
             <>
@@ -472,7 +472,7 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
               </div>
             </>
           )}
-          {error && <p className="mt-2 text-[12px] text-rose-300">{error}</p>}
+          {error && <p className="mt-2 text-[12px] text-amber-200/80">{error}</p>}
         </div>
 
         <div className="mt-5 flex shrink-0 items-center justify-end gap-2">
