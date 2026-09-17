@@ -1,6 +1,38 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { planMediaSync, shouldHoldClockForMedia } from "../src/playback/PlaybackEngine.ts";
+import { isAppleWebKit, planMediaSync, shouldHoldClockForMedia } from "../src/playback/PlaybackEngine.ts";
+
+describe("isAppleWebKit", () => {
+  const cases: [string, string, boolean][] = [
+    ["iPad (desktop-class, reports as Mac)", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Safari/605.1.15", true],
+    ["iPhone Safari", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.0 Mobile/15E148 Safari/604.1", true],
+    ["Chrome on iPhone (still WebKit)", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/140.0.0.0 Mobile/15E148 Safari/604.1", true],
+    ["Android Chrome", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Mobile Safari/537.36", false],
+    ["desktop Chrome", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36", false],
+    ["desktop Edge", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0", false],
+    ["Firefox", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0", false],
+  ];
+  for (const [label, ua, expected] of cases) {
+    it(`${label} -> ${expected}`, () => assert.equal(isAppleWebKit(ua), expected));
+  }
+});
+
+describe("planMediaSync without rate correction (Apple WebKit)", () => {
+  const state = { currentTime: 4.5, playbackRate: 1, seeking: false, seekingForMs: 0 };
+
+  it("never writes playbackRate for drift inside the tolerance — each write stalls AVFoundation playback", () => {
+    assert.deepEqual(planMediaSync(state, 5, true, false), { playbackRate: null, seekTo: null });
+    assert.deepEqual(planMediaSync({ ...state, currentTime: 5.9 }, 5, true, false), { playbackRate: null, seekTo: null });
+  });
+
+  it("still closes large drift with a hard seek", () => {
+    assert.deepEqual(planMediaSync({ ...state, currentTime: 2 }, 5, true, false), { playbackRate: null, seekTo: 5 });
+  });
+
+  it("still restores a rate left off 1", () => {
+    assert.deepEqual(planMediaSync({ ...state, playbackRate: 1.3 }, 5, true, false), { playbackRate: 1, seekTo: null });
+  });
+});
 
 describe("shouldHoldClockForMedia", () => {
   it("advances normally when no video was waiting", () => {

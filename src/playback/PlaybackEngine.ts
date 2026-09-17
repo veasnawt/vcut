@@ -589,6 +589,17 @@ export interface MediaSyncAction {
   seekTo: number | null;
 }
 
+/** Apple's WebKit: Safari on every platform, and every browser on iPhone/iPad (Apple requires WebKit
+ *  there, so iOS "Chrome"/"Firefox"/"Edge" identify as `CriOS`/`FxiOS`/`EdgiOS`, never `Chrome/`).
+ *  Its video elements sit on AVFoundation, where each `playbackRate` write briefly stalls playback.
+ *  Reported from an iPad: element fully buffered, not paused, not seeking, yet its own clock advancing
+ *  at 5% of real time (`advanceRatio` 0.053) with drawing costing under 1ms a frame. Rate nudging
+ *  rewrote the rate many times a second as drift changed; each write stalled the element, adding more
+ *  drift and more writes. Chrome and Firefox apply rate changes for free, which is why only iOS lagged. */
+export function isAppleWebKit(userAgent: string): boolean {
+  return /AppleWebKit\//.test(userAgent) && !/Chrome\/|Chromium\/|Android/.test(userAgent);
+}
+
 /** Decides how to pull one video element back onto the master clock — pure, so the rules below are
  *  unit-tested rather than trusted.
  *
@@ -597,8 +608,11 @@ export interface MediaSyncAction {
  *  the drift branch below used to nudge `playbackRate` on every frame for the whole seek. On an iPhone
  *  that produced a seek that never finished — `seeking: true` indefinitely with the file fully
  *  buffered and no media error — freezing the picture after a few seconds of normal playback; the
- *  hard reseek every `DRIFT_TOLERANCE` seconds that followed was interrupted the same way. */
-export function planMediaSync(state: MediaSyncState, sourceTime: number, playing: boolean): MediaSyncAction {
+ *  hard reseek every `DRIFT_TOLERANCE` seconds that followed was interrupted the same way.
+ *
+ *  `allowRateCorrection` false (Apple WebKit — see `isAppleWebKit`) turns off the gradual
+ *  `playbackRate` nudge entirely; drift is then only ever closed by a hard seek. */
+export function planMediaSync(state: MediaSyncState, sourceTime: number, playing: boolean, allowRateCorrection = true): MediaSyncAction {
   const none: MediaSyncAction = { playbackRate: null, seekTo: null };
 
   if (state.seeking) {
@@ -617,7 +631,7 @@ export function planMediaSync(state: MediaSyncState, sourceTime: number, playing
     return { playbackRate: state.playbackRate !== 1 ? 1 : null, seekTo: sourceTime };
   }
 
-  if (playing && absDrift > DRIFT_CORRECTION_TOLERANCE) {
+  if (playing && allowRateCorrection && absDrift > DRIFT_CORRECTION_TOLERANCE) {
     // Proportional, not flat — see `MAX_DRIFT_CORRECTION_RATE_DELTA`'s own doc comment. Interpolates
     // from ~0 at the dead-zone edge up to the max rate at `DRIFT_TOLERANCE` itself.
     const t = Math.min(1, (absDrift - DRIFT_CORRECTION_TOLERANCE) / (DRIFT_TOLERANCE - DRIFT_CORRECTION_TOLERANCE));
@@ -649,6 +663,7 @@ function average(values: number[]): number {
 }
 
 interface StallWatchEntry {
+  rateWrites: number;
   rateSampleAt: number;
   rateSampleTime: number;
   hardSeeksAtSample: number;
@@ -1283,6 +1298,8 @@ export class PlaybackEngine {
   /** When each clip's element was first seen seeking (or last told to seek) — feeds `planMediaSync`'s
    *  stuck-seek backstop. Cleared the moment the element reports it is no longer seeking. */
   private seekStartedAt = new Map<string, number>();
+  /** Gradual `playbackRate` drift correction — off on Apple WebKit, see `isAppleWebKit`. */
+  private readonly rateCorrection = typeof navigator === "undefined" || !isAppleWebKit(navigator.userAgent);
 
   /** Must be called synchronously from the Play control's own event handler, BEFORE `playing` flips
    *  on. WebKit (every iOS browser) only lets audio start and unmuted media play from inside a real
@@ -1334,6 +1351,7 @@ export class PlaybackEngine {
         pixelHash: null,
         pixelChangedAt: now,
         timeAtPixelChange: element.currentTime,
+        rateWrites: 0,
         rateSampleAt: 0,
         rateSampleTime: element.currentTime,
         hardSeeksAtSample: 0,
@@ -1394,6 +1412,9 @@ export class PlaybackEngine {
     this.host.onPlaybackStall({
       reason,
       advanceRatio: watch.lastAdvanceRatio === null ? null : Number(watch.lastAdvanceRatio.toFixed(3)),
+      rateCorrection: this.rateCorrection,
+      rateWrites: watch.rateWrites,
+      playbackRate: element.playbackRate,
       recentSeekMs: this.recentSeekMs.map((ms) => Math.round(ms)),
       clockHeldForMedia: this.mediaWaitingLastFrame,
       avgFrameIntervalMs: Math.round(average(this.frameIntervalsMs)),
@@ -1550,11 +1571,18 @@ export class PlaybackEngine {
         seekingForMs: seekStartedAt === undefined ? 0 : now - seekStartedAt,
       },
       sourceTime,
-      playing
+      playing,
+      this.rateCorrection
     );
     // Rate BEFORE seek, never after: a rate change issued right behind a seek lands while that seek is
     // still in flight, which is exactly the interruption `planMediaSync` exists to stop.
-    if (action.playbackRate !== null) element.playbackRate = action.playbackRate;
+    if (action.playbackRate !== null) {
+      element.playbackRate = action.playbackRate;
+      if (playing) {
+        const watch = this.stallWatch.get(clipId);
+        if (watch) watch.rateWrites++;
+      }
+    }
     if (action.seekTo !== null) {
       // Ducked first — see `duckAroundSeek`'s own doc comment for the click this mitigates.
       this.audioMixEngine.duckAroundSeek(clipId);
@@ -1687,7 +1715,10 @@ export class PlaybackEngine {
       // audio prefetch above. Color-matte clips have no real media (`colorCanvasFor` synthesizes a
       // canvas instead — see `drawVideoClip`'s own branch) and are skipped; nothing to prefetch.
       for (const { clip } of visibleVideoClips(project)) {
-        if (clip.timelineStart < time || clip.timelineStart > time + AUDIO_PREFETCH_LOOKAHEAD_SECONDS) continue;
+        // `<=`, not `<`: a clip starting exactly at `time` is already current, and `syncMedia` owns it.
+        // With the clock holding at a clip's start while its element begins playing, `<` let this
+        // pre-seek yank that already-playing element back to `sourceIn`.
+        if (clip.timelineStart <= time || clip.timelineStart > time + AUDIO_PREFETCH_LOOKAHEAD_SECONDS) continue;
         const asset = project.assets.find((a) => a.id === clip.assetId);
         if (!asset || asset.kind === "color") continue;
         const element = this.mediaFor(clip, asset.kind === "image" ? "image" : "video");
