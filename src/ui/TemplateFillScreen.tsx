@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Add, Edit, Image as ImageIcon, Music, Video } from "@veasnawt/vicons";
 import { assetFromLibraryMedia, mediaUrl, previewAssetFromLibraryMedia, thumbnailUrl, type LibraryMediaItem } from "../api/client.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import type { Asset } from "../project/types.ts";
+import type { PendingTemplatePick } from "../store/editorStore.ts";
 import { templateSlotRequiredLength, templateSlots, type TemplateSlot } from "../project/template.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
@@ -36,13 +37,25 @@ const KIND_ICON: Record<"video" | "audio" | "image", typeof Video> = { video: Vi
  *  Capturing the full list up front and tracking fill state in `filledBySlotId` (this component's own
  *  state, updated the instant a pick is made — before `project` even finishes propagating the change)
  *  keeps every chip visible for the whole flow, whether still empty or already showing a pick. */
-export function TemplateFillScreen({ onAllFilled, onBack }: { onAllFilled: () => void; onBack?: () => void }) {
+export function TemplateFillScreen({
+  onAllFilled,
+  onBack,
+  draft,
+}: {
+  onAllFilled: () => void;
+  onBack?: () => void;
+  /** Set when the template is still an unsaved draft (`TemplateDraftApp`) — no project exists yet, so
+   *  the first pick creates it (`EditorState.commitTemplateDraft`) and hands off to it via
+   *  `onProjectCreated`, instead of filling a slot here. */
+  draft?: { onProjectCreated: (projectId: string, name: string) => void };
+}) {
   const t = useTranslation();
   const project = useEditorStore((s) => s.project);
   const projectId = useEditorStore((s) => s.projectId);
   const importFiles = useEditorStore((s) => s.importFiles);
   const fillTemplateSlotAction = useEditorStore((s) => s.fillTemplateSlot);
   const trimTemplateSlotAction = useEditorStore((s) => s.trimTemplateSlot);
+  const commitTemplateDraft = useEditorStore((s) => s.commitTemplateDraft);
   const library = useLibraryMedia(true);
 
   const [allSlots] = useState<TemplateSlot[]>(() => (project ? templateSlots(project) : []));
@@ -54,8 +67,26 @@ export function TemplateFillScreen({ onAllFilled, onBack }: { onAllFilled: () =>
   // are rarely its most interesting part; asked for directly, right here at fill time, rather than
   // only ever being reachable from `TemplatePreviewScreen.tsx`'s own Trim button one screen later.
   const [trimmingAsset, setTrimmingAsset] = useState<Asset | null>(null);
+  // Draft only: the real project is being created for the first pick (see `startProject`).
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
 
-  if (!project || !projectId) return null;
+  // The pick made while this template was still a draft, now that its real project is open — applied
+  // exactly like a pick made here (see `EditorState.pendingTemplatePick`).
+  useEffect(() => {
+    if (!projectId) return;
+    const pending = useEditorStore.getState().takePendingTemplatePick(projectId);
+    if (!pending) return;
+    const slot = allSlots.find((s) => s.slotIndex === pending.slotIndex);
+    if (!slot) return;
+    setActiveSlotAssetId(slot.assetId);
+    if (pending.asset) assign(slot, pending.asset);
+    else if (pending.file) void uploadForSlot(slot, pending.file);
+    // Once per opened project — the pick is consumed by `takePendingTemplatePick` either way.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
+
+  if (!project || (!projectId && !draft)) return null;
   const activeSlot = allSlots.find((s) => s.assetId === activeSlotAssetId) ?? null;
   // `.every()` on an empty array is `true` — exactly right for a template with no media slots at all
   // (pure text/color, from before this feature could keep any footage): nothing to fill means already
@@ -84,12 +115,36 @@ export function TemplateFillScreen({ onAllFilled, onBack }: { onAllFilled: () =>
     if (asset.kind === "video" && asset.duration > slot.requiredDuration) setTrimmingAsset(asset);
   }
 
-  async function uploadForActiveSlot(file: File) {
-    if (!activeSlot) return;
+  async function uploadForSlot(slot: TemplateSlot, file: File) {
     setUploading(true);
     const imported = await importFiles([file]);
     setUploading(false);
-    if (imported[0]) assign(activeSlot, imported[0]);
+    if (imported[0]) assign(slot, imported[0]);
+  }
+
+  /** Draft only — creates the real project, carrying `pick` over to it, then hands off. `null` for a
+   *  template with nothing to fill, started from its Preview button instead. */
+  async function startProject(pick: Omit<PendingTemplatePick, "projectId"> | null) {
+    if (!draft || starting) return;
+    setStarting(true);
+    setStartError(null);
+    try {
+      const created = await commitTemplateDraft(pick);
+      draft.onProjectCreated(created.projectId, created.name);
+    } catch (err) {
+      setStartError(err instanceof Error ? err.message : t("Couldn't start this template — try again."));
+      setStarting(false);
+    }
+  }
+
+  function pick(slot: TemplateSlot, asset: Asset) {
+    if (draft) void startProject({ slotIndex: slot.slotIndex, asset });
+    else assign(slot, asset);
+  }
+
+  function upload(slot: TemplateSlot, file: File) {
+    if (draft) void startProject({ slotIndex: slot.slotIndex, file });
+    else void uploadForSlot(slot, file);
   }
 
   const compatibleLibraryItems = activeSlot ? library.items?.filter((i) => i.kind === "video" || i.kind === "image") ?? [] : [];
@@ -118,12 +173,12 @@ export function TemplateFillScreen({ onAllFilled, onBack }: { onAllFilled: () =>
             <input
               type="file"
               className="hidden"
-              disabled={uploading || !activeSlot}
+              disabled={uploading || starting || !activeSlot}
               accept=".mp4,.mov,.webm,.mkv,.avi,.m4v,.png,.jpg,.jpeg,.webp,.gif"
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 e.target.value = "";
-                if (file) void uploadForActiveSlot(file);
+                if (file && activeSlot) upload(activeSlot, file);
               }}
             />
             <Add size={22} className="text-white/50 transition group-hover:text-white/80" />
@@ -134,8 +189,8 @@ export function TemplateFillScreen({ onAllFilled, onBack }: { onAllFilled: () =>
             <LibraryGridTile
               key={item.id}
               item={item}
-              projectId={projectId}
-              onPick={() => activeSlot && assign(activeSlot, assetFromLibraryMedia(item))}
+              projectId={projectId ?? ""}
+              onPick={() => activeSlot && !starting && pick(activeSlot, assetFromLibraryMedia(item))}
             />
           ))}
         </div>
@@ -157,8 +212,8 @@ export function TemplateFillScreen({ onAllFilled, onBack }: { onAllFilled: () =>
             const filledClipSourceIn = filled
               ? (project.sequence.tracks.flatMap((tr) => tr.clips).find((c) => c.assetId === filled.id)?.sourceIn ?? 0)
               : 0;
-            const videoSrc = filled?.kind === "video" ? mediaUrl(projectId, filled.relPath, Boolean(filled.libraryMediaId)) : null;
-            const thumb = filled && filled.kind !== "video" ? thumbnailUrl(projectId, filled) : null;
+            const videoSrc = filled?.kind === "video" ? mediaUrl(projectId ?? "", filled.relPath, Boolean(filled.libraryMediaId)) : null;
+            const thumb = filled && filled.kind !== "video" ? thumbnailUrl(projectId ?? "", filled) : null;
             // Same `canTrim` condition as the pick-time offer above and `TemplatePreviewScreen.tsx`'s
             // own gating — re-openable here too, not just the one time right after picking, since a
             // user may want to revisit the choice after seeing how the rest of the fill turned out.
@@ -208,16 +263,23 @@ export function TemplateFillScreen({ onAllFilled, onBack }: { onAllFilled: () =>
           })}
         </div>
 
+        {startError && <p className="mt-2 text-center text-xs text-amber-200/80">{startError}</p>}
         <button
-          onClick={onAllFilled}
-          disabled={!allFilled}
+          onClick={() => (draft ? void startProject(null) : onAllFilled())}
+          disabled={!allFilled || starting}
           className="mt-3 w-full rounded-md bg-sky-500 py-2 text-sm font-semibold text-white transition hover:bg-sky-400 disabled:cursor-default disabled:opacity-40"
         >
           {allFilled ? t("Preview") : t("Fill every slot to continue")}
         </button>
       </div>
 
-      {trimmingAsset && (
+      {starting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 text-sm text-white/80">
+          {t("Starting your project…")}
+        </div>
+      )}
+
+      {trimmingAsset && projectId && (
         <TemplateTrimDialog
           asset={trimmingAsset}
           projectId={projectId}

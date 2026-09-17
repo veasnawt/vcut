@@ -25,7 +25,7 @@ import { translateText } from "../i18n/translations.ts";
 import type { PlaybackEngine } from "../playback/PlaybackEngine.ts";
 import { createColorAsset, createTextAsset, findAsset, findClip, sequenceDuration } from "../project/createProject.ts";
 import { assetFromBundledSfx, type SfxDefinition } from "../project/sfx.ts";
-import { fillTemplateSlot, setTemplateClipText, trimTemplateSlot } from "../project/template.ts";
+import { buildProjectFromTemplate, fillTemplateSlot, setTemplateClipText, trimTemplateSlot } from "../project/template.ts";
 import type { TextStylePreset } from "../project/textStylePresets.ts";
 import type { Asset, Clip, Project, TextStyle } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
@@ -77,6 +77,15 @@ export interface AiGenerationItem {
   stage?: string;
   /** Image only — which of `AI_IMAGE_MODELS` made (or is making) this one. */
   model?: AiImageModel;
+}
+
+/** See `EditorState.pendingTemplatePick`. Exactly one of `asset` (a library item, already an `Asset`) or
+ *  `file` (an upload, imported once the project exists) is set. */
+export interface PendingTemplatePick {
+  projectId: string;
+  slotIndex: number;
+  asset?: Asset;
+  file?: File;
 }
 
 export interface EditorState {
@@ -267,6 +276,23 @@ export interface EditorState {
   setLanguage: (language: Language) => void;
 
   load: (projectId: string, projectName?: string) => Promise<void>;
+  /** Set while a template is open as an unsaved DRAFT — `project` is built in memory from the template
+   *  and `projectId` stays `null`, so nothing is saved and no project exists on the server yet. Asked
+   *  for directly: tapping "Use this template" used to create a project straight away, so backing out
+   *  without picking anything left an empty project behind (and a copy of the template's music in your
+   *  library). `commitTemplateDraft` creates the real one once media is actually picked. */
+  templateDraft: { templateId: string } | null;
+  /** The media picked while a template was still a draft, carried over to the real project once it's
+   *  created and opened — `TemplateFillScreen` applies it on mount (`takePendingTemplatePick`), through
+   *  the same path as any other pick. Keyed by slot INDEX, not asset id: the server mints fresh ids when
+   *  it builds the real project, so the draft's placeholder ids don't carry over. */
+  pendingTemplatePick: PendingTemplatePick | null;
+  loadTemplateDraft: (templateId: string) => Promise<void>;
+  /** Creates the real project for the open draft, remembering `pick` (if any) for it, and returns the new
+   *  project's id and name — the caller navigates to it. Throws when creation fails. */
+  commitTemplateDraft: (pick: Omit<PendingTemplatePick, "projectId"> | null) => Promise<{ projectId: string; name: string }>;
+  /** Returns and clears the pick waiting for `projectId`, if there is one. */
+  takePendingTemplatePick: (projectId: string) => PendingTemplatePick | null;
   run: (command: Command) => void;
   undo: () => void;
   redo: () => void;
@@ -745,6 +771,8 @@ export const useEditorStore = create<EditorState>((set, get) => {
     importingFont: false,
     mobileSheet: null,
     previewCanvas: null,
+    templateDraft: null,
+    pendingTemplatePick: null,
     inlineTextEditAssetId: null,
 
     async load(projectId, projectName) {
@@ -769,6 +797,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
         loadError: null,
         loadErrorStatus: null,
         projectId,
+        templateDraft: null,
         ...(switching ? { project: null, dirty: false, playing: false, playhead: 0, selectedClipIds: [] } : null),
       });
       try {
@@ -814,6 +843,63 @@ export const useEditorStore = create<EditorState>((set, get) => {
           loadErrorStatus: err instanceof ApiRequestError ? err.status : null,
         });
       }
+    },
+
+    async loadTemplateDraft(templateId) {
+      const seq = ++loadSeq;
+      const previous = get();
+      // Same hand-off as `load` switching projects: the previous project's unsaved edits go to ITS id.
+      if (autosaveTimer) {
+        clearTimeout(autosaveTimer);
+        autosaveTimer = null;
+      }
+      if (previous.dirty && previous.project && previous.projectId) {
+        void api.saveProject(previous.projectId, previous.project).catch(() => {});
+      }
+      undoStack.clear();
+      set({
+        loading: true,
+        loadError: null,
+        loadErrorStatus: null,
+        projectId: null,
+        project: null,
+        dirty: false,
+        playing: false,
+        playhead: 0,
+        selectedClipIds: [],
+        templateDraft: { templateId },
+      });
+      try {
+        const { name, project: data } = await api.loadTemplateForDraft(templateId);
+        if (seq !== loadSeq) return;
+        // The id is never persisted or sent anywhere — `commitTemplateDraft` has the server build the real
+        // project with its own id.
+        set({ project: buildProjectFromTemplate("template-draft", name, data), loading: false, dirty: false });
+        syncUndoState();
+      } catch (err) {
+        if (seq !== loadSeq) return;
+        set({
+          loading: false,
+          loadError: err instanceof Error ? err.message : String(err),
+          loadErrorStatus: err instanceof ApiRequestError ? err.status : null,
+        });
+      }
+    },
+
+    async commitTemplateDraft(pick) {
+      const { templateDraft, project } = get();
+      if (!templateDraft || !project) throw new Error("No template to start a project from");
+      // The draft's own name, so a rename made before picking anything carries over.
+      const created = await api.createProjectFromTemplate(templateDraft.templateId, project.name);
+      set({ pendingTemplatePick: pick ? { ...pick, projectId: created.projectId } : null });
+      return created;
+    },
+
+    takePendingTemplatePick(projectId) {
+      const pending = get().pendingTemplatePick;
+      if (!pending || pending.projectId !== projectId) return null;
+      set({ pendingTemplatePick: null });
+      return pending;
     },
 
     run(command) {

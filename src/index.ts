@@ -5,6 +5,7 @@
  *  expected to reach for it. */
 
 export { VCutApp } from "./ui/VCutApp.tsx";
+export { TemplateDraftApp } from "./ui/TemplateDraftApp.tsx";
 export { reportError } from "./api/crashLog.ts";
 
 export type { Asset, AssetKind, Clip, ClipTransform, ExportSettings, Project, Sequence, TextStyle, Track, TrackKind } from "./project/types.ts";

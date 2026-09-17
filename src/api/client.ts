@@ -1,6 +1,7 @@
 import { Capacitor } from "@capacitor/core";
 import { getAccessToken, getCachedAccessToken } from "@veasnawt/auth";
 import { deserializeProject } from "../project/serialize.ts";
+import type { TemplateProjectData } from "../project/template.ts";
 import type { Asset, CustomFontAsset, CustomSfxAsset, LutAsset, Project } from "../project/types.ts";
 import { nativeCancelExport, nativeExportAvailable, nativeStartExport, nativeWatchExport } from "./nativeExport.ts";
 import { nativeDeleteMedia, nativeImportMedia, nativeLoadProject, nativeMediaUrl, nativeSaveProject } from "./nativeStorage.ts";
@@ -181,6 +182,26 @@ export async function loadProject(projectId: string, projectName?: string): Prom
   // Validated on the way in as well as on the way out of the server: a project that can't be read
   // correctly should fail loudly here rather than half-populate the editor.
   return deserializeProject(JSON.stringify(body.project));
+}
+
+/** A template's own structure and name, for opening it as an unsaved draft — see
+ *  `templates/[id]/project/route.ts` and `EditorState.loadTemplateDraft`. */
+export async function loadTemplateForDraft(templateId: string): Promise<{ name: string; project: TemplateProjectData }> {
+  const response = await apiFetch(`${BASE}/templates/${encodeURIComponent(templateId)}/project`, { cache: "no-store" });
+  return unwrap<{ name: string; project: TemplateProjectData }>(response);
+}
+
+/** Creates a real project from a template — the server builds it, and copies the template's bundled
+ *  audio into the owner's library (`project/route.ts`'s POST). Only ever called once media is actually
+ *  picked for a template draft (`EditorState.commitTemplateDraft`). */
+export async function createProjectFromTemplate(templateId: string, name: string): Promise<{ projectId: string; name: string }> {
+  const response = await apiFetch(`${BASE}/project`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, templateId }),
+  });
+  const { project } = await unwrap<{ project: { bpProjectId: string; name: string } }>(response);
+  return { projectId: project.bpProjectId, name: project.name };
 }
 
 export async function saveProject(projectId: string, project: Project): Promise<void> {
@@ -446,7 +467,10 @@ export async function aiVideoAvailable(): Promise<boolean> {
 export function mediaUrl(projectId: string, relPath: string, library = false): string {
   if (isNative) return nativeMediaUrl(projectId, relPath);
   const libraryParam = library ? "&library=1" : "";
-  const base = `${BASE}/media/raw?projectId=${encodeURIComponent(projectId)}&relPath=${encodeURIComponent(relPath)}${libraryParam}`;
+  // An empty `projectId` is only meaningful for a library file — see `media/raw/route.ts`: a template
+  // opened as a draft (`TemplateDraftApp`) shows your library before any project exists.
+  const projectParam = projectId ? `projectId=${encodeURIComponent(projectId)}&` : "";
+  const base = `${BASE}/media/raw?${projectParam}relPath=${encodeURIComponent(relPath)}${libraryParam}`;
   if (!HOSTED) return base;
   const token = getCachedAccessToken();
   return token ? `${base}&token=${encodeURIComponent(token)}` : base;
