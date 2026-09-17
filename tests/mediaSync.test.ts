@@ -1,6 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { planMediaSync } from "../src/playback/PlaybackEngine.ts";
+import { planMediaSync, shouldHoldClockForMedia } from "../src/playback/PlaybackEngine.ts";
+
+describe("shouldHoldClockForMedia", () => {
+  it("advances normally when no video was waiting", () => {
+    assert.equal(shouldHoldClockForMedia(false, null, 10_000), false);
+  });
+
+  it("holds while a video is seeking, so a slow seek lands where the clock is instead of behind it", () => {
+    assert.equal(shouldHoldClockForMedia(true, null, 10_000), true);
+    assert.equal(shouldHoldClockForMedia(true, 10_000, 11_500), true);
+  });
+
+  it("gives up holding after the cap, so a video that never becomes ready can't freeze the timeline", () => {
+    assert.equal(shouldHoldClockForMedia(true, 10_000, 14_000), false);
+  });
+});
 
 const base = { currentTime: 5, playbackRate: 1, seeking: false, seekingForMs: 0 };
 

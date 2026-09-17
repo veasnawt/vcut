@@ -549,6 +549,22 @@ const DRIFT_CORRECTION_TOLERANCE = 0.03;
  *  jarring as the seek-induced silence gap it replaces, and it tapers back toward a barely-perceptible
  *  nudge as drift shrinks back toward `DRIFT_CORRECTION_TOLERANCE`. */
 const MAX_DRIFT_CORRECTION_RATE_DELTA = 0.5;
+/** Longest the master clock will stand still waiting for a video that is mid-seek or still buffering.
+ *  A cap, so an element that never becomes ready can't freeze the whole timeline. */
+const MAX_MEDIA_WAIT_MS = 4000;
+
+/** Whether this tick's clock should hold instead of advancing: a video under the playhead was still
+ *  seeking/buffering last frame, and that wait hasn't yet run past `MAX_MEDIA_WAIT_MS`.
+ *
+ *  Reported from an iPad: three hard seeks in five seconds, readyState 4, fully buffered, no error. A
+ *  precise seek there took roughly as long as `DRIFT_TOLERANCE`, so the clock ran that far ahead during
+ *  it and the element landed already out of tolerance — seek, land, seek again, forever, showing about
+ *  one frame per landing. Desktop and Android seek in well under 100ms, which is why only iOS looped.
+ *  Holding the clock for the seek means it lands exactly where the clock is. */
+export function shouldHoldClockForMedia(mediaWaitingLastFrame: boolean, mediaWaitSince: number | null, now: number): boolean {
+  if (!mediaWaitingLastFrame) return false;
+  return mediaWaitSince === null || now - mediaWaitSince < MAX_MEDIA_WAIT_MS;
+}
 /** A seek still pending after this long is re-issued once. Only a backstop: WebKit can drop a seek's
  *  completion when something interrupts it, leaving `seeking` true forever with the data fully
  *  buffered (reported from an iPhone: readyState 4, buffered end-to-end, no error, stuck seeking).
@@ -623,7 +639,21 @@ const STALL_REPORT_MS = 4000;
  *  only reseeks at clip starts and scrubs. */
 const STALL_RESEEKS_PER_SECOND = 0.4;
 
+function pushRolling(buffer: number[], value: number, limit = 90): void {
+  buffer.push(value);
+  if (buffer.length > limit) buffer.shift();
+}
+
+function average(values: number[]): number {
+  return values.length === 0 ? 0 : values.reduce((sum, v) => sum + v, 0) / values.length;
+}
+
 interface StallWatchEntry {
+  rateSampleAt: number;
+  rateSampleTime: number;
+  hardSeeksAtSample: number;
+  lastAdvanceRatio: number | null;
+  slowSamples: number;
   startedAt: number;
   lastSeenAt: number;
   notProgressingSince: number | null;
@@ -1026,6 +1056,16 @@ export class PlaybackEngine {
   private pool = new Map<string, PooledMedia>();
   private rafId: number | null = null;
   private lastFrameTime: number | null = null;
+  /** Set by `syncMedia` during a frame when any video under the playhead is seeking or not yet able
+   *  to play through; read by the NEXT tick to decide whether the clock holds. */
+  private mediaWaitingThisFrame = false;
+  private mediaWaitingLastFrame = false;
+  private mediaWaitSince: number | null = null;
+  /** Rolling tick intervals and `drawFrame` costs (ms), carried in stall reports — the preview is
+   *  reported as laggy on iOS, and these tell a slow render loop apart from a slow video. */
+  private frameIntervalsMs: number[] = [];
+  private drawCostsMs: number[] = [];
+  private recentSeekMs: number[] = [];
   /** This engine's own continuously-accumulated playhead while actively playing — `null` whenever
    *  playback is stopped/paused. Exists because the store's `playhead` (`host.getPlayhead()`) is
    *  frame-snapped (`setPlayhead` → `snapToFrame`, needed for the TIMELINE's own frame-accurate
@@ -1278,7 +1318,7 @@ export class PlaybackEngine {
       this.stallWatch.delete(clipId);
       return;
     }
-    if (!this.host.onPlaybackStall || this.stallReported.has(clipId)) return;
+    if (!this.host.onPlaybackStall) return;
 
     const now = performance.now();
     let watch = this.stallWatch.get(clipId);
@@ -1294,6 +1334,11 @@ export class PlaybackEngine {
         pixelHash: null,
         pixelChangedAt: now,
         timeAtPixelChange: element.currentTime,
+        rateSampleAt: 0,
+        rateSampleTime: element.currentTime,
+        hardSeeksAtSample: 0,
+        lastAdvanceRatio: null,
+        slowSamples: 0,
       };
       this.stallWatch.set(clipId, watch);
     }
@@ -1301,14 +1346,42 @@ export class PlaybackEngine {
     const notProgressing = element.paused || element.seeking || element.readyState < 3;
     watch.notProgressingSince = notProgressing ? (watch.notProgressingSince ?? now) : null;
 
+    // Once a second: how far the element's own clock moved against wall time, skipping any window a
+    // seek or pause landed in. Consistently under 0.85 means the device can't decode this file in
+    // real time, which no amount of seeking or clock-holding can fix.
+    if (now - watch.rateSampleAt >= 1000) {
+      if (watch.rateSampleAt > 0 && !notProgressing && watch.hardSeeks === watch.hardSeeksAtSample) {
+        const ratio = (element.currentTime - watch.rateSampleTime) / ((now - watch.rateSampleAt) / 1000);
+        watch.lastAdvanceRatio = ratio;
+        watch.slowSamples = ratio < 0.85 ? watch.slowSamples + 1 : 0;
+      }
+      watch.rateSampleAt = now;
+      watch.rateSampleTime = element.currentTime;
+      watch.hardSeeksAtSample = watch.hardSeeks;
+    }
+
     const playedMs = now - watch.startedAt;
     const stuckTooLong = watch.notProgressingSince !== null && now - watch.notProgressingSince >= STALL_REPORT_MS;
     const reseekStorm =
       playedMs >= STALL_REPORT_MS && watch.hardSeeks >= 3 && watch.hardSeeks / (playedMs / 1000) > STALL_RESEEKS_PER_SECOND;
     const pictureFrozen = this.pictureFrozen(watch, element, now);
-    if (!stuckTooLong && !reseekStorm && !pictureFrozen) return;
-
-    this.stallReported.add(clipId);
+    const slowDecode = watch.slowSamples >= 3;
+    const slowRender = playedMs >= STALL_REPORT_MS && this.frameIntervalsMs.length >= 30 && average(this.frameIntervalsMs) > 50;
+    const reason = stuckTooLong
+      ? "not-progressing"
+      : reseekStorm
+        ? "reseek-storm"
+        : pictureFrozen
+          ? "picture-frozen"
+          : slowDecode
+            ? "slow-decode"
+            : slowRender
+              ? "slow-render"
+              : null;
+    if (reason === null) return;
+    const reportKey = `${clipId}:${reason}`;
+    if (this.stallReported.has(reportKey)) return;
+    this.stallReported.add(reportKey);
     let src: string | null = null;
     try {
       const url = new URL(element.currentSrc || element.src, window.location.href);
@@ -1319,7 +1392,17 @@ export class PlaybackEngine {
     }
     const activation = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean; isActive: boolean } }).userActivation;
     this.host.onPlaybackStall({
-      reason: stuckTooLong ? "not-progressing" : reseekStorm ? "reseek-storm" : "picture-frozen",
+      reason,
+      advanceRatio: watch.lastAdvanceRatio === null ? null : Number(watch.lastAdvanceRatio.toFixed(3)),
+      recentSeekMs: this.recentSeekMs.map((ms) => Math.round(ms)),
+      clockHeldForMedia: this.mediaWaitingLastFrame,
+      avgFrameIntervalMs: Math.round(average(this.frameIntervalsMs)),
+      maxFrameIntervalMs: Math.round(Math.max(0, ...this.frameIntervalsMs)),
+      avgDrawMs: Number(average(this.drawCostsMs).toFixed(1)),
+      maxDrawMs: Math.round(Math.max(0, ...this.drawCostsMs)),
+      canvasSize: this.canvas ? `${this.canvas.width}x${this.canvas.height}` : null,
+      devicePixelRatio: window.devicePixelRatio,
+      canvasFilterSupported: supportsCanvasFilter(),
       pictureUnchangedMs: Math.round(now - watch.pixelChangedAt),
       currentTimeAdvancedWhilePictureUnchanged: Number((element.currentTime - watch.timeAtPixelChange).toFixed(3)),
       inDocument: element.isConnected,
@@ -1435,6 +1518,11 @@ export class PlaybackEngine {
       element.pause();
     }
 
+    // Before the readyState gate, so an element that hasn't loaded anything yet holds the clock too.
+    if (playing && (element.seeking || element.readyState < 3 || (this.playOutcome.get(clipId) ?? "").startsWith("pending"))) {
+      this.mediaWaitingThisFrame = true;
+    }
+
     // readyState 0 means nothing is loaded yet — seeking now would be discarded once metadata
     // arrives, so let it load and correct on a later frame. A clip whose `sourceIn` is past 0 can
     // therefore start decoding from 0 for a tick on the iOS path above before this gate opens; the
@@ -1446,7 +1534,11 @@ export class PlaybackEngine {
     if (element.seeking) {
       if (!this.seekStartedAt.has(clipId)) this.seekStartedAt.set(clipId, now);
     } else {
-      this.seekStartedAt.delete(clipId);
+      const startedAt = this.seekStartedAt.get(clipId);
+      if (startedAt !== undefined) {
+        pushRolling(this.recentSeekMs, now - startedAt, 8);
+        this.seekStartedAt.delete(clipId);
+      }
     }
     const seekStartedAt = this.seekStartedAt.get(clipId);
 
@@ -1469,6 +1561,8 @@ export class PlaybackEngine {
       element.currentTime = action.seekTo;
       this.seekStartedAt.set(clipId, now);
       if (playing) {
+        // Hold from the very next tick, not one frame late once `seeking` is observed.
+        this.mediaWaitingThisFrame = true;
         const watch = this.stallWatch.get(clipId);
         if (watch) watch.hardSeeks++;
       }
@@ -1499,7 +1593,7 @@ export class PlaybackEngine {
         Math.abs(storedPlayhead - this.internalClockTime) <= INTERNAL_CLOCK_RESYNC_TOLERANCE
           ? this.internalClockTime
           : storedPlayhead;
-      time = base + delta;
+      time = shouldHoldClockForMedia(this.mediaWaitingLastFrame, this.mediaWaitSince, now) ? base : base + delta;
       const total = this.totalDuration(project);
       if (time >= total) {
         this.internalClockTime = null;
@@ -1531,7 +1625,15 @@ export class PlaybackEngine {
       canvas.height = targetHeight;
     }
 
+    this.mediaWaitingThisFrame = false;
+    const drawStartedAt = performance.now();
     this.drawFrame(project, context, time);
+    if (playing) {
+      pushRolling(this.drawCostsMs, performance.now() - drawStartedAt);
+      if (delta > 0) pushRolling(this.frameIntervalsMs, delta * 1000);
+    }
+    this.mediaWaitingLastFrame = playing && this.mediaWaitingThisFrame;
+    this.mediaWaitSince = this.mediaWaitingLastFrame ? (this.mediaWaitSince ?? now) : null;
     this.syncAudioTracks(project, time, playing);
 
     // Live per-track/master mix levels, reconciled once per tick regardless of `playing` — cheap even
