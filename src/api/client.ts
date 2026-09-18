@@ -1068,17 +1068,18 @@ export interface InpaintProgress {
  *  plus network access for the cloud model itself). `backgroundPrompt` only matters for the fal.ai
  *  provider (its VOID model requires a description of what should fill the removed region); the
  *  server ignores it harmlessly when Replicate is active. */
-export async function startInpaint(
-  projectId: string,
-  clipId: string,
-  rect: SourceRect,
-  backgroundPrompt?: string
-): Promise<InpaintStarted> {
+export async function startInpaint(projectId: string, clipId: string, rect: SourceRect): Promise<InpaintStarted> {
   if (isNative) throw new ApiRequestError("Remove Object isn't available on this device yet.", 501, "inpaint-unavailable");
+  // The cloud (Replicate) path now needs the current session's access token — this LOCAL server has no
+  // session of its own; the browser tab relays its own token in, so the local job can forward it on to
+  // `inpaint/predict/route.ts` when it actually calls out to vcut.io. See `inpaint/route.ts`'s own doc
+  // comment for the full "why" — harmless to always include even when the local ProPainter provider is
+  // active (that path never reads it).
+  const accessToken = await getAccessToken();
   const response = await apiFetch(`${BASE}/inpaint?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clipId, rect, ...(backgroundPrompt ? { backgroundPrompt } : null) }),
+    body: JSON.stringify({ clipId, rect, ...(accessToken ? { accessToken } : null) }),
   });
   return unwrap<InpaintStarted>(response);
 }
@@ -1125,20 +1126,32 @@ export function watchInpaint(
   return () => source.close();
 }
 
-/** Whether "Remove Object" is usable right now — FFmpeg present AND the active provider has a key
- *  saved. */
+/** Whether "Remove Object" is usable right now — same "both halves have to check out" shape as
+ *  `captionsAvailable()`: this device can do the local half (FFmpeg, and the local model if that's the
+ *  active provider) AND, if the active provider is "replicate", the live vcut.io deployment has a
+ *  transcription... erm, Replicate key configured (`inpaint/predict/route.ts`'s own HEAD). The local
+ *  provider never needs the second check at all. */
 export async function inpaintAvailable(): Promise<boolean> {
   if (isNative) return false;
   try {
-    const response = await apiFetch(`${BASE}/inpaint`, { method: "HEAD" });
-    return response.status === 204;
+    const local = await apiFetch(`${BASE}/inpaint`, { method: "HEAD" });
+    if (local.status !== 204) return false;
+    const status = await getInpaintKeyStatus();
+    if (status?.activeProvider === "local") return true;
+    const remote = await centralFetch(`/inpaint/predict`, { method: "HEAD" });
+    return remote.status === 204;
   } catch {
     return false;
   }
 }
 
 /** "local" runs entirely on this machine (self-hosted ProPainter, see `getLocalSetupStatus`/
- *  `startLocalSetup` below) — no key/token concept, unlike the two cloud providers. */
+ *  `startLocalSetup` below) — no key/token concept, unlike the cloud provider. `"fal"` is a legacy
+ *  value: a desktop install from before self-supplied keys were retired may still have it saved as its
+ *  `activeProvider`, but the server treats it identically to `"replicate"` now (see
+ *  `inpaint/predict/route.ts`'s own doc comment) — kept in this union only so that old saved value
+ *  still round-trips through `getInpaintKeyStatus()` without a type error, not because it's a real
+ *  choice any UI should still offer. */
 export type InpaintProvider = "replicate" | "fal" | "local";
 type CloudInpaintProvider = "replicate" | "fal";
 

@@ -660,7 +660,7 @@ function RemoveObjectSection({
     // would otherwise be silently ignored.
     await save();
     try {
-      const started = await startInpaint(projectId, clipId, rect, selectedProvider === "fal" ? backgroundPrompt : undefined);
+      const started = await startInpaint(projectId, clipId, rect);
       jobIdRef.current = started.jobId;
       unwatchRef.current = watchInpaint(
         started.jobId,
