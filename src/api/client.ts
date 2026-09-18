@@ -1299,6 +1299,13 @@ export interface CaptionsProgress {
  *  character count) so the Word Highlight animation's even-distribution-within-the-clip timing
  *  approximation stays perceptible/accurate — pass it when that's the animation the caller is about to
  *  apply. Desktop/browser-server-backed only for v1, same as `startInpaint`. */
+/** Runs in two passes now — see `captions/route.ts`'s own doc comment for the full "why two routes"
+ *  story. First, a LOCAL call (this device's own server) extracts and concatenates the requested
+ *  ranges' audio — this can only run on the machine that actually has the project's real media files.
+ *  Then a REMOTE call (`centralFetch`, live vcut.io) starts the actual transcription job on just that
+ *  small extracted audio file — the secret key only ever lives there. `watchCaptions` picks the job up
+ *  from that second call's `jobId`. Native (mobile) has no local server to do the first half at all —
+ *  unchanged, still unavailable there for now. */
 export async function startCaptions(
   projectId: string,
   clipIds?: string[],
@@ -1306,11 +1313,20 @@ export async function startCaptions(
   wordHighlight?: boolean,
 ): Promise<CaptionsStarted> {
   if (isNative) throw new ApiRequestError("Auto Captions isn't available on this device yet.", 501, "captions-unavailable");
-  const response = await apiFetch(`${BASE}/captions?projectId=${encodeURIComponent(projectId)}`, {
+  const extractResponse = await apiFetch(`${BASE}/captions?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(clipIds && clipIds.length > 0 ? { clipIds } : {}),
+  });
+  const extracted = await unwrap<{ audioBase64: string; ranges: { start: number; end: number }[]; durations: number[] }>(extractResponse);
+
+  const response = await centralFetch(`/captions/transcribe`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      ...(clipIds && clipIds.length > 0 ? { clipIds } : null),
+      audioBase64: extracted.audioBase64,
+      ranges: extracted.ranges,
+      durations: extracted.durations,
       ...(language ? { language } : null),
       ...(wordHighlight ? { wordHighlight: true } : null),
     }),
@@ -1348,16 +1364,18 @@ export const CAPTION_LANGUAGE_OPTIONS: { code: string; label: string }[] = [
 export async function cancelCaptions(jobId: string): Promise<void> {
   if (isNative) return;
   // A cancel racing the job's own completion is normal, not an error worth surfacing.
-  await apiFetch(`${BASE}/captions?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
+  await centralFetch(`/captions/transcribe?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
 }
 
-/** Subscribes to an Auto Captions job's progress. Identical shape to `watchInpaint`. */
+/** Subscribes to an Auto Captions job's progress — the REMOTE (transcription) job specifically, since
+ *  extraction already finished by the time `startCaptions` returned a `jobId` at all. Identical shape
+ *  to `watchAiVideo` — see that function's own doc comment for why `centralSseUrl`, not `sseUrl`. */
 export function watchCaptions(jobId: string, onUpdate: (progress: CaptionsProgress) => void, onError: (message: string) => void): () => void {
   if (isNative) {
     onError("Auto Captions isn't available on this device yet.");
     return () => {};
   }
-  const source = new EventSource(sseUrl(`${BASE}/captions?jobId=${encodeURIComponent(jobId)}`));
+  const source = new EventSource(centralSseUrl(`${BASE}/captions/transcribe?jobId=${encodeURIComponent(jobId)}`));
 
   source.onmessage = (event) => {
     try {
@@ -1379,14 +1397,17 @@ export function watchCaptions(jobId: string, onUpdate: (progress: CaptionsProgre
   return () => source.close();
 }
 
-/** Whether Auto Captions is usable right now — FFmpeg present AND a Replicate token saved (see
- *  `getInpaintKeyStatus`'s own `configured.replicate`, which both entry points check for the actual
- *  "configured or not" UI state; this only answers the FFmpeg half plus a coarse yes/no). */
+/** Whether Auto Captions is usable right now — BOTH halves have to check out: this device can do the
+ *  local extraction (FFmpeg present, `captions/route.ts`'s own HEAD) AND the live vcut.io deployment
+ *  has a transcription key configured (`captions/transcribe/route.ts`'s own HEAD, `centralFetch`). */
 export async function captionsAvailable(): Promise<boolean> {
   if (isNative) return false;
   try {
-    const response = await apiFetch(`${BASE}/captions`, { method: "HEAD" });
-    return response.status === 204;
+    const [local, remote] = await Promise.all([
+      apiFetch(`${BASE}/captions`, { method: "HEAD" }),
+      centralFetch(`/captions/transcribe`, { method: "HEAD" }),
+    ]);
+    return local.status === 204 && remote.status === 204;
   } catch {
     return false;
   }
