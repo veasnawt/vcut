@@ -8,8 +8,8 @@ import {
   cancelLocalSetup,
   CAPTION_LANGUAGE_OPTIONS,
   captionsAvailable,
+  CREDITS_ENABLED,
   getInpaintKeyStatus,
-  HOSTED,
   inpaintAvailable,
   setActiveInpaintProvider,
   setInpaintApiKey,
@@ -2080,7 +2080,7 @@ export function Inspector() {
                     accent="bg-teal-400"
                     open={!collapsed.has("Remove Object")}
                     onToggle={() => toggleSection("Remove Object")}
-                    pro={HOSTED}
+                    pro={CREDITS_ENABLED}
                   >
                     <RemoveObjectSection
                       clipId={clip.id}
@@ -2101,7 +2101,7 @@ export function Inspector() {
                     accent="bg-emerald-400"
                     open={!collapsed.has("Auto Captions")}
                     onToggle={() => toggleSection("Auto Captions")}
-                    pro={HOSTED}
+                    pro={CREDITS_ENABLED}
                   >
                     <AutoCaptionsSection clipId={clip.id} projectId={projectId} clipDurationSeconds={clip.sourceOut - clip.sourceIn} />
                   </CollapsibleSection>

@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react";
-import { HOSTED } from "../api/client.ts";
+import { CREDITS_ENABLED } from "../api/client.ts";
 import { getBillingStatus, type BillingStatus } from "../api/billing.ts";
 
 /** Shared by `AutoCaptionsDialog.tsx` and Inspector's `AutoCaptionsSection`/`RemoveObjectSection` —
- *  the three places re-enabling Captions/Remove Object in hosted mode (see `_lib/credits.ts`) needed
- *  the exact same new data, just rendered into three differently-shaped UIs. `hosted` is `false` for
- *  desktop/local dev (and mobile, until it gets its own credit-gated features) — those never call
- *  `getBillingStatus()` at all, since credits are a hosted-only concept and there's nothing signed-in
- *  to check anyway. `credits` stays `null` while the check is in flight; callers already have an
- *  identical "Checking…" state for `available`/`status` to fold this into.
+ *  the three places re-enabling Captions/Remove Object need the exact same data, just rendered into
+ *  three differently-shaped UIs. `hosted` is `CREDITS_ENABLED` — always `true` now: `getBillingStatus()`
+ *  calls out to the one live vcut.io billing backend regardless of platform (see `billing.ts`'s own
+ *  `BILLING_ORIGIN` doc comment), and a signed-out caller there just gets free-plan defaults back
+ *  rather than an error, so there's no "nothing signed-in to check" case to skip. `credits` stays
+ *  `null` while the check is in flight; callers already have an identical "Checking…" state for
+ *  `available`/`status` to fold this into.
  *
  *  This is advisory only, not enforcement — the real check happens server-side, atomically, at the
  *  moment a job actually starts (`hostedCreditGatedRoute`'s `spend()`). A caller showing "Generate"
@@ -29,11 +30,11 @@ export function useHostedCreditsGate(): { hosted: boolean; credits: BillingStatu
   const [credits, setCredits] = useState<BillingStatus | null>(null);
 
   useEffect(() => {
-    if (HOSTED) void getBillingStatus().then(setCredits);
+    void getBillingStatus().then(setCredits);
   }, []);
 
-  const outOfCredits = HOSTED && credits !== null && credits.creditsRemaining <= 0;
+  const outOfCredits = credits !== null && credits.creditsRemaining <= 0;
   const isPro = credits?.plan === "pro";
 
-  return { hosted: HOSTED, credits, outOfCredits, isPro };
+  return { hosted: CREDITS_ENABLED, credits, outOfCredits, isPro };
 }

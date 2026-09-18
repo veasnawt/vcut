@@ -18,11 +18,22 @@ import { nativeDeleteMedia, nativeImportMedia, nativeLoadProject, nativeMediaUrl
 const BASE = "/api/vcut";
 const isNative = Capacitor.isNativePlatform();
 
-/** Set only in the hosted web build (Railway) — desktop's bundled build and local dev never set this,
- *  so `apiFetch` below degrades to a plain `fetch` for them, unchanged from before this existed.
- *  Exported so UI code (e.g. `useHostedCreditsGate.ts`) can tell whether credits/billing concepts
- *  apply at all before calling anything credits-related — desktop/local dev have neither. */
+/** Set only in the hosted web build (Railway) — desktop's bundled build and local dev never set this.
+ *  Narrowly means "is THIS build the literal vcut.io deployment" — still what `apiFetch` below needs
+ *  to decide whether ITS OWN same-origin relative calls should attach a bearer token (desktop's local
+ *  server never requires session auth for those). Do NOT use this to decide whether billing/credits/
+ *  PRO-badge/self-key-entry UI should apply — see `CREDITS_ENABLED` below for that. */
 export const HOSTED = process.env.NEXT_PUBLIC_VCUT_HOSTED === "true";
+
+/** Whether billing/credits/PRO-badge concepts apply on THIS platform — always true. Every platform
+ *  (hosted web, desktop, mobile) authenticates against the one live vcut.io billing system instead of
+ *  each needing its own local Stripe integration or a self-supplied API key (see `billing.ts`'s own
+ *  doc comment on `BILLING_ORIGIN`) — Remove Object's and Auto Captions' desktop-only "paste your own
+ *  Replicate key" UI was retired for the same reason: one centrally-funded credits system everywhere,
+ *  not per-install local keys. Kept as a named export (not inlined `true`) so every place reading this
+ *  decision stays easy to find and easy to revisit later, and to keep it clearly distinct from `HOSTED`
+ *  above, which means something narrower. */
+export const CREDITS_ENABLED = true;
 
 /** Drop-in replacement for the global `fetch` every function below already called directly — in the
  *  hosted build, attaches the current Supabase session's access token as a bearer `Authorization`
@@ -69,6 +80,24 @@ function sseUrl(path: string): string {
   if (!HOSTED) return path;
   const token = getCachedAccessToken();
   return token ? `${path}&token=${encodeURIComponent(token)}` : path;
+}
+
+/** For the handful of routes whose secret provider key (Pexels/KLIPY/GIPHY/Replicate) now only ever
+ *  lives on the live vcut.io deployment — desktop's bundled server and mobile's Capacitor shell don't
+ *  get their own local-key config UI (retired; see `useHostedCreditsGate.ts`'s own doc comment), so
+ *  their SEARCH calls for Stock/Stickers/AI route straight there instead, same "absolute URL, bearer
+ *  token, no cookie" shape `billing.ts`'s own `billingFetch` already uses. `!HOSTED` covers desktop,
+ *  mobile, AND a plain local-dev browser tab alike — there's no separate "local" version of these
+ *  routes to fall back to anymore, only the live one. When THIS build IS the hosted deployment, the
+ *  absolute URL is same-origin and behaves identically to a relative one (billing.ts's own doc comment
+ *  makes the identical point) — no behavior change there. Only for SEARCH/read endpoints: importing a
+ *  picked result stays local (see `importStockResult`'s own doc comment for why). */
+async function centralFetch(path: string, init?: RequestInit): Promise<Response> {
+  const token = await getAccessToken();
+  const headers = new Headers(init?.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const url = HOSTED ? `${BASE}${path}` : `https://vcut.io${BASE}${path}`;
+  return fetch(url, { ...init, headers });
 }
 
 export class ApiRequestError extends Error {
@@ -301,26 +330,42 @@ export async function searchStock(
   query: string,
   page = 1
 ): Promise<{ results: StockSearchResult[]; hasMore: boolean }> {
-  if (isNative) return { results: [], hasMore: false };
   const params = new URLSearchParams({ type: kind, q: query, page: String(page) });
-  const response = await apiFetch(`${BASE}/stock?${params}`);
+  const response = await centralFetch(`/stock?${params}`);
   return unwrap<{ results: StockSearchResult[]; hasMore: boolean }>(response);
 }
 
-/** Downloads a chosen stock search result server-side and lands it as a real project `Asset` — same
- *  destination shape `importMedia` produces for an uploaded file, just sourced from a URL instead of
- *  a `File`. The name sent is the result's own `title` (a bare numeric id alone makes a poor display
- *  name) — but the real EXTENSION always comes from `downloadUrl` itself, never guessed: the server's
- *  own `importMediaBytes` classifies (and rejects) purely by extension, so a synthetic name with no
- *  extension at all would fail to import every single time. */
+/** Lands a chosen stock search result as a real project `Asset` — same destination shape `importMedia`
+ *  produces for an uploaded file, just sourced from a URL instead of a `File`. The name sent/used is
+ *  the result's own `title` (a bare numeric id alone makes a poor display name) — but the real
+ *  EXTENSION always comes from `downloadUrl` itself, never guessed: import classifies (and rejects)
+ *  purely by extension, so a synthetic name with no extension at all would fail to import every time.
+ *
+ *  On the native (Capacitor) shell, there is no local server at all to relay this through — but
+ *  `downloadUrl` is always a plain PUBLIC Pexels CDN link (`images.pexels.com`/`videos.pexels.com`,
+ *  confirmed against `stock/route.ts`'s own SSRF allowlist), needing no secret key to fetch, only the
+ *  SEARCH step did. So mobile downloads the file itself and imports it through the exact same
+ *  `nativeImportMedia` path a locally-picked file already goes through — no server round trip for the
+ *  actual bytes at all. Desktop keeps going through its OWN bundled local server unchanged (relative
+ *  `apiFetch`, `stock/route.ts`'s `POST`, still `localRoute`-gated, no CORS/secret-key needed for this
+ *  step either) — that route already lands the file straight into the user's own local project. */
 export async function importStockResult(projectId: string, result: StockSearchResult): Promise<Asset> {
   const urlExt = result.downloadUrl.split(/[?#]/)[0].split(".").pop();
   const ext = urlExt && urlExt.length <= 5 ? urlExt : result.kind === "video" ? "mp4" : "jpg";
   const friendly = result.title.trim().replace(/[^a-zA-Z0-9-]+/g, "-") || "stock";
+  const fileName = `${friendly}-${result.id}.${ext}`;
+
+  if (isNative) {
+    const download = await fetch(result.downloadUrl);
+    if (!download.ok) throw new ApiRequestError("Couldn't download that stock result", download.status, "stock-download-failed");
+    const blob = await download.blob();
+    return nativeImportMedia(projectId, new File([blob], fileName, { type: blob.type }));
+  }
+
   const response = await apiFetch(`${BASE}/stock?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ url: result.downloadUrl, name: `${friendly}-${result.id}.${ext}` }),
+    body: JSON.stringify({ url: result.downloadUrl, name: fileName }),
   });
   const body = await unwrap<{ asset: Asset }>(response);
   return body.asset;
@@ -345,10 +390,8 @@ export interface StickerAvailability {
   giphyCredits: number;
 }
 
-/** Server-backed only, like stock search — the native app has no server to proxy the providers. */
 export async function getStickerAvailability(): Promise<StickerAvailability> {
-  if (isNative) return { klipy: false, giphy: false, giphyCredits: 0 };
-  const response = await apiFetch(`${BASE}/stickers?availability=1`);
+  const response = await centralFetch(`/stickers?availability=1`);
   return unwrap<StickerAvailability>(response);
 }
 
@@ -359,15 +402,42 @@ export async function searchStickers(
   query: string,
   page = 1
 ): Promise<{ results: StickerSearchResult[]; hasMore: boolean }> {
-  if (isNative) return { results: [], hasMore: false };
   const params = new URLSearchParams({ provider, type, q: query, page: String(page) });
-  const response = await apiFetch(`${BASE}/stickers?${params}`);
+  const response = await centralFetch(`/stickers?${params}`);
   return unwrap<{ results: StickerSearchResult[]; hasMore: boolean }>(response);
 }
 
-/** Downloads and converts a picked sticker/GIF server-side into an animated image `Asset` (see
- *  `stickers.ts`). A GIPHY pick spends credits on hosted. */
+/** Lands a picked sticker/GIF as an animated image `Asset` (see `stickers.ts`). A GIPHY pick spends
+ *  real credits; KLIPY is free.
+ *
+ *  Same native/desktop split as `importStockResult`, for the same reason: `result.downloadUrl` is
+ *  always a plain public KLIPY/GIPHY CDN link (confirmed against `stickerProviders.ts`'s own
+ *  `isAllowedStickerDownload` allowlist), so mobile downloads and imports it itself with no server
+ *  relay needed for the bytes — but a GIPHY pick still needs the real charge to happen SERVER-side
+ *  (the client can't be trusted to self-report "please charge me"), so mobile makes one extra call to
+ *  `stickers/charge` afterward, purely to bill it — see that route's own doc comment. Charging AFTER a
+ *  successful import (not before, unlike desktop's server-side flow) means a failed import is never
+ *  charged; the tiny reverse race that opens (a slow/duplicate charge call after one real import) isn't
+ *  a realistic concern for a single interactive pick. */
 export async function importSticker(projectId: string, result: StickerSearchResult): Promise<Asset> {
+  if (isNative) {
+    const download = await fetch(result.downloadUrl);
+    if (!download.ok) throw new ApiRequestError("Couldn't download that sticker", download.status, "sticker-download-failed");
+    const blob = await download.blob();
+    const friendly = result.title.trim().replace(/[^a-zA-Z0-9-]+/g, "-") || (result.type === "gifs" ? "gif" : "sticker");
+    const asset = await nativeImportMedia(projectId, new File([blob], `${friendly}.gif`, { type: blob.type || "image/gif" }));
+    if (result.provider === "giphy") {
+      await unwrap<{ ok: true }>(
+        await centralFetch(`/stickers/charge`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: result.provider }),
+        })
+      );
+    }
+    return asset;
+  }
+
   const response = await apiFetch(`${BASE}/stickers?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

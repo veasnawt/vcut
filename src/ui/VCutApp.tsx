@@ -32,7 +32,7 @@ import {
   Volume,
 } from "@veasnawt/vicons";
 import { startCheckout } from "../api/billing.ts";
-import { HOSTED, thumbnailUrl } from "../api/client.ts";
+import { CREDITS_ENABLED, thumbnailUrl } from "../api/client.ts";
 import { reportError } from "../api/crashLog.ts";
 import { isDesktopSignInAvailable, openDesktopSignIn, subscribeToDesktopAuthCallback } from "../api/desktopAuth.ts";
 import { subscribeToNativeAuthCallback } from "../api/nativeAuth.ts";
@@ -683,7 +683,7 @@ function StatusBar({
                   : t("Auto Captions for the selected clips")
             }
             label={t("Captions")}
-            pro={HOSTED}
+            pro={CREDITS_ENABLED}
             onClick={() => setCaptionsDialog(selectedClipIds.length === 0 ? {} : { clipIds: selectedClipIds })}
           >
             <ClosedCaption size={18} />
@@ -1031,7 +1031,7 @@ function StatusBar({
           <ToolbarButton
             title={t("Remove Object")}
             label={t("Remove")}
-            pro={HOSTED}
+            pro={CREDITS_ENABLED}
             onClick={() => {
               if (!foundForVideoEffects) return;
               armRemoveObject(foundForVideoEffects.clip.id);
