@@ -3079,23 +3079,40 @@ describe("buildExportPlan with a glitch/water-ripple/zoom-blur/whip-pan/flash-zo
       assert.match(graph, /boxblur=luma_radius=\d+:luma_power=1:chroma_radius=\d+:chroma_power=1:enable='between\(t,0\.000000,1\.000000\)'/);
     });
 
-    it("zoomBlur/flashZoom: a solo fade still exports as a PLAIN fade — a documented, narrower gap, not a regression", () => {
-      // `crop=` (part of both types' own zoom pre-pass) doesn't support ffmpeg's `enable=` timeline
-      // option at all on this build, so there's no equivalent windowed construction to fall back to
-      // yet — `applySoloCorruptionPass` deliberately leaves these two types untouched rather than
-      // shipping an untested workaround. Their own TWO-CLIP case is unaffected (see the describe block
-      // above) — this gap is solo-fades only.
-      for (const type of ["zoomBlur", "flashZoom"] as const) {
-        const base = emptyProject([videoAsset("a", 5)]);
-        let project = addClip(base, videoTrackId(base), "a", 0);
-        const [clipA] = clipsOf(project, videoTrackId(project));
-        project = setClipTransitionIn(project, clipA.id, { duration: 1, type });
+    it("zoomBlur: a solo fade-IN splits the stream, runs the zoom+blur pre-pass ungated, then overlay= gates it to its own window", () => {
+      // `crop=` (part of the zoom pre-pass) doesn't support ffmpeg's `enable=` timeline option at all
+      // on this build, so the pre-pass instead runs UNGATED on a `split=`-off copy of the stream, and
+      // `overlay=`'s own (working) `enable=` support is what confines it back to just the fade window.
+      const base = emptyProject([videoAsset("a", 5)]);
+      let project = addClip(base, videoTrackId(base), "a", 0);
+      const [clipA] = clipsOf(project, videoTrackId(project));
+      project = setClipTransitionIn(project, clipA.id, { duration: 1, type: "zoomBlur" });
 
-        const graph = filterGraph(plan(project).args);
+      const graph = filterGraph(plan(project).args);
 
-        assert.ok(!graph.includes("_fx]"), `"${type}"'s solo fade is a documented gap — no corruption pass yet`);
-        assert.match(graph, /fade=t=in:st=0:d=1\.000000/);
-      }
+      assert.match(graph, /\[v0_0_prefade\]split=2\[v0_0_prefade_base\]\[v0_0_prefade_src\]/);
+      assert.match(graph, /\[v0_0_prefade_src\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+\[v0_0_prefade_fx_pre\]/);
+      assert.match(graph, /\[v0_0_prefade_base\]\[v0_0_prefade_fx_pre\]overlay=format=auto:enable='between\(t,0\.000000,1\.000000\)'\[v0_0_prefade_fx\]/);
+      assert.match(graph, /fade=t=in:st=0:d=1\.000000/);
+    });
+
+    it("flashZoom: a solo fade-OUT chains the ramped flash geq= onto the split-off copy, ramp rebased to the fade window's own start", () => {
+      const base = emptyProject([videoAsset("a", 5)]);
+      let project = addClip(base, videoTrackId(base), "a", 0);
+      const [clipA] = clipsOf(project, videoTrackId(project));
+      project = setClipTransitionOut(project, clipA.id, { duration: 1, type: "flashZoom" });
+
+      const graph = filterGraph(plan(project).args);
+
+      assert.match(
+        graph,
+        /\[v0_0_prefade_src\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+,geq=lum='[^']+':cb='[^']+':cr='[^']+'\[v0_0_prefade_fx_pre\]/
+      );
+      assert.match(graph, /\[v0_0_prefade_base\]\[v0_0_prefade_fx_pre\]overlay=format=auto:enable='between\(t,4\.000000,5\.000000\)'\[v0_0_prefade_fx\]/);
+      // Rebased against the fade window's own start (4.0), not the whole clip's (0) — same rule
+      // `waterRippleCut`'s solo case already enforces above.
+      assert.ok(graph.includes("(T-4.000000)"), "expected the flash ramp to rebase T against the fade window's own start");
+      assert.match(graph, /fade=t=out:st=4\.000000:d=1\.000000/);
     });
   });
 });

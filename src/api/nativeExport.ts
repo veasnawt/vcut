@@ -4,7 +4,7 @@ import { buildExportPlan, MAX_TYPEWRITER_STEPS } from "../export/buildExportPlan
 import { findAsset, newId } from "../project/createProject.ts";
 import { FONT_REGISTRY } from "../project/fonts.ts";
 import type { Clip, Project } from "../project/types.ts";
-import { ApiRequestError } from "./client.ts";
+import { ApiRequestError, sfxAssetUrl } from "./client.ts";
 import type { ExportProgress, ExportStarted } from "./client.ts";
 
 /** On-device counterpart of `studios/vcut/app/api/vcut/export/route.ts`, talking to the native
@@ -47,6 +47,7 @@ const Ffmpeg = registerPlugin<FfmpegPluginApi>("Ffmpeg");
 const DIRECTORY = Directory.Data;
 const ROOT = "vcut-projects";
 const FONTS_DIR = `${ROOT}/_fonts`;
+const SFX_DIR = `${ROOT}/_sfx`;
 const TEXT_SCRATCH_DIR = "vcut-text";
 
 function projectDir(projectId: string): string {
@@ -126,6 +127,43 @@ function primeFontPaths(): Promise<Map<string, string>> {
   return fontPathsPromise;
 }
 
+/** A bundled catalog SFX (`Asset.bundledSfx`) is added to a project with NO local copy at all — see
+ *  `sfx.ts`'s `assetFromBundledSfx`'s own doc comment: the real file is shared/immutable, so adding one
+ *  just references it by filename instead of fetching a private copy into the project's own media
+ *  folder. `resolveAssetPaths` below assumes every OTHER asset's `relPath` already lives under
+ *  `mediaDir(projectId)` — that assumption is simply false for a bundled SFX, which was never written
+ *  anywhere on-device at all, so FFmpeg would be handed a path to a file that never existed. A real,
+ *  confirmed gap (found investigating the same broken-URL bug `sfxAssetUrl` itself just got fixed for),
+ *  not a defensive addition: a project with a bundled SFX clip failed to export on native outright.
+ *
+ *  Fixed the same way `primeFontPaths` already handles the identical "bundled asset needs a REAL local
+ *  path for FFmpeg" problem for fonts — fetch once, cache on-device, keyed by filename. Deliberately
+ *  scoped to only the bundled SFX THIS project actually uses (unlike `primeFontPaths`, which primes the
+ *  whole, small, fixed font catalog unconditionally) — the SFX catalog is much larger (165+ entries) and
+ *  still growing, so priming all of it on every export would be real, avoidable network + storage cost
+ *  for files the export never touches. */
+async function primeBundledSfxAssets(project: Project): Promise<Map<string, string>> {
+  const fileNames = new Set(project.assets.filter((asset) => asset.bundledSfx && asset.relPath).map((asset) => asset.relPath));
+  const map = new Map<string, string>();
+  if (fileNames.size === 0) return map;
+  await Filesystem.mkdir({ path: SFX_DIR, directory: DIRECTORY, recursive: true }).catch(() => {});
+  await Promise.all(
+    [...fileNames].map(async (fileName) => {
+      const relPath = `${SFX_DIR}/${fileName}`;
+      try {
+        await Filesystem.stat({ path: relPath, directory: DIRECTORY });
+      } catch {
+        const response = await fetch(sfxAssetUrl(fileName));
+        if (!response.ok) throw new ApiRequestError(`Missing bundled SFX file "${fileName}"`, 500, "sfx-missing");
+        const base64 = await blobToBase64(await response.blob());
+        await Filesystem.writeFile({ path: relPath, directory: DIRECTORY, data: base64 });
+      }
+      map.set(fileName, await nativePathFor(relPath));
+    })
+  );
+  return map;
+}
+
 /** Mirrors `buildExportPlan.ts`'s own text-track traversal (its `videoOut` loop over `project.sequence.
  *  tracks` where `track.kind === "text"`) exactly, so the set of clips this pre-writes a text file for
  *  is identical to the set `buildExportPlan` will actually ask `textFilePathFor` about. Duplicated
@@ -187,12 +225,20 @@ async function writeTextFiles(project: Project): Promise<Map<string, string>> {
 // storage key, so this must take `projectId` explicitly rather than reading `project.id` off the
 // object — using the latter resolves every asset path under a directory that was never actually
 // written to, which fails as "No such file or directory" only once FFmpeg actually tries to open it.
-async function resolveAssetPaths(projectId: string, project: Project): Promise<Map<string, string>> {
+async function resolveAssetPaths(projectId: string, project: Project, sfxPaths: Map<string, string>): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   await Promise.all(
     project.assets
       .filter((asset) => asset.relPath)
       .map(async (asset) => {
+        // A bundled SFX has no file under this project's own media folder at all — see
+        // `primeBundledSfxAssets`'s own doc comment — its real on-device path lives in `sfxPaths`
+        // instead, keyed by filename (the same value `asset.relPath` already holds for one of these).
+        if (asset.bundledSfx) {
+          const path = sfxPaths.get(asset.relPath);
+          if (path) map.set(asset.id, path);
+          return;
+        }
         map.set(asset.id, await nativePathFor(`${mediaDir(projectId)}/${asset.relPath}`));
       })
   );
@@ -224,11 +270,12 @@ export async function nativeStartExport(projectId: string, project: Project, fil
   const outFileName = `${(fileName || project.name || "export").replace(/[^A-Za-z0-9._-]/g, "_")}-${stamp}.mp4`;
   const outputPath = await nativePathFor(`${exportsDir(projectId)}/${outFileName}`);
 
-  const [assetPaths, textFiles, fontPaths] = await Promise.all([
-    resolveAssetPaths(projectId, project),
+  const [sfxPaths, textFiles, fontPaths] = await Promise.all([
+    primeBundledSfxAssets(project),
     writeTextFiles(project),
     collectTextClips(project).length > 0 ? primeFontPaths() : Promise.resolve(new Map<string, string>()),
   ]);
+  const assetPaths = await resolveAssetPaths(projectId, project, sfxPaths);
 
   const plan = buildExportPlan(project, {
     inputPathFor: (assetId) => {

@@ -2328,22 +2328,27 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
    *  timeline-editing option (verified empirically against this repo's own bundled ffmpeg build) is
    *  what confines the effect to just that edge instead of corrupting the whole clip.
    *
-   *  Deliberately narrower than `applyTransitionCorruptionPass`: `zoomBlur`/`flashZoom` are NOT handled
-   *  here and their own solo-fade case stays a plain fade, unchanged — their pre-pass needs `crop=`,
-   *  and this ffmpeg build's `crop` filter does not support `enable=` AT ALL (confirmed directly:
-   *  ffmpeg refuses to even build the filtergraph, "Timeline ('enable' option) not supported with
-   *  filter 'crop'"), with no equivalent zoom-without-crop construction available to fall back to. A
-   *  known, narrower follow-up rather than an untested guess. `waterRippleCut`'s own ramp expression
-   *  uses `(T-windowStart)`, not raw `T` — `geq=`'s own `T` is elapsed time since the CLIP'S OWN
-   *  segment start, not the fade window's start, so without this the parabola would peak at the middle
-   *  of the whole clip instead of the middle of the fade window whenever `windowStart` isn't 0 (a
-   *  `fadeOut`, which always starts partway through the segment). */
+   *  `zoomBlur`/`flashZoom` ARE handled here too, but via a different mechanism than the other four:
+   *  their pre-pass needs `crop=` (see `applyTransitionCorruptionPass`'s own comment on why), and this
+   *  ffmpeg build's `crop` filter does not support `enable=` AT ALL (confirmed directly: ffmpeg refuses
+   *  to even build the filtergraph, "Timeline ('enable' option) not supported with filter 'crop'"). The
+   *  workaround: `split` the stream in two, run `crop`'s zoom+blur pre-pass UNGATED on one copy (crop
+   *  never needs to know about the window at all that way), and `overlay` it back onto the untouched
+   *  copy gated by `overlay`'s OWN `enable=` support (which, unlike `crop`'s, does work) — so the
+   *  window-confinement moves from the filter that can't do it to the one right after it that can.
+   *  `waterRippleCut`'s own ramp expression (and `flashZoom`'s below) uses `(T-windowStart)`, not raw
+   *  `T` — `geq=`'s own `T` is elapsed time since the CLIP'S OWN segment start, not the fade window's
+   *  start, so without this the parabola would peak at the middle of the whole clip instead of the
+   *  middle of the fade window whenever `windowStart` isn't 0 (a `fadeOut`, which always starts partway
+   *  through the segment). */
   function applySoloCorruptionPass(label: string, transitionType: TransitionType, windowStart: number, windowDuration: number): string {
     if (
       transitionType !== "glitchCut" &&
       transitionType !== "waterRippleCut" &&
       transitionType !== "whipPanLeft" &&
-      transitionType !== "whipPanRight"
+      transitionType !== "whipPanRight" &&
+      transitionType !== "zoomBlur" &&
+      transitionType !== "flashZoom"
     ) {
       return label;
     }
@@ -2359,6 +2364,23 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       filters.push(
         `[${label}]rgbashift=rh=${GLITCH_SHIFT_PX}:bv=${-GLITCH_SHIFT_PX}:${enable},noise=alls=${n(GLITCH_NOISE_AMOUNT)}:allf=t:${enable}[${fxLabel}]`
       );
+    } else if (transitionType === "zoomBlur" || transitionType === "flashZoom") {
+      const zoomFactor = n(1 + ZOOM_BLUR_SCALE);
+      const zoomStage = `scale=w='iw*${zoomFactor}':h='ih*${zoomFactor}',crop=w=${width}:h=${height},setsar=1,gblur=sigma=${n(ZOOM_BLUR_SIGMA_PX)}`;
+      const baseLabel = `${label}_base`;
+      const srcLabel = `${label}_src`;
+      const preLabel = `${fxLabel}_pre`;
+      filters.push(`[${label}]split=2[${baseLabel}][${srcLabel}]`);
+      if (transitionType === "zoomBlur") {
+        filters.push(`[${srcLabel}]${zoomStage}[${preLabel}]`);
+      } else {
+        const localT = `(T-${t(windowStart)})`;
+        const k = `${n(FLASH_ZOOM_PEAK)}*4*(${localT}/${t(windowDuration)})*(1-${localT}/${t(windowDuration)})`;
+        filters.push(
+          `[${srcLabel}]${zoomStage},geq=lum='p(X,Y)*(1-(${k}))+255*(${k})':cb='p(X,Y)*(1-(${k}))+128*(${k})':cr='p(X,Y)*(1-(${k}))+128*(${k})'[${preLabel}]`
+        );
+      }
+      filters.push(`[${baseLabel}][${preLabel}]overlay=format=auto:${enable}[${fxLabel}]`);
     } else {
       filters.push(
         `[${label}]boxblur=luma_radius=${WHIP_PAN_BLUR_RADIUS_PX}:luma_power=1:chroma_radius=${WHIP_PAN_BLUR_RADIUS_PX}:chroma_power=1:${enable}[${fxLabel}]`
