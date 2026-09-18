@@ -66,14 +66,35 @@ function SegmentedControl<T extends string>({
  *  ready without losing the start of the take), or press and hold it and it starts capturing
  *  immediately for exactly as long as it's held (a walkie-talkie-style quick take with no countdown
  *  needed since the deliberate press-and-hold IS the "I'm ready now" signal). An optional Teleprompter
- *  panel scrolls a typed-in script while recording; Voice Enhance/Noise Reduction/Audio Effects/Voice
- *  Changer are post-processing choices applied to the take once it stops (`applyRecordingEffects`) —
- *  picked BEFORE a take starts so what you hear played back afterward is what actually got kept, not a
- *  live-monitored preview that then differs from the saved result. */
+ *  panel scrolls a typed-in script while recording. ALL post-processing — Voice Enhance, Noise
+ *  Reduction, Audio Effects, Voice Changer — is picked AFTER the take stops, in a review step
+ *  (`reviewing`/`confirmReview`/`discardReview` — see `useVoiceRecording`'s own doc comment): the take
+ *  is already safely captured by then, so trying a few styles against what was ACTUALLY said costs
+ *  nothing and needs no imagining-in-advance before a single word was recorded. */
 export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
   const t = useTranslation();
   const viewportHeight = useVisualViewportHeight();
-  const { recording, elapsed, start, stop } = useVoiceRecording();
+  const {
+    recording,
+    elapsed,
+    start,
+    stop,
+    micBlocked,
+    openMicSettings,
+    reviewing,
+    reviewVoiceEnhance,
+    setReviewVoiceEnhance,
+    reviewNoiseReduction,
+    setReviewNoiseReduction,
+    reviewEffect,
+    setReviewEffect,
+    reviewVoiceChanger,
+    setReviewVoiceChanger,
+    previewUrl,
+    previewRendering,
+    confirmReview,
+    discardReview,
+  } = useVoiceRecording();
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [countdown, setCountdown] = useState(COUNTDOWN_SECONDS);
@@ -81,11 +102,6 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pointerDownRef = useRef(false);
-
-  const [voiceEnhance, setVoiceEnhance] = useState(false);
-  const [noiseReduction, setNoiseReduction] = useState(false);
-  const [effect, setEffect] = useState<RecordingEffectsOptions["effect"]>("none");
-  const [voiceChanger, setVoiceChanger] = useState<RecordingEffectsOptions["voiceChanger"]>("none");
 
   const [showTeleprompter, setShowTeleprompter] = useState(false);
   const [script, setScript] = useState("");
@@ -107,10 +123,6 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
 
   useEffect(() => clearTimers, []);
 
-  function currentEffects(): RecordingEffectsOptions {
-    return { voiceEnhance, noiseReduction, effect, voiceChanger };
-  }
-
   function runCountdownThenRecord() {
     setPhaseBoth("countdown");
     setCountdown(COUNTDOWN_SECONDS);
@@ -120,7 +132,15 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
       if (phaseRef.current !== "countdown") return; // cancelled mid-countdown
       if (remaining <= 0) {
         setPhaseBoth("recording-tap");
-        void start(currentEffects());
+        // `start()` only resolves `true` once `MediaRecorder` actually started — on `false` (permission
+        // denied/blocked, no mic, no open project) the button must fall back to idle instead of being
+        // left stuck showing "recording" with a frozen timer, which is the bug a real device test
+        // caught: the optimistic `setPhaseBoth` above makes a tap feel instant, but has to be rolled
+        // back if the recording it promised never actually began. Guarded on `phaseRef` still matching
+        // in case the user already tapped again (stopping it) before this resolves.
+        void start().then((started) => {
+          if (!started && phaseRef.current === "recording-tap") setPhaseBoth("idle");
+        });
         return;
       }
       setCountdown(remaining);
@@ -131,6 +151,12 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
 
   function onPointerDown(e: React.PointerEvent) {
     e.preventDefault();
+    if (micBlocked) {
+      // The OS will never show its own permission dialog again — starting a normal tap/hold take here
+      // would just fail silently, so this button's own tap instead goes straight to Settings.
+      void openMicSettings();
+      return;
+    }
     if (phase === "countdown") {
       // A second tap while counting down cancels it — the same "tap toggles" mental model as tapping
       // an already-recording take to stop it, just one stage earlier.
@@ -151,7 +177,10 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
     holdTimerRef.current = setTimeout(() => {
       if (!pointerDownRef.current) return;
       setPhaseBoth("recording-hold");
-      void start(currentEffects());
+      // See the tap path's identical comment above — same optimistic-UI rollback, for the hold path.
+      void start().then((started) => {
+        if (!started && phaseRef.current === "recording-hold") setPhaseBoth("idle");
+      });
     }, HOLD_THRESHOLD_MS);
   }
 
@@ -195,7 +224,9 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
   }, [recording, showTeleprompter, scrollSpeed]);
 
   const isRecording = phase === "recording-tap" || phase === "recording-hold";
-  const isBusy = phase !== "idle";
+  // Reviewing counts as busy too — closing the modal or nudging pre-recording controls mid-review would
+  // silently abandon (or misleadingly suggest it affects) a take that hasn't been confirmed yet.
+  const isBusy = phase !== "idle" || reviewing;
 
   return createPortal(
     <div
@@ -267,79 +298,128 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
-          {/* The record surface itself. */}
-          <div className="mt-5 flex flex-col items-center gap-2">
-            <button
-              type="button"
-              onPointerDown={onPointerDown}
-              onPointerUp={onPointerUp}
-              onPointerCancel={onPointerUp}
-              onContextMenu={(e) => e.preventDefault()}
-              className={`flex h-20 w-20 select-none items-center justify-center rounded-full border-2 text-white transition [touch-action:none] ${
-                isRecording
-                  ? "border-rose-400 bg-rose-500/30"
-                  : phase === "countdown"
-                    ? "border-amber-400 bg-amber-500/20"
-                    : "border-white/20 bg-white/10 hover:bg-white/20"
-              }`}
-            >
-              {phase === "countdown" ? (
-                <span className="text-2xl font-bold tabular-nums text-amber-200">{countdown}</span>
-              ) : isRecording ? (
-                <span className="text-sm font-semibold tabular-nums text-rose-100">
-                  {pad2(Math.floor(elapsed / 60))}:{pad2(Math.floor(elapsed) % 60)}
-                </span>
-              ) : (
-                <Microphone size={30} />
+          {reviewing ? (
+            /* Review step — the take is already safely captured; Audio Effects/Voice Changer are
+             * picked HERE, against the actual recording, with a live re-rendered preview on every
+             * change (see `useVoiceRecording`'s own doc comment for why this moved out of pre-recording). */
+            <div className="mt-5 flex flex-col gap-4">
+              <div className="flex flex-col items-center gap-2">
+                <div className="flex h-20 w-20 items-center justify-center rounded-full border-2 border-emerald-400/50 bg-emerald-500/10 text-white">
+                  <Microphone size={30} />
+                </div>
+                <p className="text-center text-[11px] text-white/50">{t("Recording complete — pick a style, then confirm")}</p>
+              </div>
+              {previewUrl && (
+                // `key` forces a fresh element per render, not just a swapped `src` — avoids the
+                // browser holding onto a stale decoded buffer for the PREVIOUS effect/voiceChanger pick.
+                <audio key={previewUrl} src={previewUrl} controls className="h-9 w-full" />
               )}
-            </button>
-            <p className="text-center text-[11px] text-white/50">
-              {phase === "countdown"
-                ? t("Get ready…")
-                : isRecording
-                  ? t("Tap or release to stop")
-                  : t("Tap or press and hold to record")}
-            </p>
-          </div>
-
-          {/* Post-processing, chosen before the take starts (see this file's own doc comment). */}
-          <div className="mt-5 flex flex-col gap-3">
-            <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => setVoiceEnhance((v) => !v)}
-                className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-40 ${
-                  voiceEnhance ? "bg-sky-500/30 text-white" : "bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
-                }`}
-              >
-                {t("Voice Enhance")}
-              </button>
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => setNoiseReduction((v) => !v)}
-                className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-40 ${
-                  noiseReduction ? "bg-sky-500/30 text-white" : "bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
-                }`}
-              >
-                {t("Noise Reduction")}
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={previewRendering}
+                  onClick={() => setReviewVoiceEnhance(!reviewVoiceEnhance)}
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-40 ${
+                    reviewVoiceEnhance ? "bg-sky-500/30 text-white" : "bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  {t("Voice Enhance")}
+                </button>
+                <button
+                  type="button"
+                  disabled={previewRendering}
+                  onClick={() => setReviewNoiseReduction(!reviewNoiseReduction)}
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium transition disabled:opacity-40 ${
+                    reviewNoiseReduction ? "bg-sky-500/30 text-white" : "bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  {t("Noise Reduction")}
+                </button>
+              </div>
+              <div>
+                <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-white/40">{t("Audio Effects")}</p>
+                <SegmentedControl
+                  value={reviewEffect}
+                  options={EFFECT_OPTIONS.map((o) => ({ ...o, label: t(o.label) }))}
+                  onChange={setReviewEffect}
+                  disabled={previewRendering}
+                />
+              </div>
+              <div>
+                <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-white/40">{t("Voice Changer")}</p>
+                <SegmentedControl
+                  value={reviewVoiceChanger}
+                  options={VOICE_CHANGER_OPTIONS.map((o) => ({ ...o, label: t(o.label) }))}
+                  onChange={setReviewVoiceChanger}
+                  disabled={previewRendering}
+                />
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={discardReview}
+                  className="flex-1 rounded-lg border border-white/10 bg-white/5 py-2 text-[12px] font-medium text-white/70 transition hover:bg-white/10 hover:text-white"
+                >
+                  {t("Discard")}
+                </button>
+                <button
+                  type="button"
+                  disabled={previewRendering}
+                  onClick={() => {
+                    // Fire-and-forget: `confirmReview` captures everything it needs into local
+                    // variables before its first `await`, so it finishes the import/add-to-timeline
+                    // work fine even after this modal unmounts — no need to keep it open until then.
+                    void confirmReview();
+                    onClose();
+                  }}
+                  className="flex-1 rounded-lg bg-sky-500 py-2 text-[12px] font-semibold text-white transition hover:bg-sky-400 disabled:opacity-50"
+                >
+                  {previewRendering ? t("Rendering…") : t("Use This Take")}
+                </button>
+              </div>
             </div>
-            <div>
-              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-white/40">{t("Audio Effects")}</p>
-              <SegmentedControl value={effect} options={EFFECT_OPTIONS.map((o) => ({ ...o, label: t(o.label) }))} onChange={setEffect} disabled={isBusy} />
-            </div>
-            <div>
-              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-white/40">{t("Voice Changer")}</p>
-              <SegmentedControl
-                value={voiceChanger}
-                options={VOICE_CHANGER_OPTIONS.map((o) => ({ ...o, label: t(o.label) }))}
-                onChange={setVoiceChanger}
-                disabled={isBusy}
-              />
-            </div>
-          </div>
+          ) : (
+            <>
+              {/* The record surface itself. */}
+              <div className="mt-5 flex flex-col items-center gap-2">
+                <button
+                  type="button"
+                  onPointerDown={onPointerDown}
+                  onPointerUp={onPointerUp}
+                  onPointerCancel={onPointerUp}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className={`flex h-20 w-20 select-none items-center justify-center rounded-full border-2 text-white transition [touch-action:none] ${
+                    micBlocked
+                      ? "border-amber-400/60 bg-amber-500/10"
+                      : isRecording
+                        ? "border-rose-400 bg-rose-500/30"
+                        : phase === "countdown"
+                          ? "border-amber-400 bg-amber-500/20"
+                          : "border-white/20 bg-white/10 hover:bg-white/20"
+                  }`}
+                >
+                  {phase === "countdown" ? (
+                    <span className="text-2xl font-bold tabular-nums text-amber-200">{countdown}</span>
+                  ) : isRecording ? (
+                    <span className="text-sm font-semibold tabular-nums text-rose-100">
+                      {pad2(Math.floor(elapsed / 60))}:{pad2(Math.floor(elapsed) % 60)}
+                    </span>
+                  ) : (
+                    <Microphone size={30} />
+                  )}
+                </button>
+                <p className="text-center text-[11px] text-white/50">
+                  {micBlocked
+                    ? t("Microphone access is blocked — tap to open Settings")
+                    : phase === "countdown"
+                      ? t("Get ready…")
+                      : isRecording
+                        ? t("Tap or release to stop")
+                        : t("Tap or press and hold to record")}
+                </p>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>,
