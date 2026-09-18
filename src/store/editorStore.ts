@@ -1368,6 +1368,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
         const started = await api.startAiVideo(projectId, prompt, aspectRatio);
         activeAiVideoJobId = started.jobId;
         api.watchAiVideo(
+          projectId,
           started.jobId,
           (update: AiVideoProgress) => {
             // See `generateAiImage`'s own identical comment on `hiddenFromLibrary`/`aiGeneration` —
