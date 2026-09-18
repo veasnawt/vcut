@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { ChevronDown, Delete, Upload } from "@veasnawt/vicons";
 import {
   cancelCaptions,
@@ -216,6 +217,7 @@ function AutoCaptionsSection({
   const t = useTranslation();
   const save = useEditorStore((s) => s.save);
   const landCaptions = useEditorStore((s) => s.landCaptions);
+  const project = useEditorStore((s) => s.project);
 
   const [available, setAvailable] = useState<boolean | null>(null);
   // Shared with `RemoveObjectSection` below — Captions runs on the SAME saved Replicate token, not a
@@ -272,7 +274,7 @@ function AutoCaptionsSection({
   }
 
   async function begin() {
-    if (!projectId) return;
+    if (!projectId || !project) return;
     setError(null);
     setProgress(0);
     setStage("");
@@ -282,7 +284,7 @@ function AutoCaptionsSection({
     // otherwise be silently ignored.
     await save();
     try {
-      const started = await startCaptions(projectId, [clipId], language, animation?.type === "wordHighlight");
+      const started = await startCaptions(projectId, project, [clipId], language, animation?.type === "wordHighlight");
       jobIdRef.current = started.jobId;
       unwatchRef.current = watchCaptions(
         started.jobId,
@@ -830,7 +832,11 @@ function RemoveObjectSection({
     return (
       <>
         {credentialsBlock}
-        <p className="text-[12px] leading-relaxed text-amber-200/80">{t("FFmpeg isn't available — reinstall dependencies to use this.")}</p>
+        <p className="text-[12px] leading-relaxed text-amber-200/80">
+          {Capacitor.isNativePlatform()
+            ? t("Remove Object isn't available on mobile yet — try it on desktop or the web app.")
+            : t("FFmpeg isn't available — reinstall dependencies to use this.")}
+        </p>
       </>
     );
   }

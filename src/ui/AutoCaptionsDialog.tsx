@@ -48,6 +48,7 @@ type PickerTab = "font" | "style" | "animation";
 export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; clipIds?: string[] }) {
   const t = useTranslation();
   const projectId = useEditorStore((s) => s.projectId);
+  const project = useEditorStore((s) => s.project);
   const save = useEditorStore((s) => s.save);
   const landCaptions = useEditorStore((s) => s.landCaptions);
   const clearCaptions = useEditorStore((s) => s.clearCaptions);
@@ -153,7 +154,7 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
   }
 
   async function begin() {
-    if (!projectId) return;
+    if (!projectId || !project) return;
     setError(null);
     setProgress(0);
     setStage("");
@@ -162,7 +163,7 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
     // SAVED project file, so unsaved edits would otherwise be silently ignored.
     await save();
     try {
-      const started = await startCaptions(projectId, clipIds, language, animation?.type === "wordHighlight");
+      const started = await startCaptions(projectId, project, clipIds, language, animation?.type === "wordHighlight");
       jobIdRef.current = started.jobId;
       unwatchRef.current = watchCaptions(
         started.jobId,

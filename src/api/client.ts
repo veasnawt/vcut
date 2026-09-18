@@ -6,6 +6,7 @@ import type { StickerProvider, StickerType } from "../project/stickers.ts";
 import type { Asset, CustomFontAsset, CustomSfxAsset, LutAsset, Project } from "../project/types.ts";
 import { nativeCancelExport, nativeExportAvailable, nativeStartExport, nativeWatchExport } from "./nativeExport.ts";
 import { nativeDeleteMedia, nativeImportMedia, nativeLoadProject, nativeMediaUrl, nativeSaveProject } from "./nativeStorage.ts";
+import { nativeExtractCaptionAudio } from "./nativeCaptions.ts";
 
 /** Browser-side client for VCut's server routes.
  *
@@ -1317,21 +1318,29 @@ export interface CaptionsProgress {
  *  ranges' audio — this can only run on the machine that actually has the project's real media files.
  *  Then a REMOTE call (`centralFetch`, live vcut.io) starts the actual transcription job on just that
  *  small extracted audio file — the secret key only ever lives there. `watchCaptions` picks the job up
- *  from that second call's `jobId`. Native (mobile) has no local server to do the first half at all —
- *  unchanged, still unavailable there for now. */
+ *  from that second call's `jobId`. Native (mobile) has no local SERVER to run `captions/route.ts`'s own
+ *  extraction logic, so it runs the on-device equivalent instead (`nativeExtractCaptionAudio`, via the
+ *  same FFmpeg plugin export already depends on) — the remote half below is identical on every
+ *  platform, `captions/transcribe/route.ts` is already CORS-enabled for exactly this. `project` (the
+ *  live in-memory project, not whatever's last saved to disk) is only actually used on the native path —
+ *  kept as a required parameter anyway, same as `startExport`, so a caller can't accidentally pass a
+ *  stale one only on some platforms. */
 export async function startCaptions(
   projectId: string,
+  project: Project,
   clipIds?: string[],
   language?: string,
   wordHighlight?: boolean,
 ): Promise<CaptionsStarted> {
-  if (isNative) throw new ApiRequestError("Auto Captions isn't available on this device yet.", 501, "captions-unavailable");
-  const extractResponse = await apiFetch(`${BASE}/captions?projectId=${encodeURIComponent(projectId)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(clipIds && clipIds.length > 0 ? { clipIds } : {}),
-  });
-  const extracted = await unwrap<{ audioBase64: string; ranges: { start: number; end: number }[]; durations: number[] }>(extractResponse);
+  const extracted = isNative
+    ? await nativeExtractCaptionAudio(projectId, project, clipIds)
+    : await unwrap<{ audioBase64: string; ranges: { start: number; end: number }[]; durations: number[] }>(
+        await apiFetch(`${BASE}/captions?projectId=${encodeURIComponent(projectId)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(clipIds && clipIds.length > 0 ? { clipIds } : {}),
+        })
+      );
 
   const response = await centralFetch(`/captions/transcribe`, {
     method: "POST",
@@ -1375,19 +1384,18 @@ export const CAPTION_LANGUAGE_OPTIONS: { code: string; label: string }[] = [
 ];
 
 export async function cancelCaptions(jobId: string): Promise<void> {
-  if (isNative) return;
-  // A cancel racing the job's own completion is normal, not an error worth surfacing.
+  // A cancel racing the job's own completion is normal, not an error worth surfacing. The job this
+  // targets always lives on the REMOTE (transcription) side regardless of platform — see
+  // `watchCaptions`'s own comment — so there's no native-vs-not branch here.
   await centralFetch(`/captions/transcribe?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
 }
 
 /** Subscribes to an Auto Captions job's progress — the REMOTE (transcription) job specifically, since
  *  extraction already finished by the time `startCaptions` returned a `jobId` at all. Identical shape
- *  to `watchAiVideo` — see that function's own doc comment for why `centralSseUrl`, not `sseUrl`. */
+ *  to `watchAiVideo` — see that function's own doc comment for why `centralSseUrl`, not `sseUrl`. Works
+ *  unchanged on native: `centralSseUrl` always points at the live vcut.io deployment (CORS-enabled)
+ *  regardless of platform, there is no local job here to watch instead. */
 export function watchCaptions(jobId: string, onUpdate: (progress: CaptionsProgress) => void, onError: (message: string) => void): () => void {
-  if (isNative) {
-    onError("Auto Captions isn't available on this device yet.");
-    return () => {};
-  }
   const source = new EventSource(centralSseUrl(`${BASE}/captions/transcribe?jobId=${encodeURIComponent(jobId)}`));
 
   source.onmessage = (event) => {
@@ -1411,16 +1419,16 @@ export function watchCaptions(jobId: string, onUpdate: (progress: CaptionsProgre
 }
 
 /** Whether Auto Captions is usable right now — BOTH halves have to check out: this device can do the
- *  local extraction (FFmpeg present, `captions/route.ts`'s own HEAD) AND the live vcut.io deployment
- *  has a transcription key configured (`captions/transcribe/route.ts`'s own HEAD, `centralFetch`). */
+ *  local extraction (FFmpeg present — on native, the same plugin check `exportAvailable()` uses; off
+ *  native, `captions/route.ts`'s own HEAD) AND the live vcut.io deployment has a transcription key
+ *  configured (`captions/transcribe/route.ts`'s own HEAD, `centralFetch`). */
 export async function captionsAvailable(): Promise<boolean> {
-  if (isNative) return false;
   try {
     const [local, remote] = await Promise.all([
-      apiFetch(`${BASE}/captions`, { method: "HEAD" }),
+      isNative ? nativeExportAvailable() : apiFetch(`${BASE}/captions`, { method: "HEAD" }).then((r) => r.status === 204),
       centralFetch(`/captions/transcribe`, { method: "HEAD" }),
     ]);
-    return local.status === 204 && remote.status === 204;
+    return local && remote.status === 204;
   } catch {
     return false;
   }

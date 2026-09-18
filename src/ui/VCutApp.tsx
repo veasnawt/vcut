@@ -803,13 +803,9 @@ function StatusBar({
             <ToolbarButton title={t("Sound Effects")} label={t("SFX")} onClick={() => setShowSfx(true)}>
               <Headphone size={18} />
             </ToolbarButton>
-            {/* Server-backed (the providers are proxied), so not offered in the native app — same as
-                stock search. */}
-            {!Capacitor.isNativePlatform() && (
-              <ToolbarButton title={t("Stickers and GIFs")} label={t("Stickers")} onClick={() => setShowStickers(true)}>
-                <Emoji size={18} />
-              </ToolbarButton>
-            )}
+            <ToolbarButton title={t("Stickers and GIFs")} label={t("Stickers")} onClick={() => setShowStickers(true)}>
+              <Emoji size={18} />
+            </ToolbarButton>
             <ToolbarButton
               ref={colorButtonRef}
               title={t("Add a color background")}
