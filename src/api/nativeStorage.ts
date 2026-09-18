@@ -1,9 +1,12 @@
 import { Capacitor } from "@capacitor/core";
 import { Directory, Encoding, Filesystem } from "@capacitor/filesystem";
+import { getAccessToken } from "@veasnawt/auth";
 import { kindForExtension } from "../import/mediaFormats.ts";
 import { createProject, newId } from "../project/createProject.ts";
 import { deserializeProject, serializeProject } from "../project/serialize.ts";
+import type { TemplateProjectData } from "../project/template.ts";
 import type { Asset, AssetKind, Project } from "../project/types.ts";
+import { SHORT_PRESET } from "../project/types.ts";
 import { ApiRequestError } from "./client.ts";
 
 /** On-device counterpart of `studios/vcut/app/api/vcut/**`'s filesystem routes, for the native
@@ -73,7 +76,10 @@ export async function nativeSaveProject(projectId: string, project: Project): Pr
   await Filesystem.writeFile({ path: projectFile(projectId), directory: DIRECTORY, data: serializeProject(project), encoding: Encoding.UTF8 });
 }
 
-function readFileAsBase64(file: File): Promise<string> {
+// `Blob`, not `File` — every current caller passes a real `File`, but `File` is-a `Blob`, and
+// `nativeCreateProjectFromTemplate` (below) needs this same base64 conversion for a downloaded
+// `fetch().blob()` response body, which is never a `File`.
+function readFileAsBase64(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -189,4 +195,176 @@ export async function nativeDeleteMedia(projectId: string, asset: Asset): Promis
   await Filesystem.deleteFile({ path: `${mediaDir(projectId)}/${asset.relPath}`, directory: DIRECTORY }).catch(() => {
     /* already gone */
   });
+}
+
+/** On-device counterpart of `studios/vcut/app/api/vcut/projects/route.ts`'s `ProjectSummary` — what
+ *  the Home/Projects tabs list. `coverAsset` stands in for that route's server-resolved `thumbnail`:
+ *  native never generates `Asset.thumbnailRelPath` (no FFmpeg — see this file's own top doc comment),
+ *  so there's no separate rendered thumbnail file to point at. Instead this names the representative
+ *  asset itself (kind + its OWN `relPath`) and lets the caller render it live — a video via
+ *  `VideoFrameThumbnail` (already built for exactly this: painting a real frame from a plain `<video>`
+ *  element, no server round trip), a still image via a plain `<img>` — both resolved through
+ *  `nativeMediaUrl`, same as any other asset. */
+export interface LocalProjectSummary {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  clipCount: number;
+  width: number;
+  height: number;
+  coverAsset?: { kind: "video" | "image"; relPath: string };
+}
+
+/** Same selection rule `projects/route.ts`'s own `summarize` uses (prefer a video, fall back to a
+ *  still image, skip a template placeholder's empty `relPath`) — adapted for native's own "no
+ *  server-rendered thumbnail" reality: keys off the asset's real `relPath` directly rather than a
+ *  `thumbnailRelPath` that native imports never populate. */
+function summarizeLocal(project: Project): LocalProjectSummary {
+  const coverAsset =
+    project.assets.find((a) => a.kind === "video" && a.relPath && !a.templatePlaceholder) ??
+    project.assets.find((a) => a.kind === "image" && a.relPath && !a.templatePlaceholder);
+  return {
+    id: project.bpProjectId,
+    name: project.name,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+    clipCount: project.sequence.tracks.reduce((n, t) => n + t.clips.length, 0),
+    width: project.sequence.width,
+    height: project.sequence.height,
+    ...(coverAsset ? { coverAsset: { kind: coverAsset.kind as "video" | "image", relPath: coverAsset.relPath } } : null),
+  };
+}
+
+/** Every project on this device — a plain directory listing, same reasoning `projects/route.ts`'s own
+ *  local branch already gives for why that's fine at the scale a single device's project count ever
+ *  reaches: the project folders themselves are the source of truth, no separate index to drift out of
+ *  sync. A folder whose `project.json` fails to parse (corrupted, or caught mid-write) is skipped
+ *  rather than failing the whole list, same as the server's own handling. */
+export async function nativeListProjects(): Promise<LocalProjectSummary[]> {
+  const summaries: LocalProjectSummary[] = [];
+  let entries;
+  try {
+    ({ files: entries } = await Filesystem.readdir({ path: ROOT, directory: DIRECTORY }));
+  } catch {
+    return summaries; // ROOT doesn't exist yet — no projects created on this device yet.
+  }
+  for (const entry of entries) {
+    if (entry.type !== "directory") continue;
+    try {
+      const { data } = await Filesystem.readFile({ path: projectFile(entry.name), directory: DIRECTORY, encoding: Encoding.UTF8 });
+      summaries.push(summarizeLocal(deserializeProject(typeof data === "string" ? data : await data.text())));
+    } catch {
+      // Skip — see this function's own doc comment.
+    }
+  }
+  summaries.sort((a, b) => b.updatedAt - a.updatedAt);
+  return summaries;
+}
+
+export async function nativeCreateProject(
+  name: string,
+  preset: { width: number; height: number; fps: number } = SHORT_PRESET
+): Promise<Project> {
+  const bpProjectId = newId("proj");
+  const project = createProject(bpProjectId, name, preset);
+  await Filesystem.mkdir({ path: projectDir(bpProjectId), directory: DIRECTORY, recursive: true }).catch(() => {});
+  await Filesystem.writeFile({ path: projectFile(bpProjectId), directory: DIRECTORY, data: serializeProject(project), encoding: Encoding.UTF8 });
+  return project;
+}
+
+export async function nativeDeleteProject(projectId: string): Promise<void> {
+  await Filesystem.rmdir({ path: projectDir(projectId), directory: DIRECTORY, recursive: true }).catch(() => {
+    /* already gone */
+  });
+  mediaBaseUriCache.delete(projectId);
+}
+
+const TEMPLATES_ORIGIN = "https://vcut.io";
+
+async function centralAuthHeaders(): Promise<HeadersInit> {
+  const token = await getAccessToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/** Native's own counterpart of `client.ts`'s `loadTemplateForDraft` — templates only ever live on the
+ *  live vcut.io deployment (see `studios/vcut/app/api/vcut/_lib/localOnly.ts`'s own doc comment), so
+ *  this is a plain central fetch, not a local read; there is no on-device copy of a template to open. */
+export async function nativeLoadTemplateForDraft(templateId: string): Promise<{ name: string; project: TemplateProjectData }> {
+  const response = await fetch(`${TEMPLATES_ORIGIN}/api/vcut/templates/${encodeURIComponent(templateId)}/project`, {
+    headers: await centralAuthHeaders(),
+  });
+  if (!response.ok) throw new ApiRequestError("Couldn't open that template", response.status);
+  return (await response.json()) as { name: string; project: TemplateProjectData };
+}
+
+/** Native's own counterpart of `client.ts`'s `createProjectFromTemplate` — the hosted server's own
+ *  version (`project/route.ts`'s POST) builds the project via `buildProjectFromTemplate` and then
+ *  copies each bundled-audio asset's real file server-side (`resolveTemplateBundledAudio`, filesystem
+ *  to filesystem). Takes the ALREADY-BUILT draft `Project` (`editorStore.ts`'s `loadTemplateDraft`
+ *  already ran `buildProjectFromTemplate` once, in memory, to show the fill/preview screens) rather than
+ *  re-fetching the template and rebuilding it a second time — just needs a real `bpProjectId` in place
+ *  of the draft's placeholder one, and its bundled-audio assets resolved into real local files (a
+ *  download from the one new route built for exactly this, `templates/[id]/audio/[file]/route.ts`, into
+ *  this brand-new project's own `mediaDir`, in place of the server's filesystem-to-filesystem copy).
+ *
+ *  A kept STICKER (`asset.animation` set alongside `templateBundledAudio` — see `resolveTemplateBundled
+ *  Audio`'s own doc comment on why that's a separate branch server-side) is left unresolved here rather
+ *  than mirrored — a narrower, deliberate scope cut: real, but rare (an author has to have explicitly
+ *  chosen to keep a sticker fixed rather than let it become a slot), and mirroring
+ *  `copyTemplateStickerToLibrary`'s own account-wide-library semantics has no local equivalent worth
+ *  building for this one case yet. Its clip still plays back FROM the template's own now-inaccessible
+ *  bundled storage (same silent-placeholder tolerance `nativeStorage.ts`'s own top doc comment already
+ *  documents for a native import with no generated thumbnail) rather than crashing the whole flow. */
+export async function nativeCreateProjectFromTemplate(templateId: string, draftProject: Project): Promise<{ projectId: string; name: string }> {
+  const bpProjectId = newId("proj");
+  const project: Project = { ...draftProject, bpProjectId };
+
+  await Filesystem.mkdir({ path: mediaDir(bpProjectId), directory: DIRECTORY, recursive: true }).catch(() => {});
+  const headers = await centralAuthHeaders();
+  project.assets = await Promise.all(
+    project.assets.map(async (asset): Promise<Asset> => {
+      if (!asset.templateBundledAudio || asset.animation || !asset.relPath) return asset;
+      try {
+        const response = await fetch(
+          `${TEMPLATES_ORIGIN}/api/vcut/templates/${encodeURIComponent(templateId)}/audio/${encodeURIComponent(asset.relPath)}`,
+          { headers }
+        );
+        if (!response.ok) return asset; // best-effort — see this function's own doc comment
+        const blob = await response.blob();
+        await Filesystem.writeFile({ path: `${mediaDir(bpProjectId)}/${asset.relPath}`, directory: DIRECTORY, data: await readFileAsBase64(blob) });
+        const { templateBundledAudio: _templateBundledAudio, ...resolved } = asset;
+        return resolved;
+      } catch {
+        return asset;
+      }
+    })
+  );
+
+  await Filesystem.mkdir({ path: projectDir(bpProjectId), directory: DIRECTORY, recursive: true }).catch(() => {});
+  await Filesystem.writeFile({ path: projectFile(bpProjectId), directory: DIRECTORY, data: serializeProject(project), encoding: Encoding.UTF8 });
+  return { projectId: bpProjectId, name: project.name };
+}
+
+/** Total bytes under `vcut-projects/` — what the "Me" tab's storage row shows, in place of the hosted
+ *  account's own server-computed `/api/vcut/media/library` usage figure (there's no account-wide
+ *  library here, just this device's project files). `Filesystem.readdir`'s own `FileInfo` already
+ *  carries each entry's `size`, so no separate `Filesystem.stat` call per file is needed — just walk
+ *  every directory level and sum. */
+export async function nativeStorageUsage(): Promise<number> {
+  async function walk(path: string): Promise<number> {
+    let entries;
+    try {
+      ({ files: entries } = await Filesystem.readdir({ path, directory: DIRECTORY }));
+    } catch {
+      return 0;
+    }
+    let total = 0;
+    for (const entry of entries) {
+      if (entry.type === "directory") total += await walk(`${path}/${entry.name}`);
+      else total += entry.size ?? 0;
+    }
+    return total;
+  }
+  return walk(ROOT);
 }

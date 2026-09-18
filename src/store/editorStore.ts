@@ -898,7 +898,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const { templateDraft, project } = get();
       if (!templateDraft || !project) throw new Error("No template to start a project from");
       // The draft's own name, so a rename made before picking anything carries over.
-      const created = await api.createProjectFromTemplate(templateDraft.templateId, project.name);
+      const created = await api.createProjectFromTemplate(templateDraft.templateId, project.name, project);
       set({ pendingTemplatePick: pick ? { ...pick, projectId: created.projectId } : null });
       return created;
     },

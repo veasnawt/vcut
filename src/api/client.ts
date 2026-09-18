@@ -5,7 +5,15 @@ import type { TemplateProjectData } from "../project/template.ts";
 import type { StickerProvider, StickerType } from "../project/stickers.ts";
 import type { Asset, CustomFontAsset, CustomSfxAsset, LutAsset, Project } from "../project/types.ts";
 import { nativeCancelExport, nativeExportAvailable, nativeStartExport, nativeWatchExport } from "./nativeExport.ts";
-import { nativeDeleteMedia, nativeImportMedia, nativeLoadProject, nativeMediaUrl, nativeSaveProject } from "./nativeStorage.ts";
+import {
+  nativeCreateProjectFromTemplate,
+  nativeDeleteMedia,
+  nativeImportMedia,
+  nativeLoadProject,
+  nativeLoadTemplateForDraft,
+  nativeMediaUrl,
+  nativeSaveProject,
+} from "./nativeStorage.ts";
 import { nativeExtractCaptionAudio } from "./nativeCaptions.ts";
 
 /** Browser-side client for VCut's server routes.
@@ -231,14 +239,23 @@ export async function loadProject(projectId: string, projectName?: string): Prom
 /** A template's own structure and name, for opening it as an unsaved draft — see
  *  `templates/[id]/project/route.ts` and `EditorState.loadTemplateDraft`. */
 export async function loadTemplateForDraft(templateId: string): Promise<{ name: string; project: TemplateProjectData }> {
+  if (isNative) return nativeLoadTemplateForDraft(templateId);
   const response = await apiFetch(`${BASE}/templates/${encodeURIComponent(templateId)}/project`, { cache: "no-store" });
   return unwrap<{ name: string; project: TemplateProjectData }>(response);
 }
 
 /** Creates a real project from a template — the server builds it, and copies the template's bundled
  *  audio into the owner's library (`project/route.ts`'s POST). Only ever called once media is actually
- *  picked for a template draft (`EditorState.commitTemplateDraft`). */
-export async function createProjectFromTemplate(templateId: string, name: string): Promise<{ projectId: string; name: string }> {
+ *  picked for a template draft (`EditorState.commitTemplateDraft`). `draftProject` is only read on
+ *  native (`commitTemplateDraft` already has the in-memory draft `loadTemplateDraft` built — see
+ *  `nativeCreateProjectFromTemplate`'s own doc comment for why native reuses it instead of asking the
+ *  server to rebuild the same thing); the hosted/desktop branch below ignores it and has the server
+ *  rebuild from the template itself, same as always. */
+export async function createProjectFromTemplate(templateId: string, name: string, draftProject?: Project): Promise<{ projectId: string; name: string }> {
+  if (isNative) {
+    if (!draftProject) throw new Error("No template draft to start a project from");
+    return nativeCreateProjectFromTemplate(templateId, draftProject);
+  }
   const response = await apiFetch(`${BASE}/project`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -807,9 +824,21 @@ export async function deleteLibraryMedia(id: string, force = false): Promise<Lib
  *
  *  Routed through `sfx/[file]/route.ts` (`_lib/sfx.ts`'s `sfxAssetPath`), same as every other bundled
  *  asset this app serves via its own API route rather than Next's `public/` static folder — there's
- *  no `studios/vcut/public/sfx/` directory for a bare `/sfx/${file}` to ever resolve against. */
+ *  no `studios/vcut/public/sfx/` directory for a bare `/sfx/${file}` to ever resolve against.
+ *
+ *  Absolute (`https://vcut.io`) when `!HOSTED`, same as `centralFetch`'s Stock/Stickers/AI routing —
+ *  a real, confirmed gap, not a theoretical one: unlike THOSE routes, this one was never given the
+ *  same treatment, so it stayed a bare relative `${BASE}/sfx/${file}`, which resolves against
+ *  `capacitor://localhost` on the native shell — there is no server there AT ALL to answer it, so
+ *  every SFX preview, add-to-timeline, and playback of an already-placed bundled SFX clip
+ *  (`Preview.tsx`'s `mediaUrlFor`, which calls this same function) failed outright on Android/iOS.
+ *  The route itself needs no auth (`publicAssetRoute`, identical content for every user), so — unlike
+ *  `centralFetch` — this needs no bearer token, only the absolute URL; `sfx/[file]/route.ts` was given
+ *  its own `Access-Control-Allow-Origin: *` alongside this fix so a native `fetch().blob()` (not just
+ *  an `<audio src>`, which never needed CORS to begin with) can read the response cross-origin too. */
 export function sfxAssetUrl(file: string): string {
-  return `${BASE}/sfx/${file}`;
+  const path = `${BASE}/sfx/${file}`;
+  return HOSTED ? path : `https://vcut.io${path}`;
 }
 
 /** URL for a bundled `SFX_REGISTRY` entry's pre-generated waveform PNG (`sfxMetadata.generated.ts`'s
@@ -817,7 +846,7 @@ export function sfxAssetUrl(file: string): string {
  *  `sfxAssetUrl` uses, since the waveform is just a plain sibling file in that same directory (see that
  *  generated file's own doc comment for why there's no separate directory/route for it). */
 export function sfxWaveformUrl(file: string): string {
-  return `${BASE}/sfx/${file}`;
+  return sfxAssetUrl(file);
 }
 
 /** URL for one entry in the project's own "My Sounds" library (`project.customSfx`) — reuses
