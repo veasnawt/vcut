@@ -162,7 +162,17 @@ export async function unwrap<T>(response: Response): Promise<T> {
   } catch {
     /* keep the status-based message */
   }
-  if (response.status === 401) sessionExpiredHandler?.();
+  // `getCachedAccessToken()`, not just "was this a 401" — a 401 on a background call (a billing-status
+  // check, a font-availability probe) is the ORDINARY, expected response for someone who's simply never
+  // signed in at all, not a session that died. Firing the same "Session expired — Sign in" banner
+  // (`SaveStatus`'s own header button) for that case was a real, reported bug: it told a visitor who'd
+  // never touched sign-in that THEIR session had expired, which reads as confusing/alarming ("expired"
+  // implies one existed) rather than the accurate, much calmer "sign in to do this." Only a 401 that
+  // followed a REAL cached token (i.e., a session genuinely existed a moment ago and got rejected) is a
+  // true expiry. `getCachedAccessToken` is a synchronous best-effort read (see its own doc comment) —
+  // close enough to "was a token attached to THIS request" without threading that fact through every one
+  // of `unwrap`'s ~25 call sites individually.
+  if (response.status === 401 && getCachedAccessToken()) sessionExpiredHandler?.();
   throw new ApiRequestError(message, response.status, code);
 }
 
@@ -188,8 +198,11 @@ function uploadFormWithProgress<T>(url: string, form: FormData, onProgress?: (fr
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
     void (async () => {
+      // Hoisted out of the `if` block below (not `const token` scoped inside it) so `xhr.onload`,
+      // defined later in this same closure, can read it too — see that handler's own comment on why.
+      let token: string | null = null;
       if (HOSTED) {
-        const token = await getAccessToken();
+        token = await getAccessToken();
         if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
       }
       xhr.upload.onprogress = (event) => {
@@ -214,7 +227,10 @@ function uploadFormWithProgress<T>(url: string, form: FormData, onProgress?: (fr
         } catch {
           /* keep the status-based message */
         }
-        if (xhr.status === 401) sessionExpiredHandler?.();
+        // `token` (this request's own attached credential, from the closure above), not just "was
+        // this a 401" — same reasoning as `unwrap`'s identical fix: a 401 with no token ever attached
+        // means this upload was simply never authenticated, not a session that died mid-upload.
+        if (xhr.status === 401 && token) sessionExpiredHandler?.();
         reject(new ApiRequestError(message, xhr.status, code));
       };
       xhr.send(form);
