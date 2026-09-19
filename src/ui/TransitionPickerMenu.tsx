@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { Close } from "@veasnawt/vicons";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import type { TransitionType } from "../project/types.ts";
-import { TRANSITION_TYPE_LABEL, TRANSITION_TYPE_OPTIONS, VIDEO_ONLY_TRANSITION_TYPES } from "../timeline/transitions.ts";
+import { TRANSITION_TYPE_LABEL, TRANSITION_TYPE_OPTIONS } from "../timeline/transitions.ts";
 import { TransitionPreviewTile } from "./TransitionPreviewTile.tsx";
 
 const MENU_WIDTH = 320;
@@ -46,11 +46,16 @@ export function TransitionPickerMenu({
    *  crossfade anyway — the same "duration only, no style choice" treatment the Inspector's own
    *  Transitions tab already gives an audio clip. */
   isAudioTrack: boolean;
-  /** Glitch/water-ripple/zoom-blur/whip-pan are video/image-only — see `TransitionType`'s own doc
-   *  comment on why (export has no equivalent corruption/blur pre-pass for the `drawtext`-based
-   *  text-blend filter graph, so offering them here would let the canvas preview show something
-   *  export can't reproduce). Narrows the grid to exclude `VIDEO_ONLY_TRANSITION_TYPES`, unlike
-   *  `isAudioTrack` above which narrows to one tile total. */
+  /** Every `TransitionType` renders identically for a text clip — a plain fade — same reasoning
+   *  `isAudioTrack` above already documents for audio, just for a different underlying cause:
+   *  `drawtext` has no per-type geometry primitive the way video's `xfade` filter does (a wipe/slide/
+   *  circle needs masking two SEPARATELY rendered buffers, not a single call's own parameters), so
+   *  `buildTextFadeParams` (export) always produces a plain alpha ramp regardless of which type the
+   *  clip's `transitionIn`/`transitionOut` actually names. Offering the full grid here used to let the
+   *  canvas preview (and the tile thumbnails themselves) show real wipe/slide/circle motion export
+   *  could never reproduce — confirmed as a real, reported mismatch (picked "Wipe Left," export showed
+   *  a plain fade with no directional reveal at any point), not a theoretical gap. Narrows the grid to
+   *  one tile total, exactly like `isAudioTrack`. */
   isTextTrack: boolean;
   activeIn: TransitionType | null;
   activeOut: TransitionType | null;
@@ -98,11 +103,7 @@ export function TransitionPickerMenu({
   // edited INTO the successor — see `TransitionPreviewTile.tsx`'s own prop doc comments.
   const outgoingThumbnailUrl = mode === "in" ? predecessorThumbnailUrl : selectedThumbnailUrl;
   const incomingThumbnailUrl = mode === "in" ? selectedThumbnailUrl : successorThumbnailUrl;
-  const gridOptions = isAudioTrack
-    ? (["crossfade"] as TransitionType[])
-    : isTextTrack
-      ? TRANSITION_TYPE_OPTIONS.filter((option) => !VIDEO_ONLY_TRANSITION_TYPES.includes(option))
-      : TRANSITION_TYPE_OPTIONS;
+  const gridOptions = isAudioTrack || isTextTrack ? (["crossfade"] as TransitionType[]) : TRANSITION_TYPE_OPTIONS;
 
   return createPortal(
     <div
@@ -129,6 +130,11 @@ export function TransitionPickerMenu({
       {isAudioTrack && (
         <p className="mb-2 px-1 text-[10px] leading-snug text-white/40">
           {t("Audio transitions are always a crossfade — there's no separate visual style to pick.")}
+        </p>
+      )}
+      {isTextTrack && (
+        <p className="mb-2 px-1 text-[10px] leading-snug text-white/40">
+          {t("Text transitions are always a fade — there's no separate visual style to pick.")}
         </p>
       )}
       <div className="grid grid-cols-3 gap-1.5">
