@@ -20,6 +20,7 @@ import { hasTextStyleKeyframes, resolveTextStyle, upsertKeyframe } from "../time
 import { clipAtTime } from "../timeline/queries.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { AlignmentGuideOverlay } from "./AlignmentGuideOverlay.tsx";
+import { usePinchToScale } from "./usePinchToScale.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 
 /** Same value, same reasoning as `TransformHandles`' own constant — see there. */
@@ -180,6 +181,14 @@ export function TextTransformHandles({
   // boolean, so a selection change to a DIFFERENT text clip while mid-edit is detectable (see the
   // effect below) rather than silently continuing to edit the wrong one.
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
+  // Read by `usePinchToScale`'s `isEligible` below, which — like `resolvedRef`/`projectRef`/
+  // `playheadRef` — is only ever CALLED from a closure frozen at whatever render first set up that
+  // hook's own gesture-recognition effect (it subscribes once per `canvas` identity, not once per
+  // render). Reading the raw `editingAssetId` state variable there would freeze it at that same first
+  // render's value (almost always `null`) forever, silently defeating the "no pinch while editing"
+  // guard the very first time editing actually started.
+  const editingAssetIdRef = useRef(editingAssetId);
+  editingAssetIdRef.current = editingAssetId;
   const [editText, setEditText] = useState("");
   // Set right before an Escape-triggered exit, so the `onBlur` that follows (removing the textarea
   // from the DOM mid-focus fires one) knows to discard rather than commit — Escape means "cancel", not
@@ -251,6 +260,17 @@ export function TextTransformHandles({
 
   const isGroupSelection = selectedClipIds.length > 1;
 
+  // Same staleness fix as `TransformHandles`' own identical `resolvedRef` — `usePinchToScale`'s
+  // gesture-recognition effect attaches once per `canvas` identity, not once per render, so its
+  // callbacks (below) need a way to always read the CURRENT `resolved`/`project`/`playhead` instead of
+  // whatever was in scope back when the effect happened to be set up.
+  const resolvedRef = useRef(resolved);
+  resolvedRef.current = resolved;
+  const projectRef = useRef(project);
+  projectRef.current = project;
+  const playheadRef = useRef(playhead);
+  playheadRef.current = playhead;
+
   // Selection moved to a different clip (or away entirely) while mid-edit — exit without committing,
   // the same "leaving cancels" reasoning Escape uses, rather than silently saving to the WRONG asset
   // once the user's attention (and the visible textarea) has already moved on.
@@ -264,6 +284,63 @@ export function TextTransformHandles({
     useEditorStore.getState().setInlineTextEditAssetId(editingAssetId);
   }, [editingAssetId]);
   useEffect(() => () => useEditorStore.getState().setInlineTextEditAssetId(null), []);
+
+  // Hoisted above the early return below (`usePinchToScale` is a hook — an unconditional call, same
+  // as every other hook in this component, is a hard requirement, not a style preference: calling it
+  // AFTER an early `return null` means it simply never runs on a render where nothing's resolved,
+  // which is exactly the "different number of hooks between renders" crash React's own Rules of Hooks
+  // exist to catch). Reused by `beginDrag`'s own `onUp` below too, so the pinch gesture's commit and a
+  // corner-drag's commit share the exact same keyframe-aware logic rather than a second, easy-to-drift
+  // copy — see this function's own doc comment for why the keyframe check matters. Reads `project`/
+  // `playhead` off the refs above (not the component's own closed-over values) so it stays correct
+  // whether it's called synchronously from a render-fresh JSX handler (drag) or from a window-level
+  // listener that could fire well after the render that created it (pinch).
+  function commandForTextStyle(clipId: string, assetId: string, content: string, nextStyle: TextStyle, ownTimelineStart: number, fps: number): Command {
+    const found = projectRef.current ? findClip(projectRef.current, clipId) : undefined;
+    if (found && hasTextStyleKeyframes(found.clip)) {
+      const elapsed = playheadRef.current - ownTimelineStart;
+      const next = upsertKeyframe(found.clip.textStyleKeyframes ?? [], elapsed, nextStyle, fps);
+      return new SetClipTextStyleKeyframesCommand(clipId, next);
+    }
+    return new SetTextCommand(assetId, content, nextStyle);
+  }
+
+  // Two-finger pinch resizes the selected text clip directly on the canvas — the same gesture
+  // `TransformHandles` already gives video/image clips, sharing its gesture-recognition
+  // (`usePinchToScale`, touch-only — see that hook's own doc comment). Text has no separate `scale`
+  // field (`resize` via corner-drag, below, multiplies `fontSize` directly), so the pinch does the same:
+  // scales `fontSize`, clamped to the identical `MIN_FONT_SIZE`/`MAX_FONT_SIZE` bounds. Disabled while
+  // inline-editing (`isEditing`) — the corner/rotate handles are hidden then too, for the same reason:
+  // the textarea owns interaction at that point.
+  const pinchStyleRef = useRef<TextStyle | null>(null);
+  usePinchToScale(canvas, {
+    isEligible: () => !dragRef.current && !!resolvedRef.current && editingAssetIdRef.current !== resolvedRef.current?.assetId,
+    onStart: () => {
+      pinchStyleRef.current = resolvedRef.current!.savedStyle;
+    },
+    onScale: (factor) => {
+      const current = pinchStyleRef.current;
+      if (!current) return;
+      const fontSize = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, current.fontSize * factor));
+      const next = { ...current, fontSize };
+      pinchStyleRef.current = next;
+      previewRef.current = next;
+      setPreview(next);
+      const r = resolvedRef.current;
+      useEditorStore.getState().setLivePreviewOverrides(r ? [{ clipId: r.clipId, textStyle: next }] : []);
+    },
+    onEnd: () => {
+      const final = pinchStyleRef.current;
+      pinchStyleRef.current = null;
+      if (!final) return;
+      previewRef.current = null;
+      setPreview(null);
+      useEditorStore.getState().setLivePreviewOverrides([]);
+      const r = resolvedRef.current;
+      if (!r) return;
+      run(commandForTextStyle(r.clipId, r.assetId, r.content, final, r.timelineStart, r.sequence.fps));
+    },
+  });
 
   if (!resolved || !canvas) return null;
   const context = canvas.getContext("2d");
@@ -452,21 +529,6 @@ export function TextTransformHandles({
       setGuides([]);
       if (!drag?.moved || !final) return;
 
-      // Each clip must respect ITS OWN keyframe state — `resolveTextStyle` only reads the asset's
-      // static `textStyle` when the clip has NO keyframes, so a bare SetTextCommand on a keyframed
-      // clip is silently discarded by playback exactly like `TransformHandles`' identical bug (see its
-      // own `commandForTransform` comment) — the canvas shows the move live during the drag
-      // (`livePreviewOverrides` bypasses this entirely) but snaps right back the instant you release.
-      function commandForTextStyle(clipId: string, assetId: string, content: string, nextStyle: TextStyle, ownTimelineStart: number): Command {
-        const found = project ? findClip(project, clipId) : undefined;
-        if (found && hasTextStyleKeyframes(found.clip)) {
-          const elapsed = playhead - ownTimelineStart;
-          const next = upsertKeyframe(found.clip.textStyleKeyframes ?? [], elapsed, nextStyle, resolved!.sequence.fps);
-          return new SetClipTextStyleKeyframesCommand(clipId, next);
-        }
-        return new SetTextCommand(assetId, content, nextStyle);
-      }
-
       // Same group-move mechanism as `TransformHandles` — see its own comment on `onUp` for why this
       // reuses the exact same `computeGroupMoveOverrides` call `onMove` already used to live-preview
       // the group, so what was shown live and what commits can never disagree.
@@ -474,19 +536,20 @@ export function TextTransformHandles({
         const deltaX = final.offsetX - drag.origin.offsetX;
         const deltaY = final.offsetY - drag.origin.offsetY;
         const groupOverrides = computeGroupMoveOverrides(project, selectedClipIds, resolved!.clipId, deltaX, deltaY);
-        const commands: Command[] = [commandForTextStyle(resolved!.clipId, drag.assetId, drag.content, final, resolved!.timelineStart)];
+        const commands: Command[] = [commandForTextStyle(resolved!.clipId, drag.assetId, drag.content, final, resolved!.timelineStart, resolved!.sequence.fps)];
         for (const o of groupOverrides) {
           if (o.textStyle) {
             const found = findClip(project, o.clipId);
             const asset = found && findAsset(project, found.clip.assetId);
-            if (asset && found) commands.push(commandForTextStyle(o.clipId, asset.id, asset.textContent ?? "", o.textStyle, found.clip.timelineStart));
+            if (asset && found)
+              commands.push(commandForTextStyle(o.clipId, asset.id, asset.textContent ?? "", o.textStyle, found.clip.timelineStart, resolved!.sequence.fps));
           } else if (o.transform) {
             commands.push(new SetClipTransformCommand(o.clipId, o.transform));
           }
         }
         run(commands.length > 1 ? new BatchCommand("Move Clips", commands) : commands[0]);
       } else {
-        run(commandForTextStyle(resolved!.clipId, drag.assetId, drag.content, final, resolved!.timelineStart));
+        run(commandForTextStyle(resolved!.clipId, drag.assetId, drag.content, final, resolved!.timelineStart, resolved!.sequence.fps));
       }
     }
 

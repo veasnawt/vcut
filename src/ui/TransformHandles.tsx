@@ -16,6 +16,7 @@ import { hasTransformKeyframes, resolveClipTransform, upsertKeyframe } from "../
 import { clipAtTime } from "../timeline/queries.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { AlignmentGuideOverlay } from "./AlignmentGuideOverlay.tsx";
+import { usePinchToScale } from "./usePinchToScale.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 
 /** How close (in on-screen CSS pixels, so it feels the same at any zoom) a dragged clip's edge/center
@@ -213,96 +214,38 @@ export function TransformHandles({
   // mobile video editor uses for "make this bigger/smaller", alongside (not replacing) the
   // corner-handle drag, which stays the way to resize anchored on a specific corner. Scales around the
   // clip's own center (offset unchanged) — the same "no anchor" fallback `beginDrag`'s own scale mode
-  // already falls back to, so this is an existing, established transform shape, not a new one.
-  //
-  // Listens on `window`, not the canvas: the move/corner/rotate handles below are `position: fixed`
-  // siblings of the canvas (not DOM descendants of it — see their own JSX comments on why), each with
-  // its own `pointer-events-auto` hit area stacked at `zIndex: 40`, ABOVE the canvas. A two-finger
-  // touch landing on the move-handle (which covers the clip's full box — the common case, since a
-  // pinch naturally starts centered on the clip you're resizing) would hit that div, not the canvas
-  // underneath — confirmed live: a canvas-only listener never saw the touch at all, and the move
-  // handle's own touchstart quietly turned the gesture into a single-finger move drag instead
-  // (confirmed via a real two-touch simulation: the clip visibly slid left, exactly like a single
-  // stray finger dragging it, instead of scaling). `touchstart` is registered in the CAPTURE phase
-  // specifically so it runs BEFORE any handle's own bubble-phase React `onTouchStart` (React 17+
-  // delegates its synthetic handlers to the root in the bubble phase — a capture listener anywhere
-  // above always wins the race) — on a genuine 2-touch start with a clip selected, `stopPropagation()`
-  // keeps that event from ever reaching the handle at all, so `beginDrag` never starts a move/scale/
-  // rotate drag out from under the pinch. `touchmove`/`touchend` don't need capture: by then `dragRef`
-  // is guaranteed still null (nothing got the chance to claim it), so there's nothing left to race.
-  useEffect(() => {
-    if (!canvas) return;
-    let lastDistance = 0;
-    let pinchTransform: ClipTransform | null = null;
-
-    function distance(touches: TouchList) {
-      const [a, b] = [touches[0], touches[1]];
-      return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-    }
-
-    // Window-scoped listeners have to opt themselves OUT of anything outside the preview — without
-    // this, a pinch on the TIMELINE (its own, separate pinch-zoom handler) while a clip happens to be
-    // selected would get `stopPropagation()`-ed by this capture listener before Timeline's own bubble-
-    // phase one ever saw it, silently breaking timeline pinch-zoom any time a clip is selected. The
-    // canvas's own rect (not the handles' possibly-larger/clamped screen extents) is the deliberately
-    // simple, good-enough "is this pinch over the preview" test.
-    function withinCanvas(touches: TouchList) {
-      const rect = canvas!.getBoundingClientRect();
-      const midX = (touches[0].clientX + touches[1].clientX) / 2;
-      const midY = (touches[0].clientY + touches[1].clientY) / 2;
-      return midX >= rect.left && midX <= rect.right && midY >= rect.top && midY <= rect.bottom;
-    }
-
-    // A self-contained copy of `updatePreview` that reads `resolvedRef.current` instead of the
-    // (potentially stale, closed-over-at-mount) `resolved` — see `resolvedRef`'s own comment above.
-    function updatePinchPreview(next: ClipTransform | null) {
+  // already falls back to, so this is an existing, established transform shape, not a new one. The
+  // gesture-recognition itself (touch-only, window-scoped, capture-phase — see its own doc comment for
+  // the full "why") lives in `usePinchToScale`, shared with `TextTransformHandles`.
+  const pinchTransformRef = useRef<ClipTransform | null>(null);
+  usePinchToScale(canvas, {
+    isEligible: () => !dragRef.current && !!resolvedRef.current,
+    onStart: () => {
+      pinchTransformRef.current = resolvedRef.current!.savedTransform;
+    },
+    onScale: (factor) => {
+      const current = pinchTransformRef.current;
+      if (!current) return;
+      const next = { ...current, scale: current.scale * factor };
+      pinchTransformRef.current = next;
       previewRef.current = next;
       setPreview(next);
       const r = resolvedRef.current;
-      useEditorStore.getState().setLivePreviewOverrides(next && r ? [{ clipId: r.clipId, transform: next }] : []);
-    }
-
-    function onTouchStart(e: TouchEvent) {
-      // Bows out if a single-pointer drag (move/corner-scale/rotate) somehow already claimed
-      // `dragRef`, and if there's no single video/image clip selected to scale in the first place —
-      // in either case, let the event proceed untouched to whatever would normally handle it.
-      if (e.touches.length !== 2 || dragRef.current || !resolvedRef.current || !withinCanvas(e.touches)) return;
-      e.stopPropagation();
-      lastDistance = distance(e.touches);
-      pinchTransform = resolvedRef.current.savedTransform;
-    }
-    function onTouchMove(e: TouchEvent) {
-      if (e.touches.length !== 2 || lastDistance === 0 || !pinchTransform) return;
-      e.preventDefault();
-      const d = distance(e.touches);
-      pinchTransform = { ...pinchTransform, scale: pinchTransform.scale * (d / lastDistance) };
-      lastDistance = d;
-      updatePinchPreview(pinchTransform);
-    }
-    function onTouchEnd(e: TouchEvent) {
-      if (e.touches.length >= 2) return;
-      lastDistance = 0;
-      const final = pinchTransform;
-      pinchTransform = null;
+      useEditorStore.getState().setLivePreviewOverrides(r ? [{ clipId: r.clipId, transform: next }] : []);
+    },
+    onEnd: () => {
+      const final = pinchTransformRef.current;
+      pinchTransformRef.current = null;
       if (!final) return;
-      updatePinchPreview(null);
+      previewRef.current = null;
+      setPreview(null);
+      useEditorStore.getState().setLivePreviewOverrides([]);
       const r = resolvedRef.current;
       if (!r) return;
       const store = useEditorStore.getState();
       commitSingleTransform(r, final, store.project, store.playhead, store.run);
-    }
-
-    window.addEventListener("touchstart", onTouchStart, { capture: true, passive: true });
-    window.addEventListener("touchmove", onTouchMove, { passive: false });
-    window.addEventListener("touchend", onTouchEnd, { passive: true });
-    window.addEventListener("touchcancel", onTouchEnd, { passive: true });
-    return () => {
-      window.removeEventListener("touchstart", onTouchStart, { capture: true });
-      window.removeEventListener("touchmove", onTouchMove);
-      window.removeEventListener("touchend", onTouchEnd);
-      window.removeEventListener("touchcancel", onTouchEnd);
-    };
-  }, [canvas]);
+    },
+  });
 
   if (!resolved || !canvas) return null;
 
