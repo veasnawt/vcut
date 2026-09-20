@@ -2,6 +2,19 @@
 
 Updated: 2026-09-21 (Asia/Bangkok).
 
+## Test Account & Password Sign-in Flow — 2026-09-21
+
+- **Problem:** Needed a dedicated test account (`test@vcut.io`) on `vcut.io`. Because `@vcut.io` has no accessible mailbox to click magic links, entering this email needed to bypass the OTP email dispatch and instead prompt for a password.
+- **Backend Setup:**
+  - Configured user `test@vcut.io` in Supabase (`fd01e785-fb53-48e8-800e-a12d79492c9c`) with password `VCutTest#2026` and `email_confirm: true`.
+  - Configured `profiles` row with Pro plan, 50 credits, and display name "VCut Tester".
+- **Web & Desktop (`studios/vcut/app/login/page.tsx`):**
+  - Added `isPasswordAccount(email)` check. When typing `test@vcut.io` (or `@vcut.io`) and clicking "Send sign-in link", the form transitions to password mode with show/hide toggle.
+  - Submits via `supabase.auth.signInWithPassword()`. Validated with incorrect and correct passwords; redirects to `/projects` (or desktop `vcut://` handoff if `?desktop=1`).
+- **Mobile (`packages/vcut/src/ui/MobileSignInDialog.tsx`):**
+  - Added `"password"` phase. Typing `test@vcut.io` and pressing "Send code" switches to the password input, verifying with `signInWithPassword()`.
+- **Deployed:** Railway production deployment `c33cf451-5c54-43ff-b1f2-d80b6f955920` (SUCCESS). Tested and approved by user.
+
 ## Native Desktop & Mobile Builds — 2026-09-21 (Tested & Approved)
 
 - **Desktop (Windows)**:

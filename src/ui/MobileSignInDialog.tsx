@@ -6,7 +6,7 @@ import { getSupabaseBrowserClient } from "@veasnawt/auth";
 import { NATIVE_SIGN_IN_URL, isNativeBrowserSignInAvailable, openNativeBrowserSignIn } from "../api/nativeAuth.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 
-type Phase = "email" | "code" | "browser";
+type Phase = "email" | "code" | "browser" | "password";
 
 /** Mobile's own sign-in flow. Email runs in-app — Capacitor's WebView can run Supabase's JS client
  *  directly — with a numeric emailed code typed in by hand. Whether the email carries a code, a link or
@@ -21,6 +21,7 @@ export function MobileSignInDialog({ onClose }: { onClose: () => void }) {
   const t = useTranslation();
   const [phase, setPhase] = useState<Phase>("email");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +43,11 @@ export function MobileSignInDialog({ onClose }: { onClose: () => void }) {
     const supabase = getSupabaseBrowserClient();
     const trimmed = email.trim();
     if (!supabase || !trimmed) return;
+    if (trimmed.toLowerCase() === "test@vcut.io" || trimmed.toLowerCase().endsWith("@vcut.io")) {
+      setPhase("password");
+      setError(null);
+      return;
+    }
     setBusy(true);
     setError(null);
     const { error: sendError } = await supabase.auth.signInWithOtp({
@@ -54,6 +60,24 @@ export function MobileSignInDialog({ onClose }: { onClose: () => void }) {
       return;
     }
     setPhase("code");
+  }
+
+  async function handlePasswordSignIn() {
+    const supabase = getSupabaseBrowserClient();
+    const trimmed = email.trim();
+    if (!supabase || !trimmed || !password) return;
+    setBusy(true);
+    setError(null);
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email: trimmed,
+      password,
+    });
+    setBusy(false);
+    if (signInError) {
+      setError(signInError.message);
+      return;
+    }
+    onClose();
   }
 
   async function verifyCode() {
@@ -137,6 +161,52 @@ export function MobileSignInDialog({ onClose }: { onClose: () => void }) {
                 className="rounded-md bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-sky-400 disabled:cursor-default disabled:opacity-50"
               >
                 {busy ? t("Sending…") : t("Send code")}
+              </button>
+            </div>
+          </>
+        ) : phase === "password" ? (
+          <>
+            <div className="mt-2 flex items-center justify-between rounded bg-white/5 px-2.5 py-1.5 text-xs text-white/70">
+              <span className="truncate font-medium text-white">{email}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setPhase("email");
+                  setPassword("");
+                  setError(null);
+                }}
+                className="ml-2 font-medium text-sky-400 hover:text-sky-300"
+              >
+                {t("Change")}
+              </button>
+            </div>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !busy && void handlePasswordSignIn()}
+              placeholder="Password"
+              autoFocus
+              className="mt-3 w-full rounded bg-white/5 px-2.5 py-2 text-[16px] text-white placeholder:text-white/30 outline-none focus:ring-1 focus:ring-sky-400/60"
+            />
+            {error && <p className="mt-2 text-xs text-amber-200/80">{error}</p>}
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={() => {
+                  setPhase("email");
+                  setPassword("");
+                  setError(null);
+                }}
+                className="rounded-md px-3 py-1.5 text-xs font-medium text-white/60 transition hover:bg-white/10 hover:text-white"
+              >
+                {t("Back")}
+              </button>
+              <button
+                onClick={() => void handlePasswordSignIn()}
+                disabled={busy || !password}
+                className="rounded-md bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white transition hover:bg-sky-400 disabled:cursor-default disabled:opacity-50"
+              >
+                {busy ? t("Signing in…") : t("Sign in")}
               </button>
             </div>
           </>
