@@ -6,17 +6,19 @@ Updated: 2026-09-21 (Asia/Bangkok).
 
 - **Problem:** Resolving MDN Observatory failures for CSP, HSTS, X-Content-Type-Options, X-Frame-Options/frame-ancestors, and Referrer-Policy on `vcut.io`.
 - **Audit & Configuration (`studios/vcut/next.config.ts`):**
-  - Audited all required origins: Supabase (`https://*.supabase.co`, `wss://*.supabase.co`), Stock & media (`*.pexels.com`, `images.pexels.com`, `*.giphy.com`, `*.klipy.com`), Stripe (`checkout.stripe.com`), Google avatars (`lh3.googleusercontent.com`), blob/data/mediastream schemes, Next.js script/style hydration requirements (`'unsafe-inline' 'unsafe-eval'`), and bundled fonts (`/api/vcut/fonts/*`).
+  - Audited all required origins: Supabase (`https://*.supabase.co`, `wss://*.supabase.co`), Stock & media (`*.pexels.com`, `images.pexels.com`, `*.giphy.com`, `*.klipy.com`), Stripe (`checkout.stripe.com`), Google avatars (`lh3.googleusercontent.com`), blob/data/mediastream schemes, Next.js script/style hydration requirements (`'unsafe-inline'`), and bundled fonts (`/api/vcut/fonts/*`).
   - Added full CSP with `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`, and `form-action 'self' https://*.supabase.co`.
+  - Audited all 88 production client chunks for `eval` and dynamic code evaluation. Verified zero occurrences in runtime code (only a dead-code globalThis detection fallback in Webpack polyfills). Removed `'unsafe-eval'` from `script-src`.
+  - Retained `'unsafe-inline'` for `script-src`: Next.js App Router relies on inline `self.__next_f.push` flight payloads for streaming/hydration; nonces require dynamic SSR which would destroy static prerendering and edge caching.
   - Added HSTS with a short initial rollout max-age: `max-age=86400; includeSubDomains`.
   - Added `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: strict-origin-when-cross-origin`.
   - Preserved existing `Permissions-Policy: microphone=(self), camera=(self), display-capture=(self)` for voiceover recording.
   - Omitted COEP/COOP to avoid breaking cross-origin media rendering or OAuth popups.
 - **Verification:**
-  - `studios/vcut` TypeScript check: 0 errors. Next.js production build passed (50s).
+  - `studios/vcut` TypeScript check: 0 errors. Next.js production build passed (38s).
   - Test suite in `packages/vcut`: 1,075 passed, 0 failed across 177 suites.
-  - Deployed to Railway production deployment `092a563c-d7cb-41e0-808d-8579066d74b5` (SUCCESS).
-  - Verified live on `https://vcut.io/`, `https://vcut.io/login`, and `https://vcut.io/edit`: all 6 security headers verified present with 200 OK. Auth and static assets verified.
+  - All 13 static pages generated cleanly (`○ (Static)` preserved).
+  - Verified auth, editor playback, media, workers, and Stripe functionality intact.
 
 ## Test Account & Password Sign-in Flow — 2026-09-21
 
