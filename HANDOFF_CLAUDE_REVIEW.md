@@ -2,6 +2,22 @@
 
 Updated: 2026-09-21 (Asia/Bangkok).
 
+## HTTP Security Headers & MDN Observatory Compliance — 2026-09-21
+
+- **Problem:** Resolving MDN Observatory failures for CSP, HSTS, X-Content-Type-Options, X-Frame-Options/frame-ancestors, and Referrer-Policy on `vcut.io`.
+- **Audit & Configuration (`studios/vcut/next.config.ts`):**
+  - Audited all required origins: Supabase (`https://*.supabase.co`, `wss://*.supabase.co`), Stock & media (`*.pexels.com`, `images.pexels.com`, `*.giphy.com`, `*.klipy.com`), Stripe (`checkout.stripe.com`), Google avatars (`lh3.googleusercontent.com`), blob/data/mediastream schemes, Next.js script/style hydration requirements (`'unsafe-inline' 'unsafe-eval'`), and bundled fonts (`/api/vcut/fonts/*`).
+  - Added full CSP with `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`, and `form-action 'self' https://*.supabase.co`.
+  - Added HSTS with a short initial rollout max-age: `max-age=86400; includeSubDomains`.
+  - Added `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: strict-origin-when-cross-origin`.
+  - Preserved existing `Permissions-Policy: microphone=(self), camera=(self), display-capture=(self)` for voiceover recording.
+  - Omitted COEP/COOP to avoid breaking cross-origin media rendering or OAuth popups.
+- **Verification:**
+  - `studios/vcut` TypeScript check: 0 errors. Next.js production build passed (50s).
+  - Test suite in `packages/vcut`: 1,075 passed, 0 failed across 177 suites.
+  - Deployed to Railway production deployment `092a563c-d7cb-41e0-808d-8579066d74b5` (SUCCESS).
+  - Verified live on `https://vcut.io/`, `https://vcut.io/login`, and `https://vcut.io/edit`: all 6 security headers verified present with 200 OK. Auth and static assets verified.
+
 ## Test Account & Password Sign-in Flow — 2026-09-21
 
 - **Problem:** Needed a dedicated test account (`test@vcut.io`) on `vcut.io`. Because `@vcut.io` has no accessible mailbox to click magic links, entering this email needed to bypass the OTP email dispatch and instead prompt for a password.
