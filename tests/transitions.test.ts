@@ -253,12 +253,12 @@ describe("resolveAudioTransitionGain", () => {
     assert.ok(atStart.partner);
     assert.equal(atStart.partner!.clip.id, clipA.id);
     assert.ok(closeTo(atStart.partner!.gain, 1), "outgoing clip starts at full volume");
-    assert.ok(closeTo(atStart.partner!.sourceTime, clipA.sourceOut - 1), "outgoing clip continues from its own last 1s");
+    assert.ok(closeTo(atStart.partner!.sourceTime, clipA.sourceOut), "outgoing clip continues past its out-point");
 
     const atMid = resolveAudioTransitionGain(track, clipB, 5.5);
     assert.ok(closeTo(atMid.gain, 0.5));
     assert.ok(closeTo(atMid.partner!.gain, 0.5));
-    assert.ok(closeTo(atMid.partner!.sourceTime, clipA.sourceOut - 0.5), "outgoing clip's own sourceTime keeps advancing with the blend");
+    assert.ok(closeTo(atMid.partner!.sourceTime, clipA.sourceOut + 0.5), "outgoing clip's own sourceTime keeps advancing with the blend");
 
     const nearEnd = resolveAudioTransitionGain(track, clipB, 5.9);
     assert.ok(closeTo(nearEnd.gain, 0.9));

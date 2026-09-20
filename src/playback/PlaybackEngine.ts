@@ -7,10 +7,29 @@ import { applyColorGrading, buildCurveLut, composeLuts } from "../timeline/color
 import { resolveClipColorGrading, resolveClipEffects, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
 import { applyLut3D, parseCubeLut } from "../timeline/lut.ts";
 import type { Lut3D } from "../timeline/lut.ts";
-import { applyGlitch, applyHorizontalBlur, applyWaterRipple, FLASH_ZOOM_PEAK, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
+import { applyGlitch, applyGlitchCut, applyHorizontalBlur, applyWaterRipple, FLASH_ZOOM_PEAK, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
+import {
+  easeTransition,
+  glitchCutBurst,
+  glitchCutBurstIndex,
+  glitchCutBurstProgress,
+  glitchCutShowsIncoming,
+  midpointIntensity,
+  SLICE_STRIP_COUNT,
+  sliceStripBounds,
+  sliceStripProgress,
+  transitionFamily,
+} from "../timeline/transitionMotion.ts";
 import { audibleClips, clipAtTime, visibleVideoClips } from "../timeline/queries.ts";
-import { findTransitionOut, findTransitionPartner, resolveAudioTransitionGain } from "../timeline/transitions.ts";
+import {
+  findTransitionOut,
+  findTransitionPartner,
+  resolveAudioTransitionGain,
+  transitionPartnerSourceTime,
+  transitionTailExtension,
+} from "../timeline/transitions.ts";
 import { AudioMixEngine } from "./AudioMixEngine.ts";
+import { holdMediaAtEnd } from "./mediaEnd.ts";
 import { computeTransformedBox } from "./transformGeometry.ts";
 import { drawAnimatedTextFrame, drawTextFrame } from "./textLayout.ts";
 
@@ -22,109 +41,31 @@ const AUDIO_PREFETCH_LOOKAHEAD_SECONDS = 5;
  *  every single frame for a decision that only matters on a several-second timescale anyway. */
 const AUDIO_PREFETCH_SCAN_INTERVAL_MS = 1000;
 
-/** How many vertical strips the "slice" transition family divides the frame into — a stand-in for
- *  FFmpeg's own `vuslice`/`vdslice` xfade filters, which this canvas preview can't call directly (no
- *  FFmpeg in the browser). Each strip is a whole-frame "push" like the `slide` family above, just
- *  confined to its own column and started a little later than the strip to its left — that per-strip
- *  stagger (not a uniform whole-frame slide) is what makes this read as a "venetian blind" cascade.
- *  `SLICE_WIPE_FRACTION` is how much of the total transition duration any ONE strip's own slide takes
- *  (the rest is spent staggered, waiting for its turn) — the LAST strip's own slide always finishes
- *  exactly at `progress = 1` by construction (see `sliceStripProgress` below), regardless of either
- *  constant's value. */
-const SLICE_STRIP_COUNT = 10;
-const SLICE_WIPE_FRACTION = 0.5;
+// `transitionFamily` lives in `timeline/transitionMotion.ts` so export can share it without importing
+// this DOM-bound module; re-exported here for existing callers.
+export { transitionFamily, type TransitionFamily } from "../timeline/transitionMotion.ts";
 
-/** `progress` (or `reveal`) for the transition as a whole → this ONE strip's own local progress,
- *  0..1 — strip 0 starts immediately, each later strip starts a little after the one before it, and
- *  the last strip's own window ends exactly at the overall transition's own end. Shared by
- *  `compositeTransitionFrame` and `compositeSoloReveal`'s own "slice" branches so the two can never
- *  silently diverge on the stagger math. */
-function sliceStripProgress(overallProgress: number, stripIndex: number): number {
-  const staggerStep = SLICE_STRIP_COUNT > 1 ? (1 - SLICE_WIPE_FRACTION) / (SLICE_STRIP_COUNT - 1) : 0;
-  const local = (overallProgress - stripIndex * staggerStep) / SLICE_WIPE_FRACTION;
-  return Math.min(1, Math.max(0, local));
-}
-
-/** Groups `TransitionType`'s styles into the shapes the canvas preview actually knows how to render —
- *  exported (not a private switch inline) so it's directly unit-testable without a canvas.
- *  `compositeTransitionFrame` is what turns one of these into real pixels; `export/buildExportPlan.ts`
- *  never calls this at all — FFmpeg gets the exact distinct filter name for every type regardless of
- *  which family it maps to here (see `TRANSITION_XFADE_NAME` there). */
-export type TransitionFamily =
-  | { kind: "dissolve" }
-  | { kind: "wipe"; edge: "left" | "right" | "up" | "down" }
-  | { kind: "slide"; edge: "left" | "right" | "up" | "down" }
-  | { kind: "slice"; direction: "up" | "down" }
-  | { kind: "circle"; opening: boolean }
-  | { kind: "glitch" }
-  | { kind: "waterRipple" }
-  | { kind: "zoomBlur" }
-  | { kind: "whipPan"; edge: "left" | "right" }
-  | { kind: "flashZoom" };
-
-export function transitionFamily(type: TransitionType): TransitionFamily {
-  switch (type) {
-    case "wipeLeft":
-      return { kind: "wipe", edge: "left" };
-    case "wipeRight":
-      return { kind: "wipe", edge: "right" };
-    case "wipeUp":
-      return { kind: "wipe", edge: "up" };
-    case "wipeDown":
-      return { kind: "wipe", edge: "down" };
-    case "slideLeft":
-      return { kind: "slide", edge: "left" };
-    case "slideRight":
-      return { kind: "slide", edge: "right" };
-    case "slideUp":
-      return { kind: "slide", edge: "up" };
-    case "slideDown":
-      return { kind: "slide", edge: "down" };
-    case "sliceUp":
-      return { kind: "slice", direction: "up" };
-    case "sliceDown":
-      return { kind: "slice", direction: "down" };
-    case "circleOpen":
-      return { kind: "circle", opening: true };
-    case "circleClose":
-      return { kind: "circle", opening: false };
-    case "glitchCut":
-      return { kind: "glitch" };
-    case "waterRippleCut":
-      return { kind: "waterRipple" };
-    case "zoomBlur":
-      return { kind: "zoomBlur" };
-    case "whipPanLeft":
-      return { kind: "whipPan", edge: "left" };
-    case "whipPanRight":
-      return { kind: "whipPan", edge: "right" };
-    case "flashZoom":
-      return { kind: "flashZoom" };
-    case "crossfade":
-    case "dissolve":
-    default:
-      return { kind: "dissolve" };
-  }
-}
-
-// Module-level (not per-`PlaybackEngine`-instance) scratch canvases for the glitch/water-ripple
-// transition families below — `compositeTransitionFrame` is a standalone function usable with no live
-// instance at all (see its own doc comment on why: `TransitionPreviewTile.tsx`'s picker thumbnails),
-// so there's no `this` to attach a cache to. Same persistent-buffer-reused-across-calls shape
-// `TransitionPreviewTile.tsx`'s own module-level `outgoingPanel`/`incomingPanel` already use, just two
-// of them (one per side of the blend) so both processed results stay available simultaneously for the
-// final composite below.
+// Module-level (not per-`PlaybackEngine`-instance) scratch canvases for the pixel-math transition
+// styles below — `compositeTransitionFrame` is a standalone function usable with no live instance at
+// all (`TransitionPreviewTile.tsx`'s picker thumbnails call it directly), so there's no `this` to
+// attach a cache to. Two of them (one per side of the blend) so both processed results stay available
+// simultaneously for the final composite.
 let pixelFxScratchA: HTMLCanvasElement | null = null;
 let pixelFxScratchB: HTMLCanvasElement | null = null;
+let pixelFxScratchFull: HTMLCanvasElement | null = null;
 
-/** Returns one of the two scratch canvases above, lazily created and resized in place to `width`×
- *  `height` on demand. */
-function getPixelFxScratchCanvas(which: "a" | "b", width: number, height: number): HTMLCanvasElement {
-  let canvas = which === "a" ? pixelFxScratchA : pixelFxScratchB;
+/** Returns one of the scratch canvases above, lazily created and resized in place. Created with
+ *  `willReadFrequently`, since every user of these reads pixels back with `getImageData` every frame —
+ *  without the hint Chrome keeps the canvas on the GPU and pays a full readback stall per call.
+ *  `"full"` is the frame-sized canvas a solo reveal renders its one clip into before processing. */
+function getPixelFxScratchCanvas(which: "a" | "b" | "full", width: number, height: number): HTMLCanvasElement {
+  let canvas = which === "a" ? pixelFxScratchA : which === "b" ? pixelFxScratchB : pixelFxScratchFull;
   if (!canvas) {
     canvas = document.createElement("canvas");
+    canvas.getContext("2d", { willReadFrequently: which !== "full" });
     if (which === "a") pixelFxScratchA = canvas;
-    else pixelFxScratchB = canvas;
+    else if (which === "b") pixelFxScratchB = canvas;
+    else pixelFxScratchFull = canvas;
   }
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
@@ -133,41 +74,59 @@ function getPixelFxScratchCanvas(which: "a" | "b", width: number, height: number
   return canvas;
 }
 
-/** Draws `source` into one of the two scratch canvases above, runs `apply` over its raw pixels via the
- *  same `getImageData`/`putImageData` round trip `drawTransformed` already uses for chroma-key/color-
- *  grading/LUT/pixel-effect, and returns that canvas (now holding the processed result) ready to
- *  `drawImage` elsewhere. `dx` offsets the initial draw horizontally before the effect runs — used by
- *  the whip-pan transition family, which needs its own slide offset baked in BEFORE the directional
- *  blur samples neighboring pixels (blurring first and sliding after would blur in now-empty/wrong
- *  pixels at the frame edge the slide reveals). Every other caller omits it, defaulting to the
- *  original no-offset behavior. */
-function applyPixelFxToImage(
+/** Long-edge cap for the working buffer the per-pixel transition effects (glitch, water ripple, whip-
+ *  pan blur) run on. These used to process the full sequence-resolution frame (1080×1920 — two
+ *  million pixels, twice per frame, one side each) with a `getImageData` round trip on each, which is
+ *  what made Glitch Cut and Water Ripple stutter in the preview. The result is drawn back scaled to
+ *  the full frame, and the on-screen canvas is itself far smaller than the sequence, so nothing
+ *  visible is lost; each effect is told the scale so its pixel-sized parameters shrink to match. */
+const MAX_PIXEL_FX_WORK_DIMENSION = 640;
+
+/** Draws `source` (a full `width`×`height` frame) into a scratch canvas at working resolution, runs
+ *  `apply` over its pixels, and returns that canvas — ready to be drawn back at `width`×`height`.
+ *  `apply` receives the working scale (≤ 1) for its own pixel-sized parameters. */
+function applyPixelFxAtWorkScale(
   which: "a" | "b",
   source: CanvasImageSource,
   width: number,
   height: number,
-  apply: (imageData: ImageData) => void,
-  dx = 0
-): CanvasImageSource {
-  const canvas = getPixelFxScratchCanvas(which, width, height);
-  const ctx = canvas.getContext("2d")!;
-  ctx.clearRect(0, 0, width, height);
-  ctx.drawImage(source, dx, 0, width, height);
-  const imageData = ctx.getImageData(0, 0, width, height);
-  apply(imageData);
+  apply: (imageData: ImageData, pixelScale: number) => void
+): HTMLCanvasElement {
+  const workScale = Math.min(1, MAX_PIXEL_FX_WORK_DIMENSION / Math.max(width, height));
+  const workWidth = Math.max(1, Math.round(width * workScale));
+  const workHeight = Math.max(1, Math.round(height * workScale));
+  const canvas = getPixelFxScratchCanvas(which, workWidth, workHeight);
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+  ctx.clearRect(0, 0, workWidth, workHeight);
+  ctx.drawImage(source, 0, 0, workWidth, workHeight);
+  const imageData = ctx.getImageData(0, 0, workWidth, workHeight);
+  apply(imageData, workScale);
   ctx.putImageData(imageData, 0, 0);
   return canvas;
 }
 
+/** How many device pixels one unit of `context`'s current user space covers. Canvas 2D's
+ *  `filter: blur(Npx)` is applied in DEVICE pixels and ignores the current transform (measured in
+ *  Chromium: the same blur spread with and without a 4× downscale) — but every blur radius in this
+ *  app is in SEQUENCE pixels, the unit export's `gblur` uses. The live canvas maps the sequence onto a
+ *  much smaller backing store, so an unscaled `blur()` came out several times stronger in the preview
+ *  than in the exported file: the "blur is too weak after export" bug. Multiply by this first. */
+function deviceScaleOf(context: CanvasRenderingContext2D): number {
+  if (typeof context.getTransform !== "function") return 1;
+  const m = context.getTransform();
+  const scale = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c));
+  return Number.isFinite(scale) && scale > 0 ? scale : 1;
+}
+
 /** Blends two ALREADY-FULLY-DRAWN flat images (`outgoing`/`incoming`) onto `context`, per
- *  `transitionFamily`'s own shape for `type` — a pure, standalone function (not a method) for the same
- *  reason `transitionFamily` above is: directly usable without a live `PlaybackEngine` instance, which
- *  `TransitionPreviewTile.tsx`'s picker-grid thumbnails rely on (they animate a `progress` loop over
- *  two flat placeholder images with no clip/track/asset in sight). Shared verbatim by video and text
- *  transitions in `drawVideoClip`/`drawTextLayer` below — this function doesn't know or care whether
- *  what's IN the two images came from `drawTransformed`, `drawText`, or a preview-tile placeholder,
- *  only that each is a flat, fully-opaque-where-it-matters image the same size as `frameWidth`×
- *  `frameHeight`. */
+ *  `transitionFamily`'s own shape for `type` — a pure, standalone function (not a method): directly
+ *  usable without a live `PlaybackEngine` instance, which `TransitionPreviewTile.tsx`'s picker-grid
+ *  thumbnails rely on. Shared verbatim by video and text transitions in `drawVideoClip`/
+ *  `drawTextLayer` below. `durationSeconds` is the blend's real length — the time-based styles (glitch
+ *  bursts, ripple phase) need real seconds, not just 0..1 progress, to line up with export.
+ *
+ *  Every shape here has an exact export counterpart in `buildExportPlan`'s `pushTransitionBlend`; the
+ *  easing and the per-style curves come from `timeline/transitionMotion.ts`, which both import. */
 export function compositeTransitionFrame(
   context: CanvasRenderingContext2D,
   frameWidth: number,
@@ -175,21 +134,22 @@ export function compositeTransitionFrame(
   type: TransitionType,
   progress: number,
   outgoing: CanvasImageSource,
-  incoming: CanvasImageSource
+  incoming: CanvasImageSource,
+  durationSeconds = 0.5
 ): void {
   const family = transitionFamily(type);
+  const eased = easeTransition(progress);
 
   if (family.kind === "wipe") {
     context.drawImage(outgoing, 0, 0, frameWidth, frameHeight);
     context.save();
     context.beginPath();
     // The REVEALED (incoming) rect grows from whichever edge the name points at — e.g. "wipeLeft"
-    // reveals starting at the RIGHT edge and grows leftward, matching FFmpeg's own `xfade=wipeleft`
-    // (see `TransitionType`'s own doc comment on why these names track `xfade`'s exactly).
-    if (family.edge === "left") context.rect(frameWidth * (1 - progress), 0, frameWidth * progress, frameHeight);
-    else if (family.edge === "right") context.rect(0, 0, frameWidth * progress, frameHeight);
-    else if (family.edge === "up") context.rect(0, frameHeight * (1 - progress), frameWidth, frameHeight * progress);
-    else context.rect(0, 0, frameWidth, frameHeight * progress);
+    // reveals starting at the RIGHT edge and grows leftward, matching FFmpeg's own `xfade=wipeleft`.
+    if (family.edge === "left") context.rect(frameWidth * (1 - eased), 0, frameWidth * eased, frameHeight);
+    else if (family.edge === "right") context.rect(0, 0, frameWidth * eased, frameHeight);
+    else if (family.edge === "up") context.rect(0, frameHeight * (1 - eased), frameWidth, frameHeight * eased);
+    else context.rect(0, 0, frameWidth, frameHeight * eased);
     context.clip();
     context.drawImage(incoming, 0, 0, frameWidth, frameHeight);
     context.restore();
@@ -198,129 +158,96 @@ export function compositeTransitionFrame(
 
   if (family.kind === "slide") {
     // Whole-frame "push": the outgoing side exits fully in the named direction while the incoming
-    // side enters from the opposite edge, both moving at the same rate — the standard slide-
-    // transition look (not a single edge sweeping across a STATIONARY frame, which is what `wipe`
-    // above already covers). `sign` is the outgoing side's own exit direction: negative x/y for
-    // "left"/"up", positive for "right"/"down".
+    // side enters from the opposite edge, both moving together. `sign` is the outgoing side's own
+    // exit direction: negative x/y for "left"/"up", positive for "right"/"down".
     const horizontal = family.edge === "left" || family.edge === "right";
     const sign = family.edge === "left" || family.edge === "up" ? -1 : 1;
-    const outgoingDx = horizontal ? sign * frameWidth * progress : 0;
-    const outgoingDy = horizontal ? 0 : sign * frameHeight * progress;
-    const incomingDx = horizontal ? -sign * frameWidth * (1 - progress) : 0;
-    const incomingDy = horizontal ? 0 : -sign * frameHeight * (1 - progress);
+    const outgoingDx = horizontal ? sign * frameWidth * eased : 0;
+    const outgoingDy = horizontal ? 0 : sign * frameHeight * eased;
+    const incomingDx = horizontal ? -sign * frameWidth * (1 - eased) : 0;
+    const incomingDy = horizontal ? 0 : -sign * frameHeight * (1 - eased);
     context.drawImage(outgoing, outgoingDx, outgoingDy, frameWidth, frameHeight);
     context.drawImage(incoming, incomingDx, incomingDy, frameWidth, frameHeight);
     return;
   }
 
   if (family.kind === "slice") {
-    // Same vertical "push" math the `slide` family above uses (`sign` negative for "up" — the
-    // outgoing side exits upward, the incoming side enters from below), just run once per STRIP with
-    // that strip's own staggered `sliceStripProgress` instead of the transition's overall `progress` —
-    // see `SLICE_STRIP_COUNT`'s own doc comment for why that reads as a cascade rather than a uniform
-    // slide. `stripWidth + 1` (not an exact `stripWidth`) avoids a visible hairline seam between
-    // strips from sub-pixel clip-region rounding.
+    // The `slide` push, run once per vertical strip with that strip's own staggered, eased progress.
+    // Strip edges are whole pixels (the same `sliceStripBounds` export crops by), so there's no
+    // hairline seam from sub-pixel clip regions.
     const sign = family.direction === "up" ? -1 : 1;
-    const stripWidth = frameWidth / SLICE_STRIP_COUNT;
     for (let i = 0; i < SLICE_STRIP_COUNT; i++) {
-      const localProgress = sliceStripProgress(progress, i);
-      const outgoingDy = sign * frameHeight * localProgress;
-      const incomingDy = -sign * frameHeight * (1 - localProgress);
+      const local = easeTransition(sliceStripProgress(progress, i));
+      const { x, width } = sliceStripBounds(frameWidth, i);
       context.save();
       context.beginPath();
-      context.rect(i * stripWidth, 0, stripWidth + 1, frameHeight);
+      context.rect(x, 0, width, frameHeight);
       context.clip();
-      context.drawImage(outgoing, 0, outgoingDy, frameWidth, frameHeight);
-      context.drawImage(incoming, 0, incomingDy, frameWidth, frameHeight);
+      context.drawImage(outgoing, 0, sign * frameHeight * local, frameWidth, frameHeight);
+      context.drawImage(incoming, 0, -sign * frameHeight * (1 - local), frameWidth, frameHeight);
       context.restore();
     }
     return;
   }
 
   if (family.kind === "circle") {
+    // A crisp circle centered on the frame: opening grows the incoming side out from the middle,
+    // closing shrinks the outgoing side down to nothing over the incoming one. FFmpeg's own
+    // `circleopen`/`circleclose` are a very soft, late-starting blob — export now builds this exact
+    // hard-edged circle from a mask instead (see `pushTransitionBlend`).
     const maxRadius = Math.hypot(frameWidth, frameHeight) / 2;
+    const radius = maxRadius * (family.opening ? eased : 1 - eased);
+    context.drawImage(family.opening ? outgoing : incoming, 0, 0, frameWidth, frameHeight);
     context.save();
     context.beginPath();
-    if (family.opening) {
-      // A growing circle reveals the incoming side over the outgoing one — same "revealed side
-      // clipped, base side drawn first" shape `wipe` above uses, just a circular region instead of
-      // a rectangular one.
-      context.drawImage(outgoing, 0, 0, frameWidth, frameHeight);
-      context.arc(frameWidth / 2, frameHeight / 2, maxRadius * progress, 0, Math.PI * 2);
-    } else {
-      // The mirror: incoming is already fully drawn underneath, and a SHRINKING circle of the
-      // outgoing side closes in on nothing, revealing more of the incoming as it collapses.
-      context.drawImage(incoming, 0, 0, frameWidth, frameHeight);
-      context.arc(frameWidth / 2, frameHeight / 2, maxRadius * (1 - progress), 0, Math.PI * 2);
-    }
+    context.arc(frameWidth / 2, frameHeight / 2, Math.max(0, radius), 0, Math.PI * 2);
     context.clip();
     context.drawImage(family.opening ? incoming : outgoing, 0, 0, frameWidth, frameHeight);
     context.restore();
     return;
   }
 
-  if (family.kind === "glitch" || family.kind === "waterRipple") {
-    // Corruption bursts AT the cut, clean going in/out — a parabola (0 at both ends of the blend,
-    // peaking at the midpoint) rather than a flat full-strength distortion for the whole window,
-    // avoiding any visible seam against the surrounding un-corrupted clip content on either side.
-    const intensity = 4 * progress * (1 - progress);
-    const apply = (imageData: ImageData) => {
-      if (family.kind === "glitch") applyGlitch(imageData, progress, 1, intensity);
-      else applyWaterRipple(imageData, progress, 1, intensity);
-    };
-    const processedOutgoing = applyPixelFxToImage("a", outgoing, frameWidth, frameHeight, apply);
-    const processedIncoming = applyPixelFxToImage("b", incoming, frameWidth, frameHeight, apply);
-    // The scratch canvases above are always rendered at the sequence's full LOGICAL resolution (e.g.
-    // 1080×1920), but the real on-screen canvas is a much smaller PHYSICAL backing store (`tick`'s own
-    // DPR-aware cap, `context`'s own `setTransform` maps logical coordinates down onto it) — a plain
-    // smoothed `drawImage` downscale here blurs away exactly the sparse, sharp-edged corruption that
-    // makes this read as "glitchy" rather than a plain dissolve: a several-source-pixel channel shift
-    // becomes sub-physical-pixel and disappears, and a single noised source pixel gets diluted across
-    // ~20 smoothed neighbors into visual nothing. Nearest-neighbor sampling for just this draw keeps
-    // both as visible blocky artifacts instead of averaging them away; restored right after so every
-    // OTHER transition family's own smooth blend is unaffected.
+  if (family.kind === "glitch") {
+    // A hard, flickering switch between the two clips (no soft dissolve), with the currently-shown
+    // side torn by the burst's channel split and bands — see `transitionMotion.ts`'s Glitch Cut
+    // section. Only ONE side is ever visible, so only one side is processed per frame.
+    const burstIndex = glitchCutBurstIndex(progress * durationSeconds);
+    const burst = glitchCutBurst(burstIndex, midpointIntensity(glitchCutBurstProgress(burstIndex, durationSeconds)));
+    const shown = glitchCutShowsIncoming(burstIndex, durationSeconds) ? incoming : outgoing;
+    const processed = applyPixelFxAtWorkScale("a", shown, frameWidth, frameHeight, (imageData) => applyGlitchCut(imageData, burst));
+    // Nearest-neighbor on the way back up keeps the torn edges blocky rather than smoothing them away.
     const smoothing = context.imageSmoothingEnabled;
     context.imageSmoothingEnabled = false;
-    context.drawImage(processedOutgoing, 0, 0, frameWidth, frameHeight);
-    context.globalAlpha = progress;
-    context.drawImage(processedIncoming, 0, 0, frameWidth, frameHeight);
-    context.globalAlpha = 1;
+    context.drawImage(processed, 0, 0, frameWidth, frameHeight);
     context.imageSmoothingEnabled = smoothing;
     return;
   }
 
+  if (family.kind === "waterRipple") {
+    // Ripple both sides by the midpoint-peaking intensity, then cross-dissolve — the same ramped `geq=`
+    // displacement export runs, with the same REAL elapsed seconds driving the wave's phase (this used
+    // to pass 0..1 progress as "seconds", so the wave barely moved).
+    const elapsed = progress * durationSeconds;
+    const intensity = midpointIntensity(progress);
+    const apply = (imageData: ImageData, pixelScale: number) => applyWaterRipple(imageData, elapsed, 1, intensity, pixelScale);
+    const processedOutgoing = applyPixelFxAtWorkScale("a", outgoing, frameWidth, frameHeight, apply);
+    const processedIncoming = applyPixelFxAtWorkScale("b", incoming, frameWidth, frameHeight, apply);
+    context.drawImage(processedOutgoing, 0, 0, frameWidth, frameHeight);
+    context.globalAlpha = progress;
+    context.drawImage(processedIncoming, 0, 0, frameWidth, frameHeight);
+    context.globalAlpha = 1;
+    return;
+  }
+
   if (family.kind === "zoomBlur" || family.kind === "flashZoom") {
-    // A centered zoom-in plus blur on BOTH sides, ramped by the same parabola (0 at both edges,
-    // peaking at the midpoint) glitch/waterRipple already use — omnidirectional, unlike whipPan below,
-    // which needs its own directional pixel math. `drawZoomedWithBlur` (see its own doc comment) picks
-    // between a fast direct-`context.filter` path and a manual pixel-blur fallback depending on
-    // whether THIS browser's `context.filter` actually does anything (Safari/WebKit silently ignores
-    // it — a real, reported "effect doesn't work on some devices" bug). `flashZoom` layers a plain
-    // white overlay on top of the already-blended result afterward — the same order the export side's
-    // own zoom+blur-then-flash `geq=` chain uses.
-    const intensity = 4 * progress * (1 - progress);
+    // A centered zoom-in plus blur on BOTH sides, ramped by the midpoint-peaking intensity, then a
+    // linear cross-dissolve; `flashZoom` adds a white pulse on top afterward — the same order export's
+    // zoom → blur → `xfade=fade` → `colorlevels` chain uses.
+    const intensity = midpointIntensity(progress);
     const scale = 1 + ZOOM_BLUR_SCALE * intensity;
     const blurPx = ZOOM_BLUR_SIGMA_PX * intensity;
-    drawZoomedWithBlur(
-      context,
-      (_alpha, target = context) => target.drawImage(outgoing, 0, 0, frameWidth, frameHeight),
-      frameWidth,
-      frameHeight,
-      scale,
-      blurPx,
-      1,
-      "a"
-    );
-    drawZoomedWithBlur(
-      context,
-      (_alpha, target = context) => target.drawImage(incoming, 0, 0, frameWidth, frameHeight),
-      frameWidth,
-      frameHeight,
-      scale,
-      blurPx,
-      progress,
-      "b"
-    );
+    drawZoomedWithBlur(context, (_alpha, target = context) => target.drawImage(outgoing, 0, 0, frameWidth, frameHeight), frameWidth, frameHeight, scale, blurPx, 1, "a");
+    drawZoomedWithBlur(context, (_alpha, target = context) => target.drawImage(incoming, 0, 0, frameWidth, frameHeight), frameWidth, frameHeight, scale, blurPx, progress, "b");
     if (family.kind === "flashZoom") {
       context.fillStyle = "#ffffff";
       context.globalAlpha = FLASH_ZOOM_PEAK * intensity;
@@ -331,182 +258,146 @@ export function compositeTransitionFrame(
   }
 
   if (family.kind === "whipPan") {
-    // The same whole-frame "push" geometry `slide` above uses, plus a horizontal-only blur ramped by
-    // the same midpoint-peaking parabola — the "motion smear" of a fast camera pan. Needs real pixel
-    // math (`applyHorizontalBlur`), not `context.filter`, since a directional blur is anisotropic and
-    // CSS/Canvas2D's `blur()` isn't. The slide offset is baked into the scratch-canvas draw itself
-    // (via `dx`) so the blur samples the ALREADY-slid frame, not the stationary source.
-    const intensity = 4 * progress * (1 - progress);
+    // A `slide` push with a horizontal motion blur that peaks mid-pan. Each side is blurred first and
+    // THEN slid, like export (`gblur` with no vertical sigma, then `xfade=slideleft`). Both sides are
+    // drawn at full opacity — the old version faded the incoming side in with alpha while it was
+    // sliding over empty canvas, which dimmed it to near-black for the first half of the pan.
+    const intensity = midpointIntensity(progress);
     const sign = family.edge === "left" ? -1 : 1;
-    const outgoingDx = sign * frameWidth * progress;
-    const incomingDx = -sign * frameWidth * (1 - progress);
-    const apply = (imageData: ImageData) => applyHorizontalBlur(imageData, intensity);
-    const processedOutgoing = applyPixelFxToImage("a", outgoing, frameWidth, frameHeight, apply, outgoingDx);
-    const processedIncoming = applyPixelFxToImage("b", incoming, frameWidth, frameHeight, apply, incomingDx);
-    context.drawImage(processedOutgoing, 0, 0, frameWidth, frameHeight);
-    context.globalAlpha = progress;
-    context.drawImage(processedIncoming, 0, 0, frameWidth, frameHeight);
-    context.globalAlpha = 1;
+    const apply = (imageData: ImageData, pixelScale: number) => applyHorizontalBlur(imageData, intensity, pixelScale);
+    const processedOutgoing = applyPixelFxAtWorkScale("a", outgoing, frameWidth, frameHeight, apply);
+    const processedIncoming = applyPixelFxAtWorkScale("b", incoming, frameWidth, frameHeight, apply);
+    context.drawImage(processedOutgoing, sign * frameWidth * eased, 0, frameWidth, frameHeight);
+    context.drawImage(processedIncoming, -sign * frameWidth * (1 - eased), 0, frameWidth, frameHeight);
     return;
   }
 
-  // dissolve (and crossfade, the default) — a plain alpha cross-dissolve. FFmpeg's real `dissolve`
-  // xfade type is a per-pixel randomized reveal rather than a uniform blend; a flat alpha blend is
-  // this canvas approximation's stand-in for it, the same "preview approximates, export is exact"
-  // trade-off `ClipEffects`' own doc comment already accepts for brightness/blur.
+  // crossfade (and legacy dissolve) — a plain linear alpha blend, matching export's `xfade=fade`.
   context.drawImage(outgoing, 0, 0, frameWidth, frameHeight);
   context.globalAlpha = progress;
   context.drawImage(incoming, 0, 0, frameWidth, frameHeight);
   context.globalAlpha = 1;
 }
 
+/** Timing a solo reveal needs beyond `reveal` itself: the time-based styles (glitch bursts, ripple
+ *  phase) have to be evaluated at the same seconds export evaluates them at. */
+export interface SoloRevealTiming {
+  /** Seconds since the fade window began. */
+  windowElapsed: number;
+  windowDuration: number;
+  /** Seconds since the clip itself began — the water ripple's wave phase runs on clip time. */
+  clipElapsed: number;
+  /** True for a fade-out (`reveal` falling), false for a fade-in (`reveal` rising). */
+  fadingOut: boolean;
+}
+
 /** The SOLO-transition counterpart to `compositeTransitionFrame` — used when there's only ONE real
- *  image to animate (a fade-in/out with no partner clip on the other side), not two. This can't just
- *  reuse `compositeTransitionFrame` with a blank stand-in for the missing side: that function's
- *  dissolve/wipe/circle math all work by drawing a SECOND, real opaque image to reveal or overwrite the
- *  first — a fully transparent stand-in for "nothing" is a no-op in `drawImage` regardless of alpha or
- *  clip region, so a transparent "outgoing"/"incoming" simply never affects the canvas. That's exactly
- *  right for the specific case `compositeTransitionFrame` was written for (fading the real content IN
- *  from a transparent "before"), which is why it went unnoticed there, but it silently does nothing at
- *  all for the mirror case (fading OUT to transparent) and for `circleClose`'s own asymmetric draw
- *  order in EITHER direction (it draws "incoming" fully, unclipped, before "outgoing" ever gets a
- *  chance to cover anything).
- *
- *  This sidesteps the whole issue by never drawing a stand-in for the missing side at all: it clips/
- *  fades the ONE real `draw()` call directly against `reveal` (0 = fully hidden, 1 = fully shown),
- *  needing no second image to composite against — whatever's already on `context` (a black clear, or a
- *  lower track's content) simply shows through wherever `draw()` doesn't paint. `draw` receives an
- *  `alphaMultiplier` for the dissolve family specifically: `drawTransformed` already exposes its own
- *  `alphaMultiplier` parameter for exactly this (see its own doc comment) — setting ambient
- *  `context.globalAlpha` instead wouldn't work for a video draw, since `drawTransformed` overwrites it
- *  internally with the clip's own `effects.opacity`. `drawText` has no such parameter, but never
- *  touches `globalAlpha` itself, so the ambient value this function sets works fine there — the
- *  argument is simply unused by text callers.
- *
- *  `draw` also takes an optional SECOND argument, `targetContext` — every existing caller's callback
- *  already ignores it (they close over their own outer `context` and always draw there), but the new
- *  glitch/water-ripple branch below needs to redirect the draw onto an offscreen scratch canvas first
- *  (to run the pixel effect over the result before it ever reaches the real canvas), which this
- *  parameter exists to make possible without every caller needing its own conditional. */
+ *  image to animate (a fade-in/out with no partner clip on the other side), not two. It never draws a
+ *  stand-in for the missing side: it clips/fades the ONE real `draw()` call directly against `reveal`
+ *  (0 = fully hidden, 1 = fully shown), and whatever's already on `context` (a black clear, or a lower
+ *  track's content) shows through wherever `draw()` doesn't paint. `draw` receives an
+ *  `alphaMultiplier` for the dissolve family (`drawTransformed` overwrites ambient `globalAlpha` with
+ *  the clip's own opacity, so it needs the value passed in), and an optional `targetContext` for the
+ *  pixel-math styles that must render onto a scratch canvas first. Export's
+ *  `pushSoloTransitionStages` reproduces each branch. */
 function compositeSoloReveal(
   context: CanvasRenderingContext2D,
   frameWidth: number,
   frameHeight: number,
   type: TransitionType,
   reveal: number,
-  draw: (alphaMultiplier: number, targetContext?: CanvasRenderingContext2D) => void
+  draw: (alphaMultiplier: number, targetContext?: CanvasRenderingContext2D) => void,
+  timing: SoloRevealTiming
 ): void {
   const family = transitionFamily(type);
+  const eased = easeTransition(reveal);
+  // Peaks at the disappearing/appearing instant and is gone once fully shown — one formula for both
+  // directions, since it's the boundary itself that should read as corrupted/blurred.
+  const intensity = 1 - reveal;
   context.save();
 
   if (family.kind === "wipe") {
     context.beginPath();
-    if (family.edge === "left") context.rect(frameWidth * (1 - reveal), 0, frameWidth * reveal, frameHeight);
-    else if (family.edge === "right") context.rect(0, 0, frameWidth * reveal, frameHeight);
-    else if (family.edge === "up") context.rect(0, frameHeight * (1 - reveal), frameWidth, frameHeight * reveal);
-    else context.rect(0, 0, frameWidth, frameHeight * reveal);
+    if (family.edge === "left") context.rect(frameWidth * (1 - eased), 0, frameWidth * eased, frameHeight);
+    else if (family.edge === "right") context.rect(0, 0, frameWidth * eased, frameHeight);
+    else if (family.edge === "up") context.rect(0, frameHeight * (1 - eased), frameWidth, frameHeight * eased);
+    else context.rect(0, 0, frameWidth, frameHeight * eased);
     context.clip();
     draw(1);
   } else if (family.kind === "slide") {
-    // No partner to push out of frame here — the clip simply enters/exits from the edge the type
-    // names, sliding itself rather than swapping places with anything.
+    // No partner to push out of frame here — the clip simply enters/exits from the named edge.
     const horizontal = family.edge === "left" || family.edge === "right";
     const sign = family.edge === "left" || family.edge === "up" ? -1 : 1;
-    context.translate(horizontal ? -sign * frameWidth * (1 - reveal) : 0, horizontal ? 0 : -sign * frameHeight * (1 - reveal));
+    context.translate(horizontal ? -sign * frameWidth * (1 - eased) : 0, horizontal ? 0 : -sign * frameHeight * (1 - eased));
     draw(1);
   } else if (family.kind === "slice") {
-    // Same per-strip staggered translate `compositeTransitionFrame`'s own "slice" branch uses, just
-    // solo (no second image, `draw()` painted once per strip inside its own clip region) — same "no
-    // partner to push out of frame" shape the plain `slide` branch above already takes.
     const sign = family.direction === "up" ? -1 : 1;
-    const stripWidth = frameWidth / SLICE_STRIP_COUNT;
     for (let i = 0; i < SLICE_STRIP_COUNT; i++) {
-      const localReveal = sliceStripProgress(reveal, i);
+      const local = easeTransition(sliceStripProgress(reveal, i));
+      const { x, width } = sliceStripBounds(frameWidth, i);
       context.save();
       context.beginPath();
-      context.rect(i * stripWidth, 0, stripWidth + 1, frameHeight);
+      context.rect(x, 0, width, frameHeight);
       context.clip();
-      context.translate(0, -sign * frameHeight * (1 - localReveal));
+      context.translate(0, -sign * frameHeight * (1 - local));
       draw(1);
       context.restore();
     }
   } else if (family.kind === "circle") {
-    // `circleOpen`/`circleClose` collapse to the same growing-circle-from-center reveal here — the
-    // real two-image distinction between them (which side is the base vs. which shrinks away) has no
-    // second image to apply to in a solo fade, so there's nothing left for the two to differ ON.
+    // `circleOpen`/`circleClose` collapse to the same growing-circle reveal here — with no second
+    // image, there's nothing left for the two to differ on.
     const maxRadius = Math.hypot(frameWidth, frameHeight) / 2;
     context.beginPath();
-    context.arc(frameWidth / 2, frameHeight / 2, maxRadius * reveal, 0, Math.PI * 2);
+    context.arc(frameWidth / 2, frameHeight / 2, maxRadius * eased, 0, Math.PI * 2);
     context.clip();
     draw(1);
-  } else if (family.kind === "glitch" || family.kind === "waterRipple") {
-    // `draw()` paints directly onto the OUTER context by default — redirected here onto scratch
-    // canvas "a" instead, so the pixel effect can run over the result before any of it reaches the
-    // real canvas, then composited on with `globalAlpha = reveal` for the overall fade.
-    const scratch = getPixelFxScratchCanvas("a", frameWidth, frameHeight);
-    const scratchContext = scratch.getContext("2d")!;
-    scratchContext.clearRect(0, 0, frameWidth, frameHeight);
-    draw(1, scratchContext);
-    const imageData = scratchContext.getImageData(0, 0, frameWidth, frameHeight);
-    // Peaks at `reveal = 0` (the disappearing/appearing instant) and fades to 0 by `reveal = 1`
-    // (fully visible/stable) — one formula that works for both fade-in (`reveal` rising 0→1) and
-    // fade-out (`reveal` falling 1→0), since it's the boundary itself that should read as corrupted,
-    // not a particular direction of travel.
-    const intensity = 1 - reveal;
-    if (family.kind === "glitch") applyGlitch(imageData, reveal, 1, intensity);
-    else applyWaterRipple(imageData, reveal, 1, intensity);
-    scratchContext.putImageData(imageData, 0, 0);
+  } else if (family.kind === "glitch" || family.kind === "waterRipple" || family.kind === "whipPan") {
+    // Rendered onto a full-frame scratch canvas first (`draw` supports a target context for exactly
+    // this), processed at working resolution, then composited with `globalAlpha = reveal`.
+    const full = getPixelFxScratchCanvas("full", frameWidth, frameHeight);
+    const fullContext = full.getContext("2d")!;
+    fullContext.clearRect(0, 0, frameWidth, frameHeight);
+    draw(1, fullContext);
+    let dx = 0;
+    let processed: HTMLCanvasElement;
+    if (family.kind === "glitch") {
+      const burstIndex = glitchCutBurstIndex(timing.windowElapsed);
+      const burstProgress = glitchCutBurstProgress(burstIndex, timing.windowDuration);
+      // Evaluated once per burst (not per frame) so every frame inside a burst is identical — export
+      // can only change `rgbashift` between bursts.
+      const burst = glitchCutBurst(burstIndex, timing.fadingOut ? burstProgress : 1 - burstProgress);
+      processed = applyPixelFxAtWorkScale("a", full, frameWidth, frameHeight, (imageData) => applyGlitchCut(imageData, burst));
+      context.imageSmoothingEnabled = false;
+    } else if (family.kind === "waterRipple") {
+      processed = applyPixelFxAtWorkScale("a", full, frameWidth, frameHeight, (imageData, pixelScale) =>
+        applyWaterRipple(imageData, timing.clipElapsed, 1, intensity, pixelScale)
+      );
+    } else {
+      // Whip pan: blurred first, then slid in/out from the named edge — same order as the two-clip case.
+      const sign = family.edge === "left" ? -1 : 1;
+      dx = -sign * frameWidth * (1 - eased);
+      processed = applyPixelFxAtWorkScale("a", full, frameWidth, frameHeight, (imageData, pixelScale) => applyHorizontalBlur(imageData, intensity, pixelScale));
+    }
     context.globalAlpha = reveal;
-    // Same nearest-neighbor reasoning as `compositeTransitionFrame`'s own glitch/waterRipple branch —
-    // `scratch` is full LOGICAL sequence resolution, drawn down onto a much smaller physical backing
-    // store; a smoothed downscale would blur the corruption away to nothing. `context.restore()` below
-    // (this function's own, at the very end, paired with its `save()` at the top) reverts this along
-    // with every other state change this branch makes, so there's nothing to manually reset here.
-    context.imageSmoothingEnabled = false;
-    context.drawImage(scratch, 0, 0, frameWidth, frameHeight);
-  } else if (family.kind === "zoomBlur") {
-    // `intensity` peaks at the disappearing/appearing instant (`reveal` at 0) and fades to 0 by fully
-    // visible/stable (`reveal` at 1) — same one-formula-covers-both-directions shape the glitch/
-    // waterRipple branch above already uses. `drawZoomedWithBlur` (see its own doc comment) picks
-    // between a fast direct-`context.filter` path and a manual pixel-blur fallback depending on
-    // whether THIS browser's `context.filter` actually does anything (Safari/WebKit silently ignores
-    // it — a real, reported "effect doesn't work on some devices" bug) — it's already fully
-    // self-contained (its own transform save/restore either way), so no extra scoping needed here.
-    const intensity = 1 - reveal;
+    context.drawImage(processed, dx, 0, frameWidth, frameHeight);
+  } else if (family.kind === "zoomBlur" || family.kind === "flashZoom") {
     const scale = 1 + ZOOM_BLUR_SCALE * intensity;
     const blurPx = ZOOM_BLUR_SIGMA_PX * intensity;
-    drawZoomedWithBlur(context, draw, frameWidth, frameHeight, scale, blurPx, reveal, "a");
-  } else if (family.kind === "flashZoom") {
-    // Same zoom+blur draw as the `zoomBlur` branch above — `drawZoomedWithBlur` already undoes its own
-    // transform before returning, so the flat white overlay below correctly covers the frame at its
-    // normal scale, not zoomed in too, with no extra save/restore needed here either.
-    const intensity = 1 - reveal;
-    const scale = 1 + ZOOM_BLUR_SCALE * intensity;
-    const blurPx = ZOOM_BLUR_SIGMA_PX * intensity;
-    drawZoomedWithBlur(context, draw, frameWidth, frameHeight, scale, blurPx, reveal, "a");
-    context.fillStyle = "#ffffff";
-    context.globalAlpha = FLASH_ZOOM_PEAK * intensity;
-    context.fillRect(0, 0, frameWidth, frameHeight);
-  } else if (family.kind === "whipPan") {
-    // Same "no partner to push out of frame" solo shape `slide` above uses, plus the directional blur
-    // ramped by the disappearing/appearing-instant intensity `zoomBlur`'s own branch here uses.
-    const intensity = 1 - reveal;
-    const sign = family.edge === "left" ? -1 : 1;
-    const dx = -sign * frameWidth * (1 - reveal);
-    const scratch = getPixelFxScratchCanvas("a", frameWidth, frameHeight);
-    const scratchContext = scratch.getContext("2d")!;
-    scratchContext.clearRect(0, 0, frameWidth, frameHeight);
-    scratchContext.save();
-    scratchContext.translate(dx, 0);
-    draw(1, scratchContext);
-    scratchContext.restore();
-    const imageData = scratchContext.getImageData(0, 0, frameWidth, frameHeight);
-    applyHorizontalBlur(imageData, intensity);
-    scratchContext.putImageData(imageData, 0, 0);
-    context.globalAlpha = reveal;
-    context.drawImage(scratch, 0, 0, frameWidth, frameHeight);
+    // Flatten first: drawTransformed sets its own filter and opacity, which would overwrite the
+    // transition's blur and reveal alpha if called directly inside drawZoomedWithBlur.
+    const full = getPixelFxScratchCanvas("full", frameWidth, frameHeight);
+    const fullContext = full.getContext("2d")!;
+    fullContext.clearRect(0, 0, frameWidth, frameHeight);
+    draw(1, fullContext);
+    drawZoomedWithBlur(context, (_alpha, target = context) => target.drawImage(full, 0, 0, frameWidth, frameHeight), frameWidth, frameHeight, scale, blurPx, reveal, "a");
+    if (family.kind === "flashZoom") {
+      // `drawZoomedWithBlur` already undid its own zoom, so this covers the frame at normal scale.
+      context.fillStyle = "#ffffff";
+      context.globalAlpha = FLASH_ZOOM_PEAK * intensity;
+      context.fillRect(0, 0, frameWidth, frameHeight);
+    }
   } else {
-    // dissolve (and crossfade, the default) — a plain alpha reveal.
+    // crossfade (and legacy dissolve) — a plain alpha reveal.
     context.globalAlpha = reveal;
     draw(reveal);
   }
@@ -714,13 +605,13 @@ const INTERNAL_CLOCK_RESYNC_TOLERANCE = 0.1;
  *  is multiplicative (100% = unchanged), so `-1..1` is mapped onto `0%..200%` around that midpoint.
  *  See `ClipEffects`'s own doc comment for why this (and `blur`, a different kernel than FFmpeg's
  *  `gblur`) are documented approximations, not exact matches for what export produces. */
-export function buildCanvasFilterString(effects: ClipEffects): string {
+export function buildCanvasFilterString(effects: ClipEffects, blurScale = 1): string {
   if (isIdentityEffects(effects)) return "none";
   return (
     `brightness(${100 + effects.brightness * 100}%) ` +
     `contrast(${effects.contrast * 100}%) ` +
     `saturate(${effects.saturation * 100}%) ` +
-    `blur(${effects.blur}px)`
+    `blur(${effects.blur * blurScale}px)`
   );
 }
 
@@ -861,6 +752,28 @@ export function applyManualEffects(imageData: ImageData, effects: ClipEffects): 
   if (effects.blur > 0) applyBoxBlur(imageData, effects.blur);
 }
 
+/** A Gaussian blur of standard deviation `sigma`, approximated by three successive box blurs (the
+ *  classic "boxes for Gauss" construction) — what the manual fallback paths use so their blur matches
+ *  both CSS `blur(σ)` and export's `gblur=sigma=σ`, which are both true Gaussians with σ as the
+ *  standard deviation. A single `applyBoxBlur(σ)` pass (what these paths used to run) has a standard
+ *  deviation of only about σ/√3 and a hard-edged, boxy falloff, so Safari's preview blur was both
+ *  weaker and a different shape from everything else. */
+function applyGaussianBlur(imageData: ImageData, sigma: number): void {
+  if (sigma <= 0.05) return;
+  const passes = 3;
+  const idealWidth = Math.sqrt((12 * sigma * sigma) / passes + 1);
+  let lowerWidth = Math.floor(idealWidth);
+  if (lowerWidth % 2 === 0) lowerWidth--;
+  const upperWidth = lowerWidth + 2;
+  const lowerCount = Math.round(
+    (12 * sigma * sigma - passes * lowerWidth * lowerWidth - 4 * passes * lowerWidth - 3 * passes) / (-4 * lowerWidth - 4)
+  );
+  for (let i = 0; i < passes; i++) {
+    const width = i < lowerCount ? lowerWidth : upperWidth;
+    applyBoxBlur(imageData, (width - 1) / 2);
+  }
+}
+
 /** Long-edge cap (pixels) for the WORKING canvas `applyDownsampledBlur` actually runs `getImageData`/
  *  `applyBoxBlur`/`putImageData` against — see that function's own doc comment for why a fixed small
  *  size, not the caller's real resolution, is what keeps blur inside a real frame budget. */
@@ -888,11 +801,11 @@ function applyDownsampledBlur(source: CanvasImageSource, width: number, height: 
   const workWidth = Math.max(1, Math.round(width * workScale));
   const workHeight = Math.max(1, Math.round(height * workScale));
   const canvas = getPixelFxScratchCanvas(scratchSlot, workWidth, workHeight);
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
   ctx.clearRect(0, 0, workWidth, workHeight);
   ctx.drawImage(source, 0, 0, workWidth, workHeight);
   const imageData = ctx.getImageData(0, 0, workWidth, workHeight);
-  applyBoxBlur(imageData, blurPx * workScale);
+  applyGaussianBlur(imageData, blurPx * workScale);
   ctx.putImageData(imageData, 0, 0);
   return canvas;
 }
@@ -938,7 +851,7 @@ function drawZoomedWithBlur(
     const workWidth = Math.max(1, Math.round(frameWidth * workScale));
     const workHeight = Math.max(1, Math.round(frameHeight * workScale));
     const scratch = getPixelFxScratchCanvas(scratchSlot, workWidth, workHeight);
-    const scratchContext = scratch.getContext("2d")!;
+    const scratchContext = scratch.getContext("2d", { willReadFrequently: true })!;
     scratchContext.clearRect(0, 0, workWidth, workHeight);
     scratchContext.save();
     scratchContext.scale(workScale, workScale);
@@ -948,14 +861,16 @@ function drawZoomedWithBlur(
     draw(1, scratchContext);
     scratchContext.restore();
     const imageData = scratchContext.getImageData(0, 0, workWidth, workHeight);
-    applyBoxBlur(imageData, blurPx * workScale);
+    applyGaussianBlur(imageData, blurPx * workScale);
     scratchContext.putImageData(imageData, 0, 0);
     context.globalAlpha = alpha;
     context.drawImage(scratch, 0, 0, frameWidth, frameHeight);
     context.globalAlpha = 1;
   } else {
     const priorFilter = context.filter;
-    context.filter = blurPx > 0.05 ? `blur(${blurPx}px)` : "none";
+    // Scaled to device pixels — see `deviceScaleOf`. Measured BEFORE the zoom transform below, so the
+    // blur stays in output-frame units, like export's `gblur` after its own zoom.
+    context.filter = blurPx > 0.05 ? `blur(${blurPx * deviceScaleOf(context)}px)` : "none";
     context.globalAlpha = alpha;
     context.save();
     context.translate(frameWidth / 2, frameHeight / 2);
@@ -1602,6 +1517,12 @@ export class PlaybackEngine {
    *  `drawVideoClip`), since `createMediaElementSource` captures the element's native output entirely —
    *  setting `.volume` on an element already routed through Web Audio would have no audible effect. */
   private syncMedia(clipId: string, element: HTMLVideoElement, sourceTime: number, playing: boolean): void {
+    if (holdMediaAtEnd(element, sourceTime)) {
+      this.playOutcome.set(clipId, "held");
+      this.watchForStall(clipId, element, sourceTime, false);
+      if (playing && (element.seeking || element.readyState < 2)) this.mediaWaitingThisFrame = true;
+      return;
+    }
     // Transport runs BEFORE the readyState gate below. iOS Safari ignores `preload`, so an element
     // that has only had its `src` assigned can sit at readyState 0 until playback is requested; with
     // `play()` behind that gate nothing would ever request it. This ordering alone did NOT fix the
@@ -1626,8 +1547,11 @@ export class PlaybackEngine {
       if (element.paused) {
         this.playOutcome.set(clipId, "pending");
         void element.play().then(
-          () => this.playOutcome.set(clipId, "resolved"),
+          () => {
+            if (this.playOutcome.get(clipId) !== "held") this.playOutcome.set(clipId, "resolved");
+          },
           (err: unknown) => {
+            if (this.playOutcome.get(clipId) === "held") return;
             this.playOutcome.set(clipId, `rejected:${err instanceof Error ? err.name : String(err)}`);
             this.host.onPlaybackBlocked();
           }
@@ -1880,17 +1804,25 @@ export class PlaybackEngine {
    *  clip on that track routes through (`AudioMixEngine.setTrackGain`) — folding it into this per-clip
    *  scalar would mean recomputing and re-pushing it into every playing clip's own node every time the
    *  fader moves, instead of the one shared-node update `tick()` already does per track per frame. */
-  private activeAudioClips(project: Project, time: number): { trackId: string; clip: Clip; sourceTime: number; gain: number }[] {
-    const results: { trackId: string; clip: Clip; sourceTime: number; gain: number }[] = [];
+  private activeAudioClips(project: Project, time: number): { trackId: string; clip: Clip; sourceTime: number; gain: number; sourceEnd: number }[] {
+    const results: { trackId: string; clip: Clip; sourceTime: number; gain: number; sourceEnd: number }[] = [];
     for (const { track, clip } of audibleClips(project)) {
       const duration = clip.sourceOut - clip.sourceIn;
       if (time < clip.timelineStart || time >= clip.timelineStart + duration) continue;
       const sourceTime = clip.sourceIn + (time - clip.timelineStart);
 
       const { gain, partner } = resolveAudioTransitionGain(track, clip, time);
-      results.push({ trackId: track.id, clip, sourceTime, gain: (clip.gain ?? 1) * gain });
+      // Scheduled to run on past the out-point when the next clip blends out of this one, so the
+      // audio flows straight into the blend (see `transitionPartnerSourceTime`).
+      results.push({ trackId: track.id, clip, sourceTime, gain: (clip.gain ?? 1) * gain, sourceEnd: clip.sourceOut + transitionTailExtension(track, clip) });
       if (partner) {
-        results.push({ trackId: track.id, clip: partner.clip, sourceTime: partner.sourceTime, gain: (partner.clip.gain ?? 1) * partner.gain });
+        results.push({
+          trackId: track.id,
+          clip: partner.clip,
+          sourceTime: partner.sourceTime,
+          gain: (partner.clip.gain ?? 1) * partner.gain,
+          sourceEnd: partner.clip.sourceOut + transitionTailExtension(track, partner.clip),
+        });
       }
     }
     return results;
@@ -1968,6 +1900,10 @@ export class PlaybackEngine {
       // still-buffering clip from being paused mid-load, matching this method's pre-multi-track
       // behavior exactly.
       activeClipIds.add(clip.id);
+      // The outgoing clip of a blend keeps PLAYING (on past its out-point — see
+      // `transitionPartnerSourceTime`), so it must not be paused out from under the blend either.
+      const blend = findTransitionPartner(track, clip);
+      if (blend?.partner && time - clip.timelineStart < blend.duration) activeClipIds.add(blend.partner.id);
       this.drawVideoClip(project, context, frameWidth, frameHeight, track, clip, time);
     }
 
@@ -2096,7 +2032,8 @@ export class PlaybackEngine {
       if (transition.partner) {
         const outCtx = this.transitionCanvas("a", frameWidth, frameHeight);
         const inCtx = this.transitionCanvas("b", frameWidth, frameHeight);
-        const partnerDrawn = outCtx && this.drawTransitionPartner(project, outCtx, frameWidth, frameHeight, transition.partner, transition.duration, elapsed);
+        const partnerDrawn =
+          outCtx && this.drawTransitionPartner(project, outCtx, frameWidth, frameHeight, transition.partner, transition.duration, elapsed, track.muted);
         if (partnerDrawn && inCtx) {
           this.drawTransformed(inCtx, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
           compositeTransitionFrame(
@@ -2106,14 +2043,23 @@ export class PlaybackEngine {
             clip.transitionIn?.type ?? "crossfade",
             progress,
             this.transitionCanvasA!,
-            this.transitionCanvasB!
+            this.transitionCanvasB!,
+            transition.duration
           );
           return;
         }
       } else {
-        compositeSoloReveal(context, frameWidth, frameHeight, clip.transitionIn?.type ?? "crossfade", progress, (alphaMultiplier, targetContext) => {
-          this.drawTransformed(targetContext ?? context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, alphaMultiplier, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
-        });
+        compositeSoloReveal(
+          context,
+          frameWidth,
+          frameHeight,
+          clip.transitionIn?.type ?? "crossfade",
+          progress,
+          (alphaMultiplier, targetContext) => {
+            this.drawTransformed(targetContext ?? context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, alphaMultiplier, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
+          },
+          { windowElapsed: elapsed, windowDuration: transition.duration, clipElapsed: elapsed, fadingOut: false }
+        );
         return;
       }
     }
@@ -2129,9 +2075,22 @@ export class PlaybackEngine {
       const remaining = clipEnd(clip) - time;
       if (remaining < transitionOut.duration) {
         const reveal = Math.min(1, Math.max(0, remaining / transitionOut.duration));
-        compositeSoloReveal(context, frameWidth, frameHeight, clip.transitionOut?.type ?? "crossfade", reveal, (alphaMultiplier, targetContext) => {
-          this.drawTransformed(targetContext ?? context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, alphaMultiplier, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
-        });
+        compositeSoloReveal(
+          context,
+          frameWidth,
+          frameHeight,
+          clip.transitionOut?.type ?? "crossfade",
+          reveal,
+          (alphaMultiplier, targetContext) => {
+            this.drawTransformed(targetContext ?? context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, alphaMultiplier, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
+          },
+          {
+            windowElapsed: transitionOut.duration - remaining,
+            windowDuration: transitionOut.duration,
+            clipElapsed: elapsed,
+            fadingOut: true,
+          }
+        );
         return;
       }
     }
@@ -2139,10 +2098,8 @@ export class PlaybackEngine {
     this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
   }
 
-  /** Draws the outgoing clip's own tail frame during a crossfade — a stripped-down sibling of the main
-   *  `drawVideoLayer` path above (no live-drag override, no audio sync: the partner isn't "current" for
-   *  playback purposes, just visually borrowed for the blend) that seeks the source video to its own
-   *  tail position and hands off to the same `drawTransformed` every other draw goes through. Returns
+  /** Draws and plays the outgoing clip's source handle during a blend, holding its final frame at EOF.
+   *  Uses the same transform and audio paths as ordinary playback, without live-drag overrides. Returns
    *  `false` when the partner's element isn't ready to draw yet, so the caller can fall back to drawing
    *  this clip alone rather than blending against nothing. */
   private drawTransitionPartner(
@@ -2152,9 +2109,15 @@ export class PlaybackEngine {
     frameHeight: number,
     partner: Clip,
     duration: number,
-    elapsed: number
+    elapsed: number,
+    trackMuted: boolean
   ): boolean {
     const asset = project.assets.find((a) => a.id === partner.assetId);
+    // Carries on past the partner's own out-point — see `transitionPartnerSourceTime` for why this is
+    // no longer a replay of its last `duration` seconds.
+    // Let the transport use the loaded element's actual duration to detect EOF. Asset metadata can
+    // differ by a frame; clamping here could leave the requested time forever short of the real end.
+    const sourceTime = transitionPartnerSourceTime(partner, elapsed);
 
     let element: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement;
     let sourceWidth: number;
@@ -2175,7 +2138,7 @@ export class PlaybackEngine {
         if (!element.complete || element.naturalWidth === 0) return false;
         const animation = asset?.animation;
         if (animation && this.host.spriteUrlFor) {
-          element = this.animationFrameFor(partner.id, element, animation, partner.sourceOut - duration + elapsed);
+          element = this.animationFrameFor(partner.id, element, animation, sourceTime);
           sourceWidth = animation.frameWidth;
           sourceHeight = animation.frameHeight;
         } else {
@@ -2183,24 +2146,13 @@ export class PlaybackEngine {
           sourceHeight = element.naturalHeight;
         }
       } else if (element instanceof HTMLVideoElement) {
-        const sourceTime = partner.sourceOut - duration + elapsed;
-        if (element.readyState === 0) return false;
-        if (Math.abs(element.currentTime - sourceTime) > DRIFT_TOLERANCE) element.currentTime = sourceTime;
-        if (!element.paused) {
-          // A real, reported "glitch... including audio when we use a transition" bug: `pause()`
-          // stops this element's decode outright, which — since its audio is routed through Web Audio
-          // via `AudioMixEngine.syncVideoClipAudio`'s own `MediaElementSourceNode` — cuts its audio
-          // output at whatever sample the waveform happened to be at, an abrupt discontinuity that's
-          // audible as a click/pop. `duckAroundSeek` (built for the identical click this same class's
-          // own hard-reseek path already produces — see its own doc comment) ramps this clip's gain to
-          // silence over 15ms on the audio thread's own clock BEFORE the pause actually lands, turning
-          // that hard cut into an imperceptibly fast fade instead. Guarded by the SAME `!element.paused`
-          // check `pause()` itself already needed (this element only transitions playing→paused once
-          // per becoming a transition partner), so the duck fires exactly once per transition, not
-          // every tick for its whole blend window.
-          this.audioMixEngine.duckAroundSeek(partner.id);
-          element.pause();
-        }
+        // The outgoing clip was already playing right up to its out-point, so it simply keeps playing
+        // through the blend — the same drift-corrected transport every current clip gets, no seek at
+        // the cut. It used to be PAUSED here instead (a frozen last frame, while export replayed the
+        // tail in motion), with its embedded audio cut; now its audio fades out under the incoming
+        // clip's fade-in, the way export's `acrossfade` mixes them.
+        this.syncMedia(partner.id, element, sourceTime, this.host.isPlaying());
+        this.audioMixEngine.syncVideoClipAudio(partner, element, (partner.gain ?? 1) * (1 - Math.min(1, elapsed / duration)), (partner.mutedAudio ?? false) || trackMuted);
         if (element.readyState < 2) return false;
         sourceWidth = element.videoWidth;
         sourceHeight = element.videoHeight;
@@ -2211,13 +2163,10 @@ export class PlaybackEngine {
 
     if (sourceWidth === 0 || sourceHeight === 0) return false;
 
-    // The partner's OWN clip-window-relative elapsed time, derived from the tail-slice `sourceTime`
-    // already computed above (`partner.sourceOut - duration + elapsed`): subtracting `partner.sourceIn`
-    // converts source-media time back to clip-window time, i.e.
-    // `partnerElapsed = sourceTime - partner.sourceIn = clipDuration(partner) - duration + elapsed`.
-    // No live-drag override here — same reasoning this method's own doc comment already gives for
-    // skipping audio sync: the partner isn't "current" for playback purposes.
-    const partnerElapsed = clipDuration(partner) - duration + elapsed;
+    // The partner's OWN clip-window-relative elapsed time — past the end of its window during a blend,
+    // which keyframe resolution clamps to the last keyframe's value. No live-drag override here: the
+    // partner isn't "current" for editing purposes.
+    const partnerElapsed = clipDuration(partner) + elapsed;
     const transform = resolveClipTransform(partner, partnerElapsed);
     const effects = resolveClipEffects(partner, partnerElapsed);
     const colorGrading = resolveClipColorGrading(partner, partnerElapsed);
@@ -2314,7 +2263,11 @@ export class PlaybackEngine {
         scratch.putImageData(imageData, 0, 0);
         source = scratch.canvas;
         if (needsManualEffects && effects.blur > 0) {
-          source = applyDownsampledBlur(source, sourceWidth, sourceHeight, effects.blur, "a");
+          // `effects.blur` is in sequence pixels (export blurs AFTER scaling the clip to its on-screen
+          // size) but this buffer is still at SOURCE resolution — convert, or a 4K source would get a
+          // fraction of the blur a 720p one does.
+          const sourcePxPerFramePx = box.width > 0 ? box.cropWidth / box.width : 1;
+          source = applyDownsampledBlur(source, sourceWidth, sourceHeight, effects.blur * sourcePxPerFramePx, "a");
         }
       }
     }
@@ -2328,7 +2281,7 @@ export class PlaybackEngine {
     // browser) once `needsManualEffects` already baked the effect into pixels above — a browser that
     // silently ignores the WHOLE string today isn't guaranteed to keep ignoring every individual
     // function within it forever, and double-applying would look wrong the moment that changes.
-    context.filter = needsManualEffects ? "none" : buildCanvasFilterString(effects);
+    context.filter = needsManualEffects ? "none" : buildCanvasFilterString(effects, deviceScaleOf(context));
     context.globalAlpha = effects.opacity * alphaMultiplier;
     context.translate(box.centerX, box.centerY);
     if (transform.rotationDeg !== 0) context.rotate((transform.rotationDeg * Math.PI) / 180);
@@ -2559,11 +2512,14 @@ export class PlaybackEngine {
               this.drawText(outCtx, frameWidth, frameHeight, partnerAsset.textContent ?? "", partnerAsset.textStyle, undefined, project.customFonts);
               this.drawText(inCtx, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
               withCrop(() => {
+                // Always a plain crossfade for text, whatever the stored style — export's `drawtext` fade
+                // has no per-style geometry, and the picker only offers Crossfade for text clips now;
+                // an older project's text clip set to e.g. Wipe must still preview as what it exports.
                 compositeTransitionFrame(
                   context,
                   frameWidth,
                   frameHeight,
-                  clip.transitionIn?.type ?? "crossfade",
+                  "crossfade",
                   progress,
                   this.transitionCanvasA!,
                   this.transitionCanvasB!
@@ -2574,9 +2530,17 @@ export class PlaybackEngine {
           }
         } else {
           withCrop(() => {
-            compositeSoloReveal(context, frameWidth, frameHeight, clip.transitionIn?.type ?? "crossfade", progress, () => {
-              this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
-            });
+            compositeSoloReveal(
+              context,
+              frameWidth,
+              frameHeight,
+              "crossfade",
+              progress,
+              () => {
+                this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
+              },
+              { windowElapsed: elapsed, windowDuration: transition.duration, clipElapsed: elapsed, fadingOut: false }
+            );
           });
           continue;
         }
@@ -2591,9 +2555,17 @@ export class PlaybackEngine {
         if (remaining < transitionOut.duration) {
           const reveal = Math.min(1, Math.max(0, remaining / transitionOut.duration));
           withCrop(() => {
-            compositeSoloReveal(context, frameWidth, frameHeight, clip.transitionOut?.type ?? "crossfade", reveal, () => {
-              this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
-            });
+            compositeSoloReveal(
+              context,
+              frameWidth,
+              frameHeight,
+              "crossfade",
+              reveal,
+              () => {
+                this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
+              },
+              { windowElapsed: transitionOut.duration - remaining, windowDuration: transitionOut.duration, clipElapsed: elapsed, fadingOut: true }
+            );
           });
           continue;
         }

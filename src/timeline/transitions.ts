@@ -1,15 +1,15 @@
 import { clipDuration, clipEnd } from "../project/createProject.ts";
 import type { Clip, Track, TransitionType } from "../project/types.ts";
 
-/** Every `TransitionType`, in the order shown in both the Inspector's "Transition In" dropdown and the
- *  toolbar's picker grid — grouped by family (dissolve, wipe, slide, slice, circle, glitch/water-
- *  ripple, zoom blur, whip pan, flash zoom) matching `PlaybackEngine.transitionFamily`'s own grouping,
- *  so the list reads as short runs rather than an arbitrary order. One shared source of truth (not a
+/** Every OFFERED `TransitionType`, in the order shown in both the Inspector's "Transition In" dropdown
+ *  and the toolbar's picker grid — grouped by family (crossfade, wipe, slide, slice, circle, glitch/
+ *  water-ripple, zoom blur, whip pan, flash zoom) matching `transitionFamily`'s own grouping, so the
+ *  list reads as short runs rather than an arbitrary order. `dissolve` is deliberately absent — it's a
+ *  legacy alias of `crossfade` (see `TransitionType`'s doc comment). One shared source of truth (not a
  *  separately-maintained list per UI), since a video and a text clip transition through the exact same
  *  `TransitionType` union. */
 export const TRANSITION_TYPE_OPTIONS: TransitionType[] = [
   "crossfade",
-  "dissolve",
   "wipeLeft",
   "wipeRight",
   "wipeUp",
@@ -30,12 +30,10 @@ export const TRANSITION_TYPE_OPTIONS: TransitionType[] = [
   "flashZoom",
 ];
 
-/** The subset of `TransitionType` that renders via a per-pixel corruption/blur/flash pre-pass rather
- *  than a plain `xfade` geometry (see that type's own doc comment) — `drawtext` has no equivalent
- *  pre-pass, so `TransitionPickerMenu`'s own `isTextTrack` grid excludes exactly this set. A named
- *  export (rather than each caller re-listing the six names) so a future seventh addition can't be
- *  added to `TransitionType` and `TRANSITION_XFADE_NAME`/`applyTransitionCorruptionPass` while
- *  forgetting this one exclusion list. */
+/** The subset of `TransitionType` that renders via a per-pixel corruption/blur/flash stage rather than
+ *  pure geometry (see that type's own doc comment) — `drawtext` has no equivalent, so text clips can't
+ *  use them. A named export (rather than each caller re-listing the six names) so a future addition
+ *  can't be added to `TransitionType` while forgetting this one exclusion list. */
 export const VIDEO_ONLY_TRANSITION_TYPES: TransitionType[] = [
   "glitchCut",
   "waterRippleCut",
@@ -129,6 +127,34 @@ function findAdjacentSuccessor(track: Track, clip: Clip): Clip | undefined {
   return track.clips.find((c) => Math.abs(c.timelineStart - clipEnd(clip)) < ADJACENCY_TOLERANCE);
 }
 
+/** Where the OUTGOING clip's own footage/audio is, `elapsed` seconds into a two-clip blend: it simply
+ *  keeps playing past its out-point into the rest of its source, the way an NLE uses "handles". The
+ *  blend window sits at the start of the incoming clip, so the outgoing clip has already played right
+ *  up to its out-point when the blend begins.
+ *
+ *  This used to rewind to `sourceOut - duration` instead — replaying the outgoing clip's last
+ *  `duration` seconds a second time, underneath the blend — so every transition visibly (and
+ *  audibly) jumped back in time at the cut: A ends, then A's last half-second plays again while B
+ *  fades in. With `sourceDuration` given, the result is clamped to the end of the source — a clip
+ *  used right to the end of its file holds its final frame (and goes silent) for the rest of the
+ *  blend rather than running past the media. */
+export function transitionPartnerSourceTime(partner: Clip, elapsed: number, sourceDuration?: number): number {
+  const time = partner.sourceOut + Math.max(0, elapsed);
+  if (sourceDuration === undefined || !(sourceDuration > 0)) return time;
+  return Math.min(time, Math.max(partner.sourceOut, sourceDuration));
+}
+
+/** How far PAST its own out-point `clip`'s media keeps playing, because the clip right after it
+ *  blends out of it (see `transitionPartnerSourceTime`) — 0 when nothing does. What an audio scheduler
+ *  needs so the outgoing clip's audio flows straight on into the blend instead of stopping at the cut
+ *  and restarting a tick later. */
+export function transitionTailExtension(track: Track, clip: Clip): number {
+  const successor = findAdjacentSuccessor(track, clip);
+  if (!successor) return 0;
+  const blend = findTransitionPartner(track, successor);
+  return blend?.partner?.id === clip.id ? blend.duration : 0;
+}
+
 /** Whether `clip` has an eligible following neighbor to blend INTO, independent of whether
  *  `transitionOut` is actually set — the successor-side mirror of `findTransitionCandidate`. Used by
  *  `TransitionPickerMenu`/`TransitionPreviewTile` to show the real next clip's own thumbnail (or black
@@ -182,10 +208,9 @@ export function findTransitionOut(track: Track, clip: Clip): { duration: number 
  *  blend on THIS clip would require to not apply to the CURRENT clip in the first place):
  *  1. Inside this clip's own `transitionIn` window, blending from a real partner — both ramp
  *     opposite directions (`gain` rises 0→1, `partner.gain` falls 1→0), and the partner's `sourceTime`
- *     continues from `partner.sourceOut - duration` — its own last `duration` seconds — advancing at
- *     the same rate the blend itself progresses. Mirrors `buildSegments`'s identical "transition"
- *     segment construction for export exactly (the partner's tail slice, `-ss (sourceOut-D) -t D`),
- *     just evaluated live instead of baked into a filter graph ahead of time.
+ *     carries on past its own out-point (`transitionPartnerSourceTime`), advancing at the same rate
+ *     the blend itself progresses. Mirrors export's "transition" segment exactly (the partner's slice
+ *     starting at `-ss sourceOut`), just evaluated live instead of baked into a filter graph.
  *  2. Inside this clip's own `transitionIn` window, but SOLO (no partner) — only this clip ramps, up
  *     from silence.
  *  3. Inside this clip's own `transitionOut` window (checked only once neither of the above applies,
@@ -206,7 +231,7 @@ export function resolveAudioTransitionGain(track: Track, clip: Clip, time: numbe
       const partner = transitionIn.partner;
       return {
         gain: progress,
-        partner: { clip: partner, gain: 1 - progress, sourceTime: partner.sourceOut - transitionIn.duration + elapsed },
+        partner: { clip: partner, gain: 1 - progress, sourceTime: transitionPartnerSourceTime(partner, elapsed) },
       };
     }
     return { gain: progress, partner: null };

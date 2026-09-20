@@ -256,11 +256,14 @@ export async function nativeExportAvailable(): Promise<boolean> {
  *  scale) is translated into a bits-per-pixel figure instead — coarse, not a claim of equivalent
  *  output to what the same CRF value produces on desktop, just a reasonable size/quality tradeoff
  *  across this app's existing High/Balanced/Small-file quality presets. */
-function openh264EncoderArgs(project: Project): string[] {
+function nativeVideoEncoderArgs(project: Project): string[] {
   const { width, height, fps, crf } = project.exportSettings;
   const bitsPerPixel = crf <= 18 ? 0.12 : crf <= 20 ? 0.09 : 0.05;
   const bitrateKbps = Math.round((width * height * fps * bitsPerPixel) / 1000);
-  return ["-c:v", "libopenh264", "-b:v", `${bitrateKbps}k`];
+  // The iOS LGPL framework ships Apple's encoder; Android ships OpenH264.
+  // Keep encoder-specific switches out of the shared graph (neither supports x264 CRF/preset).
+  const encoder = Capacitor.getPlatform() === "ios" ? "h264_videotoolbox" : "libopenh264";
+  return ["-c:v", encoder, "-b:v", `${bitrateKbps}k`];
 }
 
 export async function nativeStartExport(projectId: string, project: Project, fileName?: string): Promise<ExportStarted> {
@@ -278,6 +281,8 @@ export async function nativeStartExport(projectId: string, project: Project, fil
   const assetPaths = await resolveAssetPaths(projectId, project, sfxPaths);
 
   const plan = buildExportPlan(project, {
+    // The on-device FFmpeg drawtext filter rejects text_align (desktop supports it).
+    drawtextTextAlign: false,
     inputPathFor: (assetId) => {
       const path = assetPaths.get(assetId);
       if (!path) throw new ApiRequestError("A clip references media that is no longer in the project", 400, "missing-asset");
@@ -294,7 +299,7 @@ export async function nativeStartExport(projectId: string, project: Project, fil
       if (!path) throw new ApiRequestError("A text clip's content wasn't prepared for export", 500, "text-file-missing");
       return path;
     },
-    videoEncoderArgs: openh264EncoderArgs(project),
+    videoEncoderArgs: nativeVideoEncoderArgs(project),
   });
 
   const jobId = newId("job");

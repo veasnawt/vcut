@@ -58,12 +58,14 @@ export function buildAudioOnlyExportPlan(project: Project, options: AudioOnlyPla
    *  audio, else a matching-length silent placeholder — the audio-only equivalent of
    *  `buildExportPlan`'s `pushClipAudioFilters`, except the silent branch here never opens a file at
    *  all (there's no video decode forcing one open the way there is in the full export). */
-  function pushAudio(hasAudio: boolean, path: string | null, sourceIn: number, sliceDuration: number, outputLabel: string, gain = 1): void {
+  function pushAudio(hasAudio: boolean, path: string | null, sourceIn: number, sliceDuration: number, outputLabel: string, gain = 1, padToDuration = false): void {
     if (hasAudio && path) {
       inputs.push("-ss", t(sourceIn), "-t", t(sliceDuration), "-i", path);
       const sourceIndex = inputIndex++;
       const volumeStage = gain !== 1 ? `,volume=${n(gain)}` : "";
-      filters.push(`[${sourceIndex}:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${volumeStage}[${outputLabel}]`);
+      // An outgoing transition partner (see below) can run out of source before the blend ends.
+      const padStage = padToDuration ? `,apad=whole_dur=${t(sliceDuration)}` : "";
+      filters.push(`[${sourceIndex}:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${volumeStage}${padStage}[${outputLabel}]`);
     } else {
       inputs.push("-f", "lavfi", "-t", t(sliceDuration), "-i", "anullsrc=channel_layout=stereo:sample_rate=48000");
       filters.push(`[${inputIndex++}:a]asetpts=PTS-STARTPTS[${outputLabel}]`);
@@ -92,7 +94,8 @@ export function buildAudioOnlyExportPlan(project: Project, options: AudioOnlyPla
         const toLabel = `${label}_to`;
         const fromHasAudio = segment.from.hasAudio && !segment.from.clip.mutedAudio && !segment.from.isImage;
         const toHasAudio = segment.to.hasAudio && !segment.to.clip.mutedAudio && !segment.to.isImage;
-        pushAudio(fromHasAudio, fromHasAudio ? segment.from.path : null, segment.from.clip.sourceOut - D, D, fromLabel, segment.from.clip.gain ?? 1);
+        // The outgoing clip carries on past its out-point — see `transitionPartnerSourceTime`.
+        pushAudio(fromHasAudio, fromHasAudio ? segment.from.path : null, segment.from.clip.sourceOut, D, fromLabel, segment.from.clip.gain ?? 1, true);
         pushAudio(toHasAudio, toHasAudio ? segment.to.path : null, segment.to.clip.sourceIn, D, toLabel, segment.to.clip.gain ?? 1);
         filters.push(`[${fromLabel}][${toLabel}]acrossfade=d=${t(D)}[${label}]`);
       } else {
@@ -142,7 +145,7 @@ export function buildAudioOnlyExportPlan(project: Project, options: AudioOnlyPla
         const toLabel = `${label}_to`;
         const fromHasAudio = segment.from.hasAudio && !segment.from.clip.mutedAudio;
         const toHasAudio = segment.to.hasAudio && !segment.to.clip.mutedAudio;
-        pushAudio(fromHasAudio, fromHasAudio ? segment.from.path : null, segment.from.clip.sourceOut - D, D, fromLabel, (segment.from.clip.gain ?? 1) * (track.gain ?? 1));
+        pushAudio(fromHasAudio, fromHasAudio ? segment.from.path : null, segment.from.clip.sourceOut, D, fromLabel, (segment.from.clip.gain ?? 1) * (track.gain ?? 1), true);
         pushAudio(toHasAudio, toHasAudio ? segment.to.path : null, segment.to.clip.sourceIn, D, toLabel, (segment.to.clip.gain ?? 1) * (track.gain ?? 1));
         filters.push(`[${fromLabel}][${toLabel}]acrossfade=d=${t(D)}[${label}]`);
       } else {

@@ -3,16 +3,18 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Add } from "@veasnawt/vicons";
 import { thumbnailUrl } from "../api/client.ts";
-import { AddTrackCommand, ReorderTrackCommand } from "../commands/index.ts";
+import { AddTrackCommand, ReorderTrackCommand, SetClipTransitionCommand } from "../commands/index.ts";
 import { OUTRO_DURATION_SECONDS } from "../export/outro.ts";
-import { sequenceDuration } from "../project/createProject.ts";
+import { clipDuration, sequenceDuration } from "../project/createProject.ts";
 import { DEFAULT_TEXT_STYLE, type Track, type TrackKind } from "../project/types.ts";
 import { trackKindForAsset } from "../timeline/operations.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { formatTimecode } from "../timeline/time.ts";
+import { findTransitionCandidate } from "../timeline/transitions.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { TimelineClip } from "./TimelineClip.tsx";
+import { TransitionJunction } from "./TransitionJunction.tsx";
 import { ACCEPTED_EXTENSIONS_BY_KIND, TrackHeader } from "./TrackHeader.tsx";
 import { TrackKindPickerMenu } from "./TrackKindPickerMenu.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
@@ -1288,6 +1290,27 @@ export function Timeline() {
                       onPanScroll={panTimelineBy}
                     />
                   ))}
+                  {track.kind === "video" && track.clips.map((clip) => {
+                    const previous = findTransitionCandidate(track, clip);
+                    if (!previous) return null;
+                    const maximum = Math.min(clipDuration(previous), clipDuration(clip));
+                    return <TransitionJunction
+                      key={`junction-${clip.id}`}
+                      cut={clip.timelineStart * pixelsPerSecond}
+                      duration={clip.transitionIn ? Math.min(clip.transitionIn.duration, maximum) : null}
+                      maxDuration={maximum} pixelsPerSecond={pixelsPerSecond} fps={project.sequence.fps}
+                      mobile={isMobile} locked={track.locked}
+                      label={clip.transitionIn ? t("Change transition") : t("Add transition")}
+                      durationLabel={t("Adjust transition duration")}
+                      onOpen={(rect) => {
+                        select([clip.id]);
+                        useEditorStore.getState().setTransitionPickerRequest({ x: rect.left, y: rect.top, clipId: clip.id, mode: "in" });
+                      }}
+                      onDurationChange={(duration) => {
+                        if (clip.transitionIn) run(new SetClipTransitionCommand(clip.id, { ...clip.transitionIn, duration }));
+                      }}
+                    />;
+                  })}
                   {recording && recording.trackId === track.id && (
                     // A growing placeholder for a voiceover still being captured — no real `Clip`
                     // exists yet (see `VoiceoverRecorder`), so this is a plain overlay, not a

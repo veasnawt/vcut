@@ -82,9 +82,13 @@ describe("buildAudioOnlyExportPlan with audio-track transitions", () => {
     const [, clipB] = clipsOf(project, audioTrackId(project));
     project = setClipTransitionIn(project, clipB.id, { duration: 1, type: "crossfade" });
 
-    const graph = filterGraph(plan(project).args);
+    const { args } = plan(project);
+    const graph = filterGraph(args);
 
     assert.match(graph, /acrossfade=d=1\.000000/);
+    assert.match(graph, /apad=whole_dur=1\.000000/);
+    const outgoingSeeks = args.flatMap((arg, i) => arg === "/media/a.mp4" ? [args[i - 4]] : []);
+    assert.deepEqual(outgoingSeeks, ["0.000000", "5.000000"], "continue after the out-point, never replay its tail");
   });
 
   it("skips a muted audio track entirely, transitions and all", () => {

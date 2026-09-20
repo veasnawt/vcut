@@ -341,7 +341,8 @@ export interface ClipEffects {
   contrast: number;
   /** 0..2, multiplicative, 1 = unchanged; 0 = fully grayscale. */
   saturation: number;
-  /** 0..20, 0 = unchanged (no blur). */
+  /** 0..60 sequence pixels (a Gaussian sigma, export's `gblur=sigma=`), 0 = unchanged (no blur). The
+   *  preview scales it to the canvas's own device pixels so it looks the same as the export. */
   blur: number;
   /** 0..1, 1 = fully opaque. */
   opacity: number;
@@ -481,34 +482,22 @@ export type ColorGradingKeyframe = Keyframe<ColorGrading>;
 /** LERP-interpolated between keyframes, like `TransformKeyframe` — see `TextCrop`'s own doc comment. */
 export type TextCropKeyframe = Keyframe<TextCrop>;
 
-/** Every transition style either renderer can produce. The first fourteen are kept to the subset of
- *  FFmpeg's own `xfade` filter's transition names (see `TRANSITION_XFADE_NAME` in
- *  `export/buildExportPlan.ts`) that's been part of that filter since its ORIGINAL introduction
- *  (FFmpeg 4.3) — a newer name risks failing export outright against an older ffmpeg build, which a
- *  name this old can't. `sliceUp`/`sliceDown` (→ xfade's own `vuslice`/`vdslice`) are part of that
- *  same original set, confirmed directly against both this repo's bundled desktop ffmpeg AND the
- *  hosted deployment's own custom build before being added — not assumed safe just because the
- *  original PR that introduced `xfade` happened to include them. `PlaybackEngine`'s canvas preview
- *  groups these into rendering families (dissolve, wipe, slide, circle, slice, glitch, waterRipple,
- *  zoomBlur, whipPan, flashZoom — see its own `transitionFamily`), not one independent implementation
- *  per value; export always renders the exact distinct FFmpeg filter regardless of which family the
- *  preview approximated it with.
+/** Every transition style either renderer can produce. The live preview
+ *  (`PlaybackEngine.compositeTransitionFrame`/`compositeSoloReveal`) and export
+ *  (`buildExportPlan`'s `pushTransitionBlend`/`pushSoloTransitionStages`) build each one to the same
+ *  shape, sharing their easing and per-style curves through `timeline/transitionMotion.ts`. The names
+ *  of the wipe/slide styles follow FFmpeg's `xfade` (`wipeLeft` = `wipeleft`), which export still uses
+ *  for those two (re-timed onto the shared easing curve); every other style is composed from native
+ *  filters, since `xfade`'s own slice and circle shapes don't match the preview.
  *
- *  `glitchCut`/`waterRippleCut`/`zoomBlur`/`whipPanLeft`/`whipPanRight`/`flashZoom` are the exceptions
- *  to the "real xfade name" rule above — each renders as a genuine PRE-PASS filter (`rgbashift=`+
- *  `noise=` for glitch, a ramped `geq=` pixel-displacement for water-ripple, `scale=`+`crop=`+`gblur=`
- *  for zoomBlur, a directional `boxblur=` for whipPan, `zoomBlur`'s own pre-pass plus a SECOND ramped
- *  `geq=` flash-to-white pass for flashZoom — see `applyTransitionCorruptionPass` in
- *  `export/buildExportPlan.ts`, which reuses the exact same amplitude/scale/radius/peak constants
- *  `timeline/pixelEffects.ts` defines) applied to BOTH sides of the cut, THEN blended underneath —
- *  `glitchCut`/`waterRippleCut`/`zoomBlur`/`flashZoom` with a plain `xfade=transition=fade`
- *  (`TRANSITION_XFADE_NAME` maps all four to `"fade"` — the pre-pass corruption/blur/flash is what
- *  makes each read as distinct, not the blend math), `whipPanLeft`/`whipPanRight` with a real
- *  `slideleft`/`slideright` (the blur is layered on top of an ordinary, always-safe slide rather than
- *  needing its own fade-blend geometry). All six are video/image clips only — see
- *  `TransitionPickerMenu`'s own `isTextTrack` doc comment for why a text clip's transition grid
- *  excludes them: `drawtext` has no per-pixel corruption/blur/flash pre-pass equivalent, so export
- *  would have no way to reproduce what preview shows. */
+ *  `dissolve` is kept only so older projects still load: it is no longer offered in any picker, and
+ *  renders exactly like `crossfade`. It used to export as `xfade=dissolve` — a grainy per-pixel noise
+ *  reveal — while the preview showed a plain crossfade, so the two looked identical while editing and
+ *  different in the file; a crossfade is what anyone who picked it saw and chose.
+ *
+ *  `glitchCut`/`waterRippleCut`/`zoomBlur`/`whipPanLeft`/`whipPanRight`/`flashZoom` are video/image
+ *  clips only — text export (`drawtext`) has no per-pixel pre-pass, so a text clip always fades (see
+ *  `TransitionPickerMenu`'s `isTextTrack`). */
 export type TransitionType =
   | "crossfade"
   | "dissolve"

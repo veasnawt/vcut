@@ -1,5 +1,6 @@
 import type { Clip } from "../project/types.ts";
 import { detectRealSeek, lruEvict } from "./audioScheduling.ts";
+import { holdMediaAtEnd } from "./mediaEnd.ts";
 
 /** Same shape `PlaybackEngine.activeAudioClips` already returns — declared here (not imported from
  *  there) to avoid a circular import; `PlaybackEngine` composes an `AudioMixEngine` instance, not the
@@ -12,6 +13,9 @@ export interface ActiveAudioTrackClip {
   clip: Clip;
   sourceTime: number;
   gain: number;
+  /** Where in the source this clip's audio should stop — `clip.sourceOut` unless it keeps playing past
+   *  its out-point into a transition blend (see `transitionTailExtension`). */
+  sourceEnd?: number;
 }
 
 /** How far an already-scheduled audio-track clip's expected position may drift from where it actually
@@ -422,14 +426,14 @@ export class AudioMixEngine {
     }
     if (!playing) return;
 
-    for (const { trackId, clip, sourceTime, gain } of active) {
+    for (const { trackId, clip, sourceTime, gain, sourceEnd } of active) {
       if (this.elementFallbackAssets.has(clip.assetId)) {
         this.syncElementClip(trackId, clip, sourceTime, gain);
         continue;
       }
       const existing = this.trackClipNodes.get(clip.id);
       if (!existing) {
-        this.startTrackClip(trackId, clip, sourceTime, gain);
+        this.startTrackClip(trackId, clip, sourceTime, gain, sourceEnd);
         continue;
       }
       // Cheap scalar reconciliation on an already-scheduled clip: is it still roughly where it should
@@ -438,7 +442,7 @@ export class AudioMixEngine {
       const expectedSourceTime = existing.sourceTimeAtStart + (this.audioContext.currentTime - existing.contextTimeAtStart);
       if (detectRealSeek(expectedSourceTime, sourceTime, SEEK_DETECTION_TOLERANCE)) {
         this.stopTrackClipNode(clip.id, existing);
-        this.startTrackClip(trackId, clip, sourceTime, gain);
+        this.startTrackClip(trackId, clip, sourceTime, gain, sourceEnd);
         continue;
       }
       // `gain` already carries both `Clip.gain` and any live transition ramp (`activeAudioClips` folds
@@ -477,6 +481,7 @@ export class AudioMixEngine {
     if (!node) return;
     node.gainNode.gain.setTargetAtTime(gain, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
     const element = node.element;
+    if (holdMediaAtEnd(element, sourceTime)) return;
     if (element.readyState >= 1 && !element.seeking && Math.abs(element.currentTime - sourceTime) > ELEMENT_DRIFT_TOLERANCE) {
       element.currentTime = sourceTime;
       node.seeks += 1;
@@ -541,7 +546,7 @@ export class AudioMixEngine {
     this.elementClipNodes.delete(clipId);
   }
 
-  private startTrackClip(trackId: string, clip: Clip, sourceTime: number, gain: number): void {
+  private startTrackClip(trackId: string, clip: Clip, sourceTime: number, gain: number, sourceEnd = clip.sourceOut): void {
     const url = this.getMediaUrl(clip.assetId);
     if (!url) return;
     this.getOrDecodeBuffer(clip.assetId, url)
@@ -553,8 +558,9 @@ export class AudioMixEngine {
         const offset = Math.min(Math.max(0, sourceTime), buffer.duration);
         // How much of the CLIP's own trim window remains from this starting point — not the buffer's
         // own full remaining length, or a clip trimmed short of its source's real duration would keep
-        // playing straight past its intended `sourceOut`.
-        const remaining = Math.max(0, clip.sourceOut - offset);
+        // playing straight past its intended `sourceOut` (`sourceEnd` extends that only across a
+        // transition blend out of this clip).
+        const remaining = Math.max(0, Math.min(sourceEnd, buffer.duration) - offset);
         if (remaining <= 0) return;
 
         const source = this.audioContext.createBufferSource();

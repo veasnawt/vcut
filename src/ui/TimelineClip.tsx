@@ -9,7 +9,7 @@ import type { Clip, Project, Track } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { snapPoints, snapTime } from "../timeline/queries.ts";
 import { formatDuration } from "../timeline/time.ts";
-import { DEFAULT_TRANSITION } from "../timeline/transitions.ts";
+import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCandidate } from "../timeline/transitions.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 
 /** Pixels the pointer must travel before a press turns into a drag. Without it, a slightly-shaky
@@ -881,7 +881,7 @@ function TimelineClipComponent({
           }}
         />
       )}
-      {clip.transitionIn && (
+      {clip.transitionIn && !(track.kind === "video" && findTransitionCandidate(track, clip)) && (
         <>
           {/* The classic DAW/NLE fade-triangle: a "/" ramp line over a matching wedge, spanning the
               blend zone's own width — heaviest at the left edge (gain 0, this clip hasn't faded in
@@ -939,7 +939,7 @@ function TimelineClipComponent({
           )}
         </>
       )}
-      {clip.transitionOut && (
+      {clip.transitionOut && !findTransitionSuccessorCandidate(track, clip) && (
         <>
           {/* `transitionIn`'s own "\" ramp, mirrored to the right edge — heaviest at the right (gain
               0, the clip has fully faded out by the end) tapering to nothing where the fade-out zone

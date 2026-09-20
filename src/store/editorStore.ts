@@ -374,6 +374,13 @@ export interface EditorState {
   contextMenu: { x: number; y: number; clipId: string } | null;
   setContextMenu: (menu: EditorState["contextMenu"]) => void;
 
+  /** A request, from the timeline's own between-clips transition button, to open the transition picker
+   *  anchored at that button (`x`/`y`, screen coordinates) for `clipId`'s `mode` side — `StatusBar`
+   *  owns the picker, so this travels through the store the same way `contextMenu` does. Cleared when
+   *  the picker closes. */
+  transitionPickerRequest: { x: number; y: number; clipId: string; mode: "in" | "out" } | null;
+  setTransitionPickerRequest: (request: EditorState["transitionPickerRequest"]) => void;
+
   /** A NEW text clip's content, being composed BEFORE anything is placed on the timeline at all —
    *  `NewTextComposer` (mounted once, near the app's root) reads this to show its own input; `null`
    *  means nothing is currently being composed. Deliberately not the same mechanism as editing an
@@ -753,6 +760,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     recording: null,
     assetDrag: null,
     contextMenu: null,
+    transitionPickerRequest: null,
     composeText: null,
     resolveTimelineDropTarget: null,
     removeObjectArmedClipId: null,
@@ -1116,6 +1124,9 @@ export const useEditorStore = create<EditorState>((set, get) => {
     },
     setContextMenu(menu) {
       set({ contextMenu: menu });
+    },
+    setTransitionPickerRequest(request) {
+      set({ transitionPickerRequest: request });
     },
     setComposeText(compose) {
       set({ composeText: { ...compose, content: "" } });

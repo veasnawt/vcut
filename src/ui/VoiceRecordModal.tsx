@@ -77,6 +77,9 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
   const {
     recording,
     elapsed,
+    prepareMicrophone,
+    micRequesting,
+    micError,
     start,
     stop,
     micBlocked,
@@ -174,12 +177,19 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
     if (phase !== "idle") return;
 
     pointerDownRef.current = true;
+    const prep = prepareMicrophone();
     holdTimerRef.current = setTimeout(() => {
       if (!pointerDownRef.current) return;
       setPhaseBoth("recording-hold");
       // See the tap path's identical comment above — same optimistic-UI rollback, for the hold path.
-      void start().then((started) => {
-        if (!started && phaseRef.current === "recording-hold") setPhaseBoth("idle");
+      void prep.then((ready) => {
+        if (!ready || !pointerDownRef.current || phaseRef.current !== "recording-hold") {
+          setPhaseBoth("idle");
+          return;
+        }
+        void start().then((started) => {
+          if (!started && phaseRef.current === "recording-hold") setPhaseBoth("idle");
+        });
       });
     }, HOLD_THRESHOLD_MS);
   }
@@ -194,10 +204,16 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
     }
     if (phaseRef.current === "idle" && wasDown && holdTimerRef.current) {
       // Released before the hold threshold fired — a genuine tap: cancel the pending hold-escalation
-      // and start the countdown instead.
+      // and start the countdown instead once microphone is prepared.
       clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
-      runCountdownThenRecord();
+      void prepareMicrophone().then((ready) => {
+        if (!ready) {
+          setPhaseBoth("idle");
+          return;
+        }
+        runCountdownThenRecord();
+      });
     }
   }
 
@@ -384,18 +400,26 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
               <div className="mt-5 flex flex-col items-center gap-2">
                 <button
                   type="button"
+                  aria-label={t("Record a voiceover from your microphone")}
                   onPointerDown={onPointerDown}
                   onPointerUp={onPointerUp}
-                  onPointerCancel={onPointerUp}
+                  onPointerCancel={() => {
+                    pointerDownRef.current = false;
+                    clearTimers();
+                    if (phaseRef.current === "recording-hold") stop();
+                    setPhaseBoth("idle");
+                  }}
                   onContextMenu={(e) => e.preventDefault()}
                   className={`flex h-20 w-20 select-none items-center justify-center rounded-full border-2 text-white transition [touch-action:none] ${
                     micBlocked
-                      ? "border-amber-400/60 bg-amber-500/10"
+                      ? "border-amber-400/60 bg-amber-500/10 active:scale-95"
                       : isRecording
                         ? "border-rose-400 bg-rose-500/30"
                         : phase === "countdown"
                           ? "border-amber-400 bg-amber-500/20"
-                          : "border-white/20 bg-white/10 hover:bg-white/20"
+                          : micRequesting
+                            ? "border-sky-400/60 bg-sky-500/10 animate-pulse"
+                            : "border-white/20 bg-white/10 hover:bg-white/20 active:scale-95"
                   }`}
                 >
                   {phase === "countdown" ? (
@@ -408,14 +432,17 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
                     <Microphone size={30} />
                   )}
                 </button>
+                {micError && <p role="alert" className="text-center text-xs text-amber-200">{micError}</p>}
                 <p className="text-center text-[11px] text-white/50">
                   {micBlocked
                     ? t("Microphone access is blocked — tap to open Settings")
-                    : phase === "countdown"
-                      ? t("Get ready…")
-                      : isRecording
-                        ? t("Tap or release to stop")
-                        : t("Tap or press and hold to record")}
+                    : micRequesting
+                      ? t("Waiting for microphone…")
+                      : phase === "countdown"
+                        ? t("Get ready…")
+                        : isRecording
+                          ? t("Tap or release to stop")
+                          : t("Tap or press and hold to record")}
                 </p>
               </div>
             </>

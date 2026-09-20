@@ -688,7 +688,7 @@ const MAX_CONTRAST = 2;
 const MIN_SATURATION = 0;
 const MAX_SATURATION = 2;
 const MIN_BLUR = 0;
-const MAX_BLUR = 20;
+const MAX_BLUR = 60;
 const MIN_OPACITY = 0;
 const MAX_OPACITY = 1;
 

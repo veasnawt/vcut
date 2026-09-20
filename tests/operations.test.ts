@@ -905,8 +905,22 @@ describe("setClipEffects", () => {
     assert.equal(effects.brightness, -1);
     assert.equal(effects.contrast, 2);
     assert.equal(effects.saturation, 0);
-    assert.equal(effects.blur, 20);
+    assert.equal(effects.blur, 60);
     assert.equal(effects.opacity, 1);
+  });
+
+  it("preserves the expanded blur range in static edits and effect keyframes", () => {
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const clip = clipsOf(project, videoTrackId(project))[0];
+    project = setClipEffects(project, clip.id, { ...IDENTITY_EFFECTS, blur: 45 });
+    project = setClipEffectsKeyframes(project, clip.id, [
+      { id: "blur-start", time: 0, value: { ...IDENTITY_EFFECTS, blur: 30 } },
+      { id: "blur-end", time: 1, value: { ...IDENTITY_EFFECTS, blur: 60 } },
+    ]);
+    const result = clipsOf(project, videoTrackId(project))[0];
+    assert.equal(result.effects?.blur, 45);
+    assert.deepEqual(result.effectsKeyframes?.map(k => k.value.blur), [30, 60]);
   });
 
   it("refuses to adjust effects on a locked track", () => {

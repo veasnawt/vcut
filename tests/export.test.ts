@@ -499,10 +499,10 @@ describe("buildExportPlan with keyframed transform/effects", () => {
     const graph = filterGraph(plan(project).args);
 
     // A single 0.5s gap subdivided at the 0.15s base interval: ceil(0.5 / 0.15) = 4 slices.
-    // The trailing `fps=` re-normalizes the concat output's negotiated timebase back to the
+    // The trailing `settb=` normalizes the concat output's negotiated timebase back to the
     // sequence rate (see the doc comment on `pushKeyframedClipVideoFilters`'s own concat line) —
     // without it, a downstream `xfade` transition can reject this stream's timebase entirely.
-    assert.match(graph, /concat=n=4:v=1:a=0,fps=30\[/);
+    assert.match(graph, /concat=n=4:v=1:a=0,settb=1\/30,setpts=N\[/);
     // Each slice goes through the exact same buildTransformFilters chain a static transformed clip
     // uses (crop/eq/scale/rotate/overlay) — 4 full occurrences, one per slice.
     assert.equal((graph.match(/overlay=x=/g) ?? []).length, 4);
@@ -519,7 +519,7 @@ describe("buildExportPlan with keyframed transform/effects", () => {
 
     const graph = filterGraph(plan(project).args);
 
-    assert.match(graph, /concat=n=4:v=1:a=0,fps=30\[/);
+    assert.match(graph, /concat=n=4:v=1:a=0,settb=1\/30,setpts=N\[/);
     assert.equal((graph.match(/lutyuv=/g) ?? []).length, 4);
   });
 
@@ -540,7 +540,7 @@ describe("buildExportPlan with keyframed transform/effects", () => {
 
     // Confirms the `hasColorGradingKeyframes` gate: a color-grading-only keyframed clip must still
     // route through the keyframed slicing path, not the plain one.
-    assert.match(graph, /concat=n=4:v=1:a=0,fps=30\[/);
+    assert.match(graph, /concat=n=4:v=1:a=0,settb=1\/30,setpts=N\[/);
     assert.equal((graph.match(/overlay=x=/g) ?? []).length, 4);
     // Only the 2 post-boundary slices carry a `curves=` fragment — the 2 pre-boundary slices hold the
     // identity curve, which emits no fragment at all (see `buildCurvesFilterFragment`'s own `null`
@@ -642,7 +642,7 @@ describe("buildExportPlan with keyframed transform/effects", () => {
     const { args } = plan(project);
     const graph = filterGraph(args);
 
-    assert.match(graph, /concat=n=240:v=1:a=0,fps=30\[/);
+    assert.match(graph, /concat=n=240:v=1:a=0,settb=1\/30,setpts=N\[/);
     // The bug this fix targets: the old per-slice-input version pushed 2 fresh `-i` per slice (source +
     // bg), i.e. 480 for this fixture alone, plus 1 more for audio — 481 total. The fix keeps this fixed
     // at 3 (source + bg + audio) regardless of slice count.
@@ -2598,7 +2598,7 @@ describe("buildExportPlan with transitions", () => {
     // timebase (e.g. 1/1000000) instead of the graph's normal 1/fps — invisible for a standalone
     // keyframed clip, but fatal once that stream feeds `xfade` alongside a plain 1/fps stream
     // ("First input link main timebase (X) do not match the corresponding second input link xfade
-    // timebase (Y)"). The fix appends `,fps=<sequence fps>` right after `concat=` to renormalize.
+    // timebase (Y)"). The fix sets the sequence timebase and rebuilds timestamps from frame numbers after concat.
     const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
     let project = addClip(base, videoTrackId(base), "a", 0);
     const [clipA] = clipsOf(project, videoTrackId(project));
@@ -2612,7 +2612,7 @@ describe("buildExportPlan with transitions", () => {
 
     const graph = filterGraph(plan(project).args);
 
-    assert.match(graph, /concat=n=\d+:v=1:a=0,fps=30\[/, "the keyframed slice concat must renormalize its timebase before feeding xfade");
+    assert.match(graph, /concat=n=\d+:v=1:a=0,settb=1\/30,setpts=N\[/, "the keyframed slice concat must renormalize its timebase before feeding xfade");
     assert.match(graph, /xfade=transition=wipeleft:duration=1\.000000:offset=/);
   });
 
@@ -2635,61 +2635,30 @@ describe("buildExportPlan with transitions", () => {
     assert.ok(closeTo(duration, 10));
   });
 
-  it("every TransitionType renders as the correct FFmpeg xfade transition name, not just crossfade", () => {
-    // Mirrors buildExportPlan.ts's own (unexported) TRANSITION_XFADE_NAME table as literal expected
-    // values — same "duplicate the expected string rather than import production internals" style as
-    // assColorForTest above — so a real typo in that table (e.g. "wipeleft" -> "wipe-left") fails
-    // this test instead of only ever being caught by someone eyeballing a real export.
-    const expectedXfadeName: Record<string, string> = {
-      crossfade: "fade",
-      dissolve: "dissolve",
-      wipeLeft: "wipeleft",
-      wipeRight: "wiperight",
-      wipeUp: "wipeup",
-      wipeDown: "wipedown",
-      slideLeft: "slideleft",
-      slideRight: "slideright",
-      slideUp: "slideup",
-      slideDown: "slidedown",
-      sliceUp: "vuslice",
-      sliceDown: "vdslice",
-      circleOpen: "circleopen",
-      circleClose: "circleclose",
-      // Not real xfade names — a corruption/blur/flash pre-pass runs first, then always blends with a
-      // plain "fade" underneath (see the dedicated "glitch/water-ripple/zoom-blur/whip-pan/flash-zoom
-      // transition" describe block below for the pre-pass's own assertions); this loop only checks the
-      // FINAL xfade call's own name.
-      glitchCut: "fade",
-      waterRippleCut: "fade",
-      zoomBlur: "fade",
-      flashZoom: "fade",
-      // whipPanLeft/Right ARE real xfade names underneath their own blur pre-pass — the pan motion
-      // itself comes from an ordinary, always-safe slide, unlike the four "fade" ones above.
-      whipPanLeft: "slideleft",
-      whipPanRight: "slideright",
-    };
-
-    for (const type of TRANSITION_TYPE_OPTIONS) {
+  it("uses native fade/wipe/slide names and keeps legacy dissolve compatible", () => {
+    const expected = {
+      crossfade: "fade", dissolve: "fade",
+      wipeLeft: "wipeleft", wipeRight: "wiperight", wipeUp: "wipeup", wipeDown: "wipedown",
+      slideLeft: "slideleft", slideRight: "slideright", slideUp: "slideup", slideDown: "slidedown",
+      waterRippleCut: "fade", zoomBlur: "fade", flashZoom: "fade",
+      whipPanLeft: "slideleft", whipPanRight: "slideright",
+    } as const;
+    for (const [type, name] of Object.entries(expected)) {
       const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
       let project = addClip(base, videoTrackId(base), "a", 0);
-      const [clipA] = clipsOf(project, videoTrackId(project));
-      project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
-      const [, clipB] = clipsOf(project, videoTrackId(project));
-      project = setClipTransitionIn(project, clipB.id, { duration: 1, type });
-
+      project = addClip(project, videoTrackId(project), "b", 5);
+      const clipB = clipsOf(project, videoTrackId(project))[1];
+      project = setClipTransitionIn(project, clipB.id, { duration: 1, type: type as keyof typeof expected });
       const graph = filterGraph(plan(project).args);
-      const expected = expectedXfadeName[type];
-      assert.match(
-        graph,
-        new RegExp(`xfade=transition=${expected}:duration=1\\.000000:offset=0`),
-        `TransitionType "${type}" should render as xfade transition "${expected}"`
-      );
+      assert.ok(graph.includes(`xfade=transition=${name}:duration=1.000000:offset=0`), type);
+      if (name !== "fade") assert.ok(graph.includes("settb=1/1000000"), "geometric motion must be eased");
     }
   });
 
   it("the outgoing clip's own segment is emitted in full; only the incoming clip is shortened, at its head", () => {
-    const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
+    const base = emptyProject([videoAsset("a", 8), videoAsset("b", 5)]);
     let project = addClip(base, videoTrackId(base), "a", 0);
+    project = trimClip(project, clipsOf(project, videoTrackId(project))[0].id, "out", 5);
     const [clipA] = clipsOf(project, videoTrackId(project));
     project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
     const [, clipB] = clipsOf(project, videoTrackId(project));
@@ -2700,7 +2669,7 @@ describe("buildExportPlan with transitions", () => {
     const aInputs = inputsFor(args, "/media/a.mp4");
     assert.equal(aInputs.length, 2, "clip A's own full segment, plus the transition's FROM slice of it");
     assert.ok(aInputs.some((x) => closeTo(x.ss, 0) && closeTo(x.t, 5)), "clip A's own segment must be unshortened");
-    assert.ok(aInputs.some((x) => closeTo(x.ss, 4) && closeTo(x.t, 1)), "the transition's FROM slice is A's own last 1s");
+    assert.ok(aInputs.some((x) => closeTo(x.ss, 5) && closeTo(x.t, 1)), "the transition continues A past its out-point");
 
     const bInputs = inputsFor(args, "/media/b.mp4");
     assert.equal(bInputs.length, 2, "the transition's TO slice, plus clip B's own head-shortened remainder");
@@ -2890,231 +2859,103 @@ describe("buildExportPlan's two different text fade-out timings: solo vs. a real
   });
 });
 
-describe("buildExportPlan with a glitch/water-ripple/zoom-blur/whip-pan/flash-zoom transition", () => {
-  it("waterRippleCut runs a ramped geq= corruption pass on both sides before a plain xfade=fade", () => {
+describe("styled transition export graphs", () => {
+  function transitionGraph(type: (typeof TRANSITION_TYPE_OPTIONS)[number], solo?: "in" | "out") {
     const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
     let project = addClip(base, videoTrackId(base), "a", 0);
-    const [clipA] = clipsOf(project, videoTrackId(project));
-    project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
-    const [, clipB] = clipsOf(project, videoTrackId(project));
-    project = setClipTransitionIn(project, clipB.id, { duration: 1, type: "waterRippleCut" });
+    const first = clipsOf(project, videoTrackId(project))[0];
+    if (solo) {
+      project = solo === "in"
+        ? setClipTransitionIn(project, first.id, { type, duration: 1 })
+        : setClipTransitionOut(project, first.id, { type, duration: 1 });
+    } else {
+      project = addClip(project, videoTrackId(project), "b", 5);
+      project = setClipTransitionIn(project, clipsOf(project, videoTrackId(project))[1].id, { type, duration: 1 });
+    }
+    return filterGraph(plan(project).args);
+  }
 
-    const graph = filterGraph(plan(project).args);
-
-    // Both the outgoing (`_from`) and incoming (`_to`) labels get their own corruption stage, each
-    // feeding a distinct `_fx` label, BEFORE the two `_fx` labels (not the raw `_from`/`_to` ones) are
-    // what actually gets blended.
-    assert.match(graph, /\[v0_1_from\]geq=lum='[^']+':cb='[^']+':cr='[^']+'\[v0_1_from_fx\]/);
-    assert.match(graph, /\[v0_1_to\]geq=lum='[^']+':cb='[^']+':cr='[^']+'\[v0_1_to_fx\]/);
-    assert.match(graph, /\[v0_1_from_fx\]\[v0_1_to_fx\]xfade=transition=fade:duration=1\.000000:offset=0/);
-    // A real T-varying ramp (0 at both ends of the 1s window, peaking at the midpoint) — not a flat
-    // per-clip amplitude constant.
-    assert.match(graph, /\(T\/1\.000000\)\*\(1-T\/1\.000000\)/);
-  });
-
-  it("glitchCut runs a fixed rgbashift=+noise= corruption pass on both sides before a plain xfade=fade", () => {
-    const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
-    let project = addClip(base, videoTrackId(base), "a", 0);
-    const [clipA] = clipsOf(project, videoTrackId(project));
-    project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
-    const [, clipB] = clipsOf(project, videoTrackId(project));
-    project = setClipTransitionIn(project, clipB.id, { duration: 1, type: "glitchCut" });
-
-    const graph = filterGraph(plan(project).args);
-
-    assert.match(graph, /\[v0_1_from\]rgbashift=rh=-?\d+:bv=-?\d+,noise=alls=[\d.]+:allf=t\[v0_1_from_fx\]/);
-    assert.match(graph, /\[v0_1_to\]rgbashift=rh=-?\d+:bv=-?\d+,noise=alls=[\d.]+:allf=t\[v0_1_to_fx\]/);
-    assert.match(graph, /\[v0_1_from_fx\]\[v0_1_to_fx\]xfade=transition=fade:duration=1\.000000:offset=0/);
-  });
-
-  it("zoomBlur runs a fixed scale=+crop=+gblur= corruption pass on both sides before a plain xfade=fade", () => {
-    const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
-    let project = addClip(base, videoTrackId(base), "a", 0);
-    const [clipA] = clipsOf(project, videoTrackId(project));
-    project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
-    const [, clipB] = clipsOf(project, videoTrackId(project));
-    project = setClipTransitionIn(project, clipB.id, { duration: 1, type: "zoomBlur" });
-
-    const graph = filterGraph(plan(project).args);
-
-    assert.match(graph, /\[v0_1_from\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+\[v0_1_from_fx\]/);
-    assert.match(graph, /\[v0_1_to\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+\[v0_1_to_fx\]/);
-    assert.match(graph, /\[v0_1_from_fx\]\[v0_1_to_fx\]xfade=transition=fade:duration=1\.000000:offset=0/);
-  });
-
-  it("flashZoom runs the same zoom+blur pre-pass as zoomBlur, then a ramped flash-to-white geq=, before a plain xfade=fade", () => {
-    const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
-    let project = addClip(base, videoTrackId(base), "a", 0);
-    const [clipA] = clipsOf(project, videoTrackId(project));
-    project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
-    const [, clipB] = clipsOf(project, videoTrackId(project));
-    project = setClipTransitionIn(project, clipB.id, { duration: 1, type: "flashZoom" });
-
-    const graph = filterGraph(plan(project).args);
-
-    // The zoom+blur stage first, chained straight into a SECOND geq= stage on the SAME `_fx` label
-    // (not a separate one) -- both sides get the identical two-stage chain.
-    assert.match(
-      graph,
-      /\[v0_1_from\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+,geq=lum='[^']+':cb='[^']+':cr='[^']+'\[v0_1_from_fx\]/
-    );
-    assert.match(
-      graph,
-      /\[v0_1_to\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+,geq=lum='[^']+':cb='[^']+':cr='[^']+'\[v0_1_to_fx\]/
-    );
-    assert.match(graph, /\[v0_1_from_fx\]\[v0_1_to_fx\]xfade=transition=fade:duration=1\.000000:offset=0/);
-    // A real T-varying ramp (0 at both ends of the 1s window, peaking at the midpoint), same shape
-    // waterRippleCut's own ramp uses -- not a flat, constant flash for the whole duration.
-    assert.match(graph, /\(T\/1\.000000\)\*\(1-T\/1\.000000\)/);
-    // Blends toward white (255 luma, 128 neutral chroma) — not some other fixed target color.
-    assert.match(graph, /\+255\*\(/);
-    assert.match(graph, /\+128\*\(/);
-  });
-
-  it("whipPanLeft/whipPanRight run a fixed horizontal boxblur= corruption pass on both sides before a real slideleft/slideright xfade", () => {
-    for (const [type, xfadeName] of [
-      ["whipPanLeft", "slideleft"],
-      ["whipPanRight", "slideright"],
-    ] as const) {
-      const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
-      let project = addClip(base, videoTrackId(base), "a", 0);
-      const [clipA] = clipsOf(project, videoTrackId(project));
-      project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
-      const [, clipB] = clipsOf(project, videoTrackId(project));
-      project = setClipTransitionIn(project, clipB.id, { duration: 1, type });
-
-      const graph = filterGraph(plan(project).args);
-
-      // Vertical radius/power both 0 (only luma_radius/chroma_radius are set) is what makes this
-      // read as DIRECTIONAL motion blur rather than a plain uniform one.
-      assert.match(graph, /\[v0_1_from\]boxblur=luma_radius=\d+:luma_power=1:chroma_radius=\d+:chroma_power=1\[v0_1_from_fx\]/);
-      assert.match(graph, /\[v0_1_to\]boxblur=luma_radius=\d+:luma_power=1:chroma_radius=\d+:chroma_power=1\[v0_1_to_fx\]/);
-      assert.match(graph, new RegExp(`\\[v0_1_from_fx\\]\\[v0_1_to_fx\\]xfade=transition=${xfadeName}:duration=1\\.000000:offset=0`));
+  it("builds slice transitions from ten vertical strips, not horizontal native slices", () => {
+    for (const type of ["sliceUp", "sliceDown"] as const) {
+      const graph = transitionGraph(type);
+      assert.match(graph, /split=10/);
+      assert.match(graph, /crop=w=108:h=1920:x=972:y=0/);
+      assert.match(graph, /overlay=x=972:y='/);
+      assert.ok(!graph.includes("transition=vuslice") && !graph.includes("transition=vdslice"));
     }
   });
 
-  it("every OTHER transition type is unaffected — no corruption fragment, raw labels feed xfade directly (regression)", () => {
-    for (const type of TRANSITION_TYPE_OPTIONS) {
-      if (
-        type === "glitchCut" ||
-        type === "waterRippleCut" ||
-        type === "zoomBlur" ||
-        type === "whipPanLeft" ||
-        type === "whipPanRight" ||
-        type === "flashZoom"
-      ) {
-        continue;
+  it("uses alpha-preserving circle masks instead of the soft native circle transition", () => {
+    for (const type of ["circleOpen", "circleClose"] as const) {
+      const graph = transitionGraph(type);
+      assert.match(graph, /hypot\(X-/);
+      assert.match(graph, /alphaextract/);
+      assert.match(graph, /blend=all_mode=multiply/);
+      assert.match(graph, /alphamerge/);
+      assert.ok(!graph.includes("xfade=transition=circle"));
+    }
+  });
+
+  it("ripples both sides through displacement maps and a midpoint ramp", () => {
+    const graph = transitionGraph("waterRippleCut");
+    assert.equal((graph.match(/displace=edge=smear/g) ?? []).length, 2);
+    assert.ok(graph.includes("4*clip(T/1.000000,0,1)*(1-clip(T/1.000000,0,1))"));
+    assert.match(graph, /\[v0_1_from_fx\]\[v0_1_to_fx\]xfade=transition=fade/);
+    assert.ok(!graph.includes("[v0_1_from]geq="), "do not run expensive geq on the full source");
+  });
+
+  it("glitch uses scheduled RGB bursts and a hard switch, without noise or a dissolve", () => {
+    const graph = transitionGraph("glitchCut");
+    assert.match(graph, /rgbashift@v0_1_from_g rh/);
+    assert.match(graph, /rgbashift@v0_1_to_g bh/);
+    assert.match(graph, /overlay=format=auto:enable='between/);
+    assert.ok(!graph.includes("noise=") && !graph.includes("xfade="));
+  });
+
+  it("zoom blur ramps both axes per frame; flash follows the blend", () => {
+    for (const type of ["zoomBlur", "flashZoom"] as const) {
+      const graph = transitionGraph(type);
+      for (const side of ["from", "to"]) {
+        assert.ok(graph.includes(`gblur@v0_1_${side}_zb sigma `));
+        assert.ok(graph.includes(`gblur@v0_1_${side}_zb sigmaV `));
       }
-
-      const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
-      let project = addClip(base, videoTrackId(base), "a", 0);
-      const [clipA] = clipsOf(project, videoTrackId(project));
-      project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
-      const [, clipB] = clipsOf(project, videoTrackId(project));
-      project = setClipTransitionIn(project, clipB.id, { duration: 1, type });
-
-      const graph = filterGraph(plan(project).args);
-
-      assert.ok(!graph.includes("_fx]"), `"${type}" must not produce a corruption pre-pass label`);
-      assert.ok(!graph.includes("rgbashift="), `"${type}" must not use the glitch corruption filter`);
-      assert.ok(
-        !/\[v0_1_from\]geq=/.test(graph),
-        `"${type}" must not run a geq= corruption pass on its transition segment`
-      );
+      assert.match(graph, /:eval=frame,crop=w=1080:h=1920/);
+      assert.match(graph, /xfade=transition=fade/);
+      if (type === "flashZoom") {
+        assert.match(graph, /geq=r=255:g=255:b=255:a='255\*0\.880000\*clip/);
+        assert.ok(graph.indexOf("geq=r=255:g=255:b=255:a=") > graph.indexOf("xfade=transition=fade"));
+        assert.ok(!graph.includes("colorlevels@"), "flash must not depend on runtime color commands");
+      }
     }
   });
 
-  // A real, confirmed bug: a corruption-family transition on a clip with NO adjacent partner (the
-  // first clip's own fade-in, or the last clip's own fade-out) used to export as a PLAIN fade — the
-  // live preview (`compositeSoloReveal`) rendered the corruption, but the exported file never did.
-  // `applySoloCorruptionPass` fixes this for the four types whose ffmpeg filters actually support
-  // `enable=` timeline gating (verified directly against this repo's own bundled ffmpeg build).
-  describe("a solo fade (no adjacent partner) also gets the corruption pass, gated to just its own window", () => {
-    it("glitchCut: a solo fade-IN runs rgbashift=+noise= gated to [0, duration) via enable=", () => {
-      const base = emptyProject([videoAsset("a", 5)]);
-      let project = addClip(base, videoTrackId(base), "a", 0);
-      const [clipA] = clipsOf(project, videoTrackId(project));
-      project = setClipTransitionIn(project, clipA.id, { duration: 1, type: "glitchCut" });
-
-      const graph = filterGraph(plan(project).args);
-
-      assert.match(graph, /rgbashift=rh=-?\d+:bv=-?\d+:enable='between\(t,0\.000000,1\.000000\)',noise=alls=[\d.]+:allf=t:enable='between\(t,0\.000000,1\.000000\)'/);
-      assert.match(graph, /fade=t=in:st=0:d=1\.000000/);
-    });
-
-    it("glitchCut: a solo fade-OUT is gated to [end-duration, end), not the whole clip", () => {
-      const base = emptyProject([videoAsset("a", 5)]);
-      let project = addClip(base, videoTrackId(base), "a", 0);
-      const [clipA] = clipsOf(project, videoTrackId(project));
-      project = setClipTransitionOut(project, clipA.id, { duration: 1, type: "glitchCut" });
-
-      const graph = filterGraph(plan(project).args);
-
-      assert.match(graph, /rgbashift=rh=-?\d+:bv=-?\d+:enable='between\(t,4\.000000,5\.000000\)'/);
-      assert.match(graph, /fade=t=out:st=4\.000000:d=1\.000000/);
-    });
-
-    it("waterRippleCut: a solo fade-OUT ramps relative to the fade window's own start, not the clip's", () => {
-      const base = emptyProject([videoAsset("a", 5)]);
-      let project = addClip(base, videoTrackId(base), "a", 0);
-      const [clipA] = clipsOf(project, videoTrackId(project));
-      project = setClipTransitionOut(project, clipA.id, { duration: 1, type: "waterRippleCut" });
-
-      const graph = filterGraph(plan(project).args);
-
-      assert.match(graph, /geq=lum='[^']+':cb='[^']+':cr='[^']+':enable='between\(t,4\.000000,5\.000000\)'/);
-      // The ramp's own local time is `(T-4.000000)`, not raw `T` — it must peak at t=4.5 (the fade
-      // window's own midpoint), not at t=2.5 (the whole clip's midpoint).
-      assert.ok(graph.includes("(T-4.000000)"), "expected the ramp to rebase T against the fade window's own start");
-    });
-
-    it("whipPanLeft: a solo fade-IN runs the directional boxblur= gated to its own window", () => {
-      const base = emptyProject([videoAsset("a", 5)]);
-      let project = addClip(base, videoTrackId(base), "a", 0);
-      const [clipA] = clipsOf(project, videoTrackId(project));
-      project = setClipTransitionIn(project, clipA.id, { duration: 1, type: "whipPanLeft" });
-
-      const graph = filterGraph(plan(project).args);
-
-      assert.match(graph, /boxblur=luma_radius=\d+:luma_power=1:chroma_radius=\d+:chroma_power=1:enable='between\(t,0\.000000,1\.000000\)'/);
-    });
-
-    it("zoomBlur: a solo fade-IN splits the stream, runs the zoom+blur pre-pass ungated, then overlay= gates it to its own window", () => {
-      // `crop=` (part of the zoom pre-pass) doesn't support ffmpeg's `enable=` timeline option at all
-      // on this build, so the pre-pass instead runs UNGATED on a `split=`-off copy of the stream, and
-      // `overlay=`'s own (working) `enable=` support is what confines it back to just the fade window.
-      const base = emptyProject([videoAsset("a", 5)]);
-      let project = addClip(base, videoTrackId(base), "a", 0);
-      const [clipA] = clipsOf(project, videoTrackId(project));
-      project = setClipTransitionIn(project, clipA.id, { duration: 1, type: "zoomBlur" });
-
-      const graph = filterGraph(plan(project).args);
-
-      assert.match(graph, /\[v0_0_prefade\]split=2\[v0_0_prefade_base\]\[v0_0_prefade_src\]/);
-      assert.match(graph, /\[v0_0_prefade_src\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+\[v0_0_prefade_fx_pre\]/);
-      assert.match(graph, /\[v0_0_prefade_base\]\[v0_0_prefade_fx_pre\]overlay=format=auto:enable='between\(t,0\.000000,1\.000000\)'\[v0_0_prefade_fx\]/);
-      assert.match(graph, /fade=t=in:st=0:d=1\.000000/);
-    });
-
-    it("flashZoom: a solo fade-OUT chains the ramped flash geq= onto the split-off copy, ramp rebased to the fade window's own start", () => {
-      const base = emptyProject([videoAsset("a", 5)]);
-      let project = addClip(base, videoTrackId(base), "a", 0);
-      const [clipA] = clipsOf(project, videoTrackId(project));
-      project = setClipTransitionOut(project, clipA.id, { duration: 1, type: "flashZoom" });
-
-      const graph = filterGraph(plan(project).args);
-
-      assert.match(
-        graph,
-        /\[v0_0_prefade_src\]scale=w='iw\*[\d.]+':h='ih\*[\d.]+',crop=w=\d+:h=\d+,setsar=1,gblur=sigma=[\d.]+,geq=lum='[^']+':cb='[^']+':cr='[^']+'\[v0_0_prefade_fx_pre\]/
-      );
-      assert.match(graph, /\[v0_0_prefade_base\]\[v0_0_prefade_fx_pre\]overlay=format=auto:enable='between\(t,4\.000000,5\.000000\)'\[v0_0_prefade_fx\]/);
-      // Rebased against the fade window's own start (4.0), not the whole clip's (0) — same rule
-      // `waterRippleCut`'s solo case already enforces above.
-      assert.ok(graph.includes("(T-4.000000)"), "expected the flash ramp to rebase T against the fade window's own start");
-      assert.match(graph, /fade=t=out:st=4\.000000:d=1\.000000/);
-    });
+  it("whip pans have eased slides with horizontal-only scheduled blur", () => {
+    for (const type of ["whipPanLeft", "whipPanRight"] as const) {
+      const graph = transitionGraph(type);
+      assert.match(graph, /gblur@v0_1_from_wb=sigma=0:sigmaV=0/);
+      assert.match(graph, /gblur@v0_1_to_wb sigma /);
+      assert.ok(!graph.includes("_wb sigmaV "));
+      assert.match(graph, /settb=1\/1000000/);
+      assert.ok(graph.includes(`xfade=transition=${type === "whipPanLeft" ? "slideleft" : "slideright"}`));
+    }
   });
+
+  for (const type of TRANSITION_TYPE_OPTIONS.filter(t => t !== "crossfade")) {
+    for (const direction of ["in", "out"] as const) {
+      it(`${type} solo ${direction} confines styling to its half-open window`, () => {
+        const graph = transitionGraph(type, direction);
+        const start = direction === "in" ? "0.000000" : "4.000000";
+        const end = direction === "in" ? "1.000000" : "5.000000";
+        assert.ok(graph.includes(`trim=start=${start}:end=${end}`));
+        assert.ok(graph.includes(`enable='gte(t,${start})*lt(t,${end})'`));
+        assert.ok(graph.includes("eof_action=pass"));
+        if (type === "glitchCut") assert.match(graph, /rgbashift@/);
+        if (type === "waterRippleCut") assert.match(graph, /displace=edge=smear/);
+        if (type === "zoomBlur" || type === "flashZoom") assert.match(graph, /gblur@.*sigmaV /);
+        if (type === "flashZoom") assert.ok(graph.indexOf("geq=r=255:g=255:b=255:a=") > graph.indexOf(`fade=t=${direction}:`));
+      });
+    }
+  }
 });
 
 describe("buildExportPlan with audio-track transitions", () => {
@@ -3190,7 +3031,7 @@ describe("buildExportPlan with audio-track transitions", () => {
     const aInputs = inputsFor(args, "/media/a.mp4");
     assert.equal(aInputs.length, 2, "clip A's own full segment, plus the transition's FROM slice of it");
     assert.ok(aInputs.some((x) => closeTo(x.ss, 0) && closeTo(x.t, 5)), "clip A's own segment must be unshortened");
-    assert.ok(aInputs.some((x) => closeTo(x.ss, 4) && closeTo(x.t, 1)), "the transition's FROM slice is A's own last 1s");
+    assert.ok(aInputs.some((x) => closeTo(x.ss, 5) && closeTo(x.t, 1)), "the transition continues A past its out-point");
 
     const bInputs = inputsFor(args, "/media/b.mp4");
     assert.equal(bInputs.length, 2, "the transition's TO slice, plus clip B's own head-shortened remainder");
@@ -3391,4 +3232,40 @@ describe("buildExportPlan with multiple video tracks", () => {
     );
     assert.match(graph, /rotate=a=15\.000000\*PI\/180/);
   });
+});
+
+
+describe("drawtext compatibility for the mobile FFmpeg engine", () => {
+  for (const variant of ["plain", "typewriter", "bounce", "pulse", "rotated", "wiggle", "keyframed", "rotated-keyframed", "cropped"] as const) {
+    for (const align of ["left", "center", "right"] as const) {
+      it(`${variant}, ${align}: omits unsupported alignment while preserving the rest of the export`, () => {
+        const style = { ...DEFAULT_TEXT_STYLE, align, rotationDeg: variant.startsWith("rotated") ? 15 : 0 };
+        let project = emptyProject([colorAsset("bg", "#000000"), {
+          ...textAsset("caption", "Hello\nWorld"), textStyle: style,
+        }]);
+        project = addClip(project, videoTrackId(project), "bg", 0);
+        project = addTrack(project, "text");
+        project = addClip(project, textTrackId(project), "caption", 0);
+        const clip = clipsOf(project, textTrackId(project))[0];
+        if (["typewriter", "bounce", "pulse", "wiggle"].includes(variant)) {
+          project = setClipTextAnimation(project, clip.id, { type: variant as "typewriter" | "bounce" | "pulse" | "wiggle", speed: 1 });
+        }
+        if (variant.includes("keyframed")) {
+          project = setClipTextStyleKeyframes(project, clip.id, [
+            { id: "start", time: 0, value: { ...style, offsetX: -20 } },
+            { id: "end", time: 1, value: { ...style, offsetX: 20 } },
+          ]);
+        }
+        if (variant === "cropped") {
+          project = setClipTextCrop(project, clip.id, { left: 0.1, right: 0, top: 0, bottom: 0 });
+        }
+        const desktop = filterGraph(buildExportPlan(project, options).args);
+        const mobile = filterGraph(buildExportPlan(project, { ...options, drawtextTextAlign: false }).args);
+        assert.match(desktop, /:text_align=/, "desktop retains its supported per-line alignment");
+        assert.match(mobile, /drawtext=/, "text must still render");
+        assert.doesNotMatch(mobile, /:text_align=/, "no text rendering branch may emit the unsupported option");
+        assert.equal(mobile, desktop.replace(/:text_align=(left|center|right)/g, ""));
+      });
+    }
+  }
 });

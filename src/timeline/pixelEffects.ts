@@ -1,4 +1,5 @@
 import type { PixelEffectType } from "../project/types.ts";
+import { GLITCH_CUT_BAND_HEIGHT_FRACTION, type GlitchCutBurst } from "./transitionMotion.ts";
 
 /** Every `PixelEffectType`, in the order shown in the picker — mirrors `TEXT_ANIMATION_TYPE_OPTIONS`'s
  *  own role as the one shared source of truth a UI iterates rather than hardcoding its own copy of the
@@ -66,13 +67,18 @@ function pseudoRandom(seed: number): number {
  *  `0` is an exact no-op (every sample lands back on its own `x`); used by the water-ripple TRANSITION
  *  style (`PlaybackEngine.compositeTransitionFrame`) to ramp the distortion up then back down across
  *  the blend window instead of a flat full-strength wobble for the whole cut. */
-export function applyWaterRipple(imageData: ImageData, elapsedSeconds: number, speed = 1, intensity = 1): void {
+export function applyWaterRipple(imageData: ImageData, elapsedSeconds: number, speed = 1, intensity = 1, pixelScale = 1): void {
   const { width, height, data } = imageData;
   const source = data.slice();
   const rate = (2 * Math.PI) / WATER_RIPPLE_PERIOD_SECONDS;
   const phase = elapsedSeconds * speed * rate;
+  // `pixelScale` < 1 when running on a downscaled working copy of a sequence-resolution frame (the
+  // transition preview does, for speed) — amplitude and wavelength are sequence pixels, so both shrink
+  // with the buffer to keep the same look once scaled back up.
+  const amplitude = WATER_RIPPLE_AMPLITUDE_PX * pixelScale;
+  const wavelength = WATER_RIPPLE_WAVELENGTH_PX * pixelScale;
   for (let y = 0; y < height; y++) {
-    const offset = WATER_RIPPLE_AMPLITUDE_PX * intensity * Math.sin(y / WATER_RIPPLE_WAVELENGTH_PX + phase);
+    const offset = amplitude * intensity * Math.sin(y / wavelength + phase);
     const rowStart = y * width * 4;
     for (let x = 0; x < width; x++) {
       // Clamped, not wrapped, at the left/right edges — a wrapped sample would smear the OPPOSITE
@@ -172,9 +178,9 @@ export function applyGlitch(imageData: ImageData, elapsedSeconds: number, speed 
  *  scales the effective radius — `0` is an exact no-op, `1` is the full `WHIP_PAN_BLUR_RADIUS_PX`, the
  *  same "ramps across the blend window" contract `applyGlitch`'s/`applyWaterRipple`'s own `intensity`
  *  parameter already establishes for their transition use. */
-export function applyHorizontalBlur(imageData: ImageData, intensity = 1): void {
+export function applyHorizontalBlur(imageData: ImageData, intensity = 1, pixelScale = 1): void {
   const { width, height, data } = imageData;
-  const radius = Math.round(WHIP_PAN_BLUR_RADIUS_PX * Math.max(0, Math.min(1, intensity)));
+  const radius = Math.round(WHIP_PAN_BLUR_RADIUS_PX * pixelScale * Math.max(0, Math.min(1, intensity)));
   if (radius <= 0) return;
   const source = data.slice();
   const windowSize = radius * 2 + 1;
@@ -204,6 +210,54 @@ export function applyHorizontalBlur(imageData: ImageData, intensity = 1): void {
       sg += source[enterIdx + 1] - source[leaveIdx + 1];
       sb += source[enterIdx + 2] - source[leaveIdx + 2];
       sa += source[enterIdx + 3] - source[leaveIdx + 3];
+    }
+  }
+}
+
+/** The Glitch Cut TRANSITION's own corruption (see `transitionMotion.ts`'s Glitch Cut section) —
+ *  red/blue channel split plus torn horizontal bands, with every amount taken from `burst` as a
+ *  fraction of the frame so the same burst looks the same at any buffer size. No per-pixel noise,
+ *  unlike the continuous `applyGlitch`: it was invisible at transition speed and cost a `Math.sin`
+ *  per pixel per frame, the main reason the old glitch preview stuttered. Mirrors export's
+ *  `rgbashift` + cropped-band `overlay` stages exactly (bands tear the already-split image). */
+export function applyGlitchCut(imageData: ImageData, burst: GlitchCutBurst): void {
+  const { width, height, data } = imageData;
+  const shiftR = Math.round(burst.shiftR * width);
+  const shiftB = Math.round(burst.shiftB * width);
+  const bandHeight = Math.max(1, Math.round(height * GLITCH_CUT_BAND_HEIGHT_FRACTION));
+  const bands = burst.bands.map((b) => ({ top: Math.round(b.top * height), shift: Math.round(b.shift * width) }));
+  if (shiftR === 0 && shiftB === 0 && bands.every((b) => b.shift === 0)) return;
+  const source = data.slice();
+  const clampX = (x: number) => (x < 0 ? 0 : x >= width ? width - 1 : x);
+  const split = new Uint8ClampedArray(data.length);
+  for (let y = 0; y < height; y++) {
+    const rowStart = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      const to = rowStart + x * 4;
+      split[to] = source[rowStart + clampX(x - shiftR) * 4];
+      split[to + 1] = source[to + 1];
+      split[to + 2] = source[rowStart + clampX(x - shiftB) * 4 + 2];
+      split[to + 3] = source[to + 3];
+    }
+  }
+  data.set(split);
+  for (const band of bands) {
+    if (band.shift === 0) continue;
+    const end = Math.min(height, band.top + bandHeight);
+    for (let y = Math.max(0, band.top); y < end; y++) {
+      const rowStart = y * width * 4;
+      for (let x = 0; x < width; x++) {
+        // Content moves right by `shift`: output x reads from x - shift. Pixels the band vacates keep
+        // the un-torn image underneath, exactly like export's `overlay` of the cropped band.
+        const sx = x - band.shift;
+        if (sx < 0 || sx >= width) continue;
+        const to = rowStart + x * 4;
+        const from = rowStart + sx * 4;
+        data[to] = split[from];
+        data[to + 1] = split[from + 1];
+        data[to + 2] = split[from + 2];
+        data[to + 3] = split[from + 3];
+      }
     }
   }
 }

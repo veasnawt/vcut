@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Close } from "@veasnawt/vicons";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -10,12 +10,10 @@ import { TransitionPreviewTile } from "./TransitionPreviewTile.tsx";
 
 const MENU_WIDTH = 320;
 
-/** Opens ABOVE its anchor, not below like `ImportSourceMenu` — the Transition button lives in the
- *  bottom toolbar, so a below-anchored popup would run straight off the bottom of the viewport. */
-function popupPosition(anchor: DOMRect): { bottom: number; left: number } {
-  const left = Math.max(8, Math.min(anchor.left, window.innerWidth - MENU_WIDTH - 8));
-  return { bottom: window.innerHeight - anchor.top + 8, left };
-}
+/** The duration slider's range — the same span the Inspector's own Duration field allows in practice
+ *  (a transition longer than a couple of seconds stops reading as a transition). */
+const MIN_DURATION = 0.1;
+const MAX_DURATION = 2;
 
 /** The Transition toolbar button's grid of every `TransitionType`, each tile a live animated preview
  *  (`TransitionPreviewTile`) rather than a plain text label — picking a transition style is a visual
@@ -25,7 +23,13 @@ function popupPosition(anchor: DOMRect): { bottom: number; left: number } {
  *  is the fast, visual path to PICK a style in the first place, for EITHER direction: an In/Out tab
  *  switch at the top edits `clip.transitionIn`/`transitionOut` independently, so both can be set from
  *  this one popup without reopening it. `type: null` (the "None" tile) clears whichever direction is
- *  currently selected. */
+ *  currently selected.
+ *
+ *  Each tab names what it actually edits: "From previous clip"/"Into next clip" when there's a
+ *  touching neighbor on that side (a real two-clip blend at that junction), "Fade in"/"Fade out" when
+ *  there isn't. Picking a style keeps the popup open, so its duration can be set right here with the
+ *  slider, and "Apply to every cut" copies the current junction's style and duration onto every cut on
+ *  the track in one undoable step. */
 export function TransitionPickerMenu({
   anchorRef,
   isAudioTrack,
@@ -38,6 +42,14 @@ export function TransitionPickerMenu({
   selectedThumbnailUrl,
   predecessorThumbnailUrl,
   successorThumbnailUrl,
+  hasPredecessor,
+  hasSuccessor,
+  initialMode,
+  durationIn,
+  durationOut,
+  onChangeDurationIn,
+  onChangeDurationOut,
+  onApplyToAllCuts,
 }: {
   anchorRef: React.RefObject<HTMLElement | null>;
   /** An audio clip's transition is always a crossfade — see `buildAudioTrackStream`'s own comment on
@@ -71,11 +83,49 @@ export function TransitionPickerMenu({
   selectedThumbnailUrl: string | null;
   predecessorThumbnailUrl: string | null;
   successorThumbnailUrl: string | null;
+  /** Whether a clip touches the edited clip on that side — drives the tab labels (see above). */
+  hasPredecessor: boolean;
+  hasSuccessor: boolean;
+  /** Which tab opens first; defaults to the side that has a junction, preferring "in". */
+  initialMode?: "in" | "out";
+  /** Current duration of each side's transition (seconds), `null` when that side has none. */
+  durationIn: number | null;
+  durationOut: number | null;
+  onChangeDurationIn: (seconds: number) => void;
+  onChangeDurationOut: (seconds: number) => void;
+  /** Copies a style + duration onto every cut on the track; omitted where that doesn't apply. */
+  onApplyToAllCuts?: (type: TransitionType, duration: number) => void;
 }) {
   const t = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
-  const anchor = anchorRef.current?.getBoundingClientRect();
-  const [mode, setMode] = useState<"in" | "out">("in");
+  const [position, setPosition] = useState({ left: 8, top: 8 });
+  const [mode, setMode] = useState<"in" | "out">(initialMode ?? (!hasPredecessor && hasSuccessor ? "out" : "in"));
+  // The slider's value while it's being dragged — committed (one undo step) on release, not per tick.
+  const [draftDuration, setDraftDuration] = useState<number | null>(null);
+  const [appliedToAll, setAppliedToAll] = useState(false);
+
+  // A junction can be anywhere in the timeline, unlike the bottom toolbar. Measure after the
+  // anchor's DOM position is committed, and keep the entire scrollable picker within the viewport.
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (!menu) return;
+    const place = () => {
+      const anchor = anchorRef.current?.getBoundingClientRect();
+      if (!anchor) return;
+      const rect = menu.getBoundingClientRect();
+      const left = Math.max(8, Math.min(anchor.left, window.innerWidth - rect.width - 8));
+      const top = Math.max(8, Math.min(anchor.top - rect.height - 8, window.innerHeight - rect.height - 8));
+      setPosition(previous => previous.left === left && previous.top === top ? previous : { left, top });
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(menu);
+    window.addEventListener("resize", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+    };
+  }, [anchorRef, initialMode]);
 
   useEffect(() => {
     function onPointerDown(e: PointerEvent) {
@@ -95,10 +145,18 @@ export function TransitionPickerMenu({
     };
   }, [anchorRef, onClose]);
 
-  if (!anchor) return null;
-  const { bottom, left } = popupPosition(anchor);
   const activeType = mode === "in" ? activeIn : activeOut;
   const onChange = mode === "in" ? onChangeIn : onChangeOut;
+  const committedDuration = mode === "in" ? durationIn : durationOut;
+  const onChangeDuration = mode === "in" ? onChangeDurationIn : onChangeDurationOut;
+  const shownDuration = draftDuration ?? committedDuration;
+  const isJunction = mode === "in" ? hasPredecessor : hasSuccessor;
+  const commitDuration = () => {
+    if (draftDuration !== null && draftDuration !== committedDuration) onChangeDuration(draftDuration);
+    setDraftDuration(null);
+  };
+  const tabLabel = (m: "in" | "out") =>
+    m === "in" ? (hasPredecessor ? t("From previous clip") : t("Fade in")) : hasSuccessor ? t("Into next clip") : t("Fade out");
   // "In" blends FROM the predecessor INTO the clip being edited; "Out" blends FROM the clip being
   // edited INTO the successor — see `TransitionPreviewTile.tsx`'s own prop doc comments.
   const outgoingThumbnailUrl = mode === "in" ? predecessorThumbnailUrl : selectedThumbnailUrl;
@@ -110,19 +168,23 @@ export function TransitionPickerMenu({
       ref={menuRef}
       role="menu"
       aria-label={t("Transition style")}
-      style={{ position: "fixed", bottom, left, width: MENU_WIDTH }}
+      style={{ position: "fixed", ...position, width: MENU_WIDTH, maxWidth: "calc(100vw - 16px)" }}
       className="z-50 max-h-[70vh] overflow-y-auto rounded-lg border border-white/10 bg-[#181b22] p-2 shadow-2xl"
     >
       <div className="mb-2 flex gap-1 rounded-md bg-white/5 p-0.5">
         {(["in", "out"] as const).map((m) => (
           <button
             key={m}
-            onClick={() => setMode(m)}
+            onClick={() => {
+              setMode(m);
+              setDraftDuration(null);
+              setAppliedToAll(false);
+            }}
             className={`flex-1 rounded px-2 py-1 text-[11px] font-medium transition ${
               mode === m ? "bg-sky-500/25 text-white" : "text-white/50 hover:text-white/80"
             }`}
           >
-            {m === "in" ? t("In") : t("Out")}
+            {tabLabel(m)}
             {(m === "in" ? activeIn : activeOut) && <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-sky-400" />}
           </button>
         ))}
@@ -141,8 +203,8 @@ export function TransitionPickerMenu({
         <button
           role="menuitem"
           onClick={() => {
-            onClose();
             onChange(null);
+            setAppliedToAll(false);
           }}
           className={`flex flex-col items-center gap-1 rounded p-1 transition hover:bg-white/10 ${
             !activeType ? "bg-sky-500/20" : ""
@@ -158,8 +220,8 @@ export function TransitionPickerMenu({
             key={type}
             role="menuitem"
             onClick={() => {
-              onClose();
               onChange(type);
+              setAppliedToAll(false);
             }}
             className={`flex flex-col items-center gap-1 rounded p-1 transition hover:bg-white/10 ${
               activeType === type ? "bg-sky-500/20" : ""
@@ -170,6 +232,39 @@ export function TransitionPickerMenu({
           </button>
         ))}
       </div>
+      {activeType && shownDuration !== null && (
+        <div className="mt-2 border-t border-white/10 px-1 pt-2">
+          <label className="flex items-center gap-2 text-[11px] text-white/70">
+            <span className="shrink-0">{t("Duration")}</span>
+            <input
+              type="range"
+              min={MIN_DURATION}
+              max={MAX_DURATION}
+              step={0.1}
+              value={shownDuration}
+              onChange={(e) => setDraftDuration(Number(e.target.value))}
+              onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
+              onPointerUp={commitDuration}
+              onPointerCancel={() => setDraftDuration(null)}
+              onKeyUp={commitDuration}
+              onBlur={commitDuration}
+              className="min-w-0 flex-1 accent-sky-400"
+            />
+            <span className="w-9 shrink-0 text-right tabular-nums text-white">{shownDuration.toFixed(1)}s</span>
+          </label>
+          {isJunction && onApplyToAllCuts && (
+            <button
+              onClick={() => {
+                onApplyToAllCuts(activeType, shownDuration);
+                setAppliedToAll(true);
+              }}
+              className="mt-2 w-full rounded bg-white/5 px-2 py-1.5 text-[11px] font-medium text-white/80 transition hover:bg-white/10 hover:text-white"
+            >
+              {appliedToAll ? t("Applied to every cut on this track") : t("Apply to every cut on this track")}
+            </button>
+          )}
+        </div>
+      )}
     </div>,
     document.body
   );

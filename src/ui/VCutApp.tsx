@@ -36,7 +36,7 @@ import { CREDITS_ENABLED, thumbnailUrl } from "../api/client.ts";
 import { reportError } from "../api/crashLog.ts";
 import { isDesktopSignInAvailable, openDesktopSignIn, subscribeToDesktopAuthCallback } from "../api/desktopAuth.ts";
 import { subscribeToNativeAuthCallback } from "../api/nativeAuth.ts";
-import { DeleteClipsCommand, SetClipTransitionCommand, SetClipTransitionOutCommand, SplitClipCommand } from "../commands/index.ts";
+import { BatchCommand, DeleteClipsCommand, SetClipTransitionCommand, SetClipTransitionOutCommand, SplitClipCommand } from "../commands/index.ts";
 import { translateText } from "../i18n/translations.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { findAsset, findClip } from "../project/createProject.ts";
@@ -320,7 +320,6 @@ function StatusBar({
   // refusing to apply at all, so there's no longer a real reason to gate the button on adjacency.
   const selectedId = selectedClipIds[0];
   const foundForTransition = project && selectedId ? findClip(project, selectedId) : undefined;
-  const transitionActive = Boolean(foundForTransition?.clip.transitionIn || foundForTransition?.clip.transitionOut);
   const transitionDisabled = !foundForTransition || (foundForTransition.track.kind !== "video" && foundForTransition.track.kind !== "text");
 
   // Real thumbnails for `TransitionPickerMenu`'s preview tiles — `null` for any side with nothing
@@ -331,6 +330,10 @@ function StatusBar({
     project && foundForTransition ? findTransitionCandidate(foundForTransition.track, foundForTransition.clip) : undefined;
   const transitionSuccessor =
     project && foundForTransition ? findTransitionSuccessorCandidate(foundForTransition.track, foundForTransition.clip) : undefined;
+  const transitionActive = Boolean(
+    foundForTransition?.clip.transitionIn ||
+    (transitionSuccessor ? transitionSuccessor.transitionIn : foundForTransition?.clip.transitionOut),
+  );
   const transitionSelectedAsset = project && foundForTransition ? findAsset(project, foundForTransition.clip.assetId) : undefined;
   const transitionPredecessorAsset = project && transitionPredecessor ? findAsset(project, transitionPredecessor.assetId) : undefined;
   const transitionSuccessorAsset = project && transitionSuccessor ? findAsset(project, transitionSuccessor.assetId) : undefined;
@@ -405,6 +408,16 @@ function StatusBar({
   // practice, so one shared flag (not one per picker) is enough.
   const contextMenuAnchorRef = useRef<HTMLDivElement>(null);
   const [pickerAnchorSource, setPickerAnchorSource] = useState<"button" | "contextMenu">("button");
+  // The timeline's between-clips transition button (`Timeline.tsx`'s `TransitionJunctionButton`) asks
+  // for the transition picker through the store; it opens anchored at that button, reusing the same
+  // invisible anchor point the context menu uses.
+  const transitionPickerRequest = useEditorStore((s) => s.transitionPickerRequest);
+  const setTransitionPickerRequest = useEditorStore((s) => s.setTransitionPickerRequest);
+  useEffect(() => {
+    if (!transitionPickerRequest) return;
+    setPickerAnchorSource("contextMenu");
+    setShowTransitionMenu(true);
+  }, [transitionPickerRequest]);
 
   const contextMenuActions: ClipContextMenuAction[] = contextMenu
     ? [
@@ -443,6 +456,7 @@ function StatusBar({
                 label: t("Transition"),
                 icon: <Transition size={15} />,
                 onClick: () => {
+                  setTransitionPickerRequest(null);
                   setPickerAnchorSource("contextMenu");
                   setShowTransitionMenu(true);
                 },
@@ -919,6 +933,7 @@ function StatusBar({
               label={t("Transition")}
               active={transitionActive}
               onClick={() => {
+                setTransitionPickerRequest(null);
                 setPickerAnchorSource("button");
                 setShowTransitionMenu((v) => !v);
               }}
@@ -927,11 +942,21 @@ function StatusBar({
             </ToolbarButton>
             {showTransitionMenu && foundForTransition && (
               <TransitionPickerMenu
+                key={`${foundForTransition.clip.id}:${transitionPickerRequest?.mode ?? "auto"}`}
                 anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : transitionButtonRef}
                 isAudioTrack={foundForTransition.track.kind === "audio"}
                 isTextTrack={foundForTransition.track.kind === "text"}
+                hasPredecessor={Boolean(transitionPredecessor)}
+                hasSuccessor={Boolean(transitionSuccessor)}
+                initialMode={transitionPickerRequest?.mode}
                 activeIn={foundForTransition.clip.transitionIn?.type ?? null}
-                activeOut={foundForTransition.clip.transitionOut?.type ?? null}
+                // With a clip right after this one, "Out" IS that junction — the successor's own
+                // `transitionIn`, the one field export and preview actually render there. A clip's own
+                // `transitionOut` only ever applies with nothing after it (see `findTransitionOut`), so
+                // editing it here used to silently do nothing between two touching clips.
+                activeOut={(transitionSuccessor ? transitionSuccessor.transitionIn?.type : foundForTransition.clip.transitionOut?.type) ?? null}
+                durationIn={foundForTransition.clip.transitionIn?.duration ?? null}
+                durationOut={(transitionSuccessor ? transitionSuccessor.transitionIn?.duration : foundForTransition.clip.transitionOut?.duration) ?? null}
                 onChangeIn={(type) => {
                   if (!type) {
                     run(new SetClipTransitionCommand(foundForTransition.clip.id, null));
@@ -941,6 +966,11 @@ function StatusBar({
                   run(new SetClipTransitionCommand(foundForTransition.clip.id, { duration, type }));
                 }}
                 onChangeOut={(type) => {
+                  if (transitionSuccessor) {
+                    const duration = transitionSuccessor.transitionIn?.duration ?? DEFAULT_TRANSITION.duration;
+                    run(new SetClipTransitionCommand(transitionSuccessor.id, type ? { duration, type } : null));
+                    return;
+                  }
                   if (!type) {
                     run(new SetClipTransitionOutCommand(foundForTransition.clip.id, null));
                     return;
@@ -948,7 +978,31 @@ function StatusBar({
                   const duration = foundForTransition.clip.transitionOut?.duration ?? DEFAULT_TRANSITION.duration;
                   run(new SetClipTransitionOutCommand(foundForTransition.clip.id, { duration, type }));
                 }}
-                onClose={() => setShowTransitionMenu(false)}
+                onChangeDurationIn={(duration) => {
+                  const current = foundForTransition.clip.transitionIn;
+                  if (current) run(new SetClipTransitionCommand(foundForTransition.clip.id, { ...current, duration }));
+                }}
+                onChangeDurationOut={(duration) => {
+                  if (transitionSuccessor) {
+                    const current = transitionSuccessor.transitionIn;
+                    if (current) run(new SetClipTransitionCommand(transitionSuccessor.id, { ...current, duration }));
+                    return;
+                  }
+                  const current = foundForTransition.clip.transitionOut;
+                  if (current) run(new SetClipTransitionOutCommand(foundForTransition.clip.id, { ...current, duration }));
+                }}
+                onApplyToAllCuts={(type, duration) => {
+                  // Every clip on this track with a touching predecessor is one cut — one undo step.
+                  const track = foundForTransition.track;
+                  const commands = track.clips
+                    .filter((clip) => findTransitionCandidate(track, clip))
+                    .map((clip) => new SetClipTransitionCommand(clip.id, { duration, type }));
+                  if (commands.length > 0) run(new BatchCommand("Apply Transition to All Cuts", commands));
+                }}
+                onClose={() => {
+                  setShowTransitionMenu(false);
+                  setTransitionPickerRequest(null);
+                }}
                 selectedThumbnailUrl={transitionSelectedThumbnailUrl}
                 predecessorThumbnailUrl={transitionPredecessorThumbnailUrl}
                 successorThumbnailUrl={transitionSuccessorThumbnailUrl}
@@ -1085,7 +1139,14 @@ function StatusBar({
           toolbar button. Repositioning it via plain inline style (not React state driving layout) is
           fine here: it has no visible box for a layout shift to matter, so it can move outside React's
           normal render cycle without any visual cost. */}
-      <div ref={contextMenuAnchorRef} style={{ position: "fixed", left: contextMenu?.x ?? 0, top: contextMenu?.y ?? 0 }} />
+      <div
+        ref={contextMenuAnchorRef}
+        style={{
+          position: "fixed",
+          left: transitionPickerRequest?.x ?? contextMenu?.x ?? 0,
+          top: transitionPickerRequest?.y ?? contextMenu?.y ?? 0,
+        }}
+      />
       {contextMenu && <ClipContextMenu x={contextMenu.x} y={contextMenu.y} actions={contextMenuActions} onClose={() => setContextMenu(null)} />}
     </footer>
   );

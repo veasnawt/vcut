@@ -2172,7 +2172,7 @@ export function Inspector() {
                             suffix="px"
                             step={1}
                             min={0}
-                            max={20}
+                            max={60}
                             onPreview={(v) => previewEffects(clip.id, { blur: v })}
                             onCommit={(v) => patchEffects(clip.id, { blur: v })}
                           />

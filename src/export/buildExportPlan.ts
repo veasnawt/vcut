@@ -19,6 +19,20 @@ import {
 } from "../timeline/textAnimation.ts";
 import { hasColorGradingKeyframes, hasEffectsKeyframes, hasTextCropKeyframes, hasTextStyleKeyframes, hasTransformKeyframes, resolveClipColorGrading, resolveClipEffects, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
 import {
+  easeTransitionExpr,
+  GLITCH_CUT_BAND_COUNT,
+  GLITCH_CUT_BAND_HEIGHT_FRACTION,
+  GLITCH_CUT_BURST_SECONDS,
+  glitchCutBurst,
+  glitchCutBurstProgress,
+  glitchCutShowsIncoming,
+  midpointIntensity,
+  SLICE_STRIP_COUNT,
+  SLICE_WIPE_FRACTION,
+  sliceStripBounds,
+  transitionFamily,
+} from "../timeline/transitionMotion.ts";
+import {
   FLASH_ZOOM_PEAK,
   GLITCH_NOISE_AMOUNT,
   GLITCH_SHIFT_PX,
@@ -35,53 +49,6 @@ import { animationFrameIndex, animationLoopOffset } from "../project/stickers.ts
 import { buildCurvesFilterFragment } from "./curvesFilter.ts";
 import type { KhmerTextWindow } from "./khmerTextRenderer.ts";
 import { buildPanFilterStage } from "./panFilter.ts";
-
-/** `TransitionType` → FFmpeg's own `xfade` filter transition name — a 1:1 mapping (every value here
- *  IS the real xfade name already, see `TransitionType`'s own doc comment on why only names from
- *  xfade's ORIGINAL 4.3 set were chosen), kept as an explicit table anyway rather than a
- *  lowercase-the-enum-value trick so the two can never silently drift if either naming convention ever
- *  changes independently. Used for BOTH video/image clips (`xfade=transition=...`) and text clips
- *  (the text-blend filter graph `buildDrawTextTransitionFilters` builds) — export renders the exact
- *  distinct type either way, unlike the canvas preview's four-family grouping (see
- *  `PlaybackEngine.transitionFamily`). */
-const TRANSITION_XFADE_NAME: Record<TransitionType, string> = {
-  crossfade: "fade",
-  dissolve: "dissolve",
-  wipeLeft: "wipeleft",
-  wipeRight: "wiperight",
-  wipeUp: "wipeup",
-  wipeDown: "wipedown",
-  slideLeft: "slideleft",
-  slideRight: "slideright",
-  slideUp: "slideup",
-  slideDown: "slidedown",
-  // Also real, always-safe xfade names — part of the same original 4.3 introduction as everything
-  // above, confirmed directly against both the bundled desktop ffmpeg and the hosted deployment's own
-  // build before being added (see `TransitionType`'s own doc comment). The frame divides into vertical
-  // strips, each sliding away with its own slight time offset from its neighbor — a "venetian blind"
-  // cascade, not a uniform whole-frame slide.
-  sliceUp: "vuslice",
-  sliceDown: "vdslice",
-  circleOpen: "circleopen",
-  circleClose: "circleclose",
-  // Not real xfade names — four of the deliberate exceptions to the "every value here is a real
-  // xfade name" rule above. A corruption pre-pass filter stage (`geq=`/`rgbashift=`+`noise=`/
-  // `scale=`+`crop=`+`gblur=`, applied to both sides before the transition) runs first, then this
-  // plain "fade" is what actually blends the two now-corrupted streams underneath it — the
-  // corruption itself, not the blend math, is what makes it read as "glitch"/"ripple"/"zoom blur"/
-  // "flash" rather than a plain dissolve. See `applyTransitionCorruptionPass` below for where that
-  // stage is built.
-  glitchCut: "fade",
-  waterRippleCut: "fade",
-  zoomBlur: "fade",
-  flashZoom: "fade",
-  // whipPanLeft/Right are the OTHER kind of exception: a real, always-safe `slideleft`/`slideright`
-  // blend (not "fade") with a directional-blur pre-pass layered on top of it — the pan motion IS the
-  // xfade geometry here, unlike glitch/waterRipple/zoomBlur/flashZoom where the pre-pass is the whole
-  // visual and the blend underneath is deliberately plain.
-  whipPanLeft: "slideleft",
-  whipPanRight: "slideright",
-};
 
 /** Builds the FFmpeg invocation that renders a project to a finished file.
  *
@@ -135,6 +102,10 @@ export interface ExportPlanOptions {
    *  one — the FFmpeg engine bundled for on-device mobile export doesn't include libx264 at all (a real
    *  gap discovered testing on a physical device, not a hypothetical). */
   videoEncoderArgs?: string[];
+  /** Whether the target FFmpeg drawtext filter supports per-line `text_align` (default true).
+   *  Android's bundled engine lacks this option. When false, keep the block's position and
+   *  styling, using the engine's default left alignment within multiline text blocks. */
+  drawtextTextAlign?: boolean;
   /** Overrides `computeSliceBoundaries`'s own default sampling interval/cap for a KEYFRAMED VIDEO/
    *  image clip's transform+effects+colorGrading slicing (see that function's own doc comment) —
    *  omitted keeps the exact same defaults every caller already got before this option existed.
@@ -743,7 +714,7 @@ function ffmpegColor(hex: string): string {
  *  composites these in a fixed order (shadow, then outline, then fill) regardless of the order their
  *  key=value pairs appear in the filter string — `PlaybackEngine.drawText` draws in that same order
  *  for the same visual result. */
-function buildDrawTextStyleParams(style: TextStyle): string {
+function buildDrawTextStyleParams(style: TextStyle, textAlignSupported = true): string {
   const box = style.backgroundColor
     ? `:box=1:boxcolor=${ffmpegColor(style.backgroundColor)}:boxborderw=${TEXT_BOX_PADDING}`
     : "";
@@ -755,8 +726,8 @@ function buildDrawTextStyleParams(style: TextStyle): string {
   // `buildDrawTextGeometry`'s own `x=` now always anchors regardless of `align` — see that function's
   // own comment, and `textLayout.ts`'s top-of-file comment for the preview-side mirror of this split.
   // `TextStyle.align`'s three values map 1:1 onto `drawtext`'s own `text_align` option, confirmed live
-  // against this repo's bundled ffmpeg.
-  const textAlign = `:text_align=${style.align}`;
+  // against the desktop FFmpeg build. Mobile omits the option because its engine rejects it.
+  const textAlign = textAlignSupported ? `:text_align=${style.align}` : "";
   return `${box}${border}${shadow}${textAlign}`;
 }
 
@@ -1256,7 +1227,8 @@ function buildTypewriterDrawTextCalls(params: {
  *  with a different `style` each time. */
 function buildDrawTextGeometry(
   style: TextStyle,
-  fontPathFor: ExportPlanOptions["fontPathFor"]
+  fontPathFor: ExportPlanOptions["fontPathFor"],
+  textAlignSupported = true,
 ): { fontFile: string; x: string; y: string; fontSizeExpr: string; color: string; styleParams: string; lineSpacing: string } {
   const font = fontById(style.fontFamily);
   const fontFile = ffmpegPath(fontPathFor(fontFileFor(font, style.bold, style.italic)));
@@ -1271,7 +1243,7 @@ function buildDrawTextGeometry(
   const x = `(${anchorX})-text_w/2`;
   const y = `(h/2)+${n(style.offsetY)}-text_h/2`;
 
-  const styleParams = buildDrawTextStyleParams(style);
+  const styleParams = buildDrawTextStyleParams(style, textAlignSupported);
   // FFmpeg's `line_spacing` is EXTRA pixels added between lines on top of the font's own natural line
   // height, unlike the multiplier `style.lineHeightMultiplier` applies wholesale in the canvas preview
   // — this converts one convention to the other; see `textLayout.ts` for why exact agreement isn't the
@@ -1312,12 +1284,13 @@ function buildDrawTextFilter(params: {
   style: TextStyle;
   clip: Clip;
   fontPathFor: ExportPlanOptions["fontPathFor"];
+  drawtextTextAlign?: boolean;
   textFilePathFor: ExportPlanOptions["textFilePathFor"];
   fadeIn?: number;
   fadeOut?: TextFadeOut;
 }): string[] {
   const { inputLabel, outputLabel, content, style, clip, fontPathFor, textFilePathFor, fadeIn, fadeOut } = params;
-  const geo = buildDrawTextGeometry(style, fontPathFor);
+  const geo = buildDrawTextGeometry(style, fontPathFor, params.drawtextTextAlign);
   const { enableEnd, alphaParam } = buildTextFadeParams(clip, fadeIn, fadeOut);
   const start = clip.timelineStart;
   const animation = clip.textAnimation;
@@ -1383,6 +1356,7 @@ function buildKeyframedDrawTextCalls(params: {
   baseStyle: TextStyle;
   clip: Clip;
   fontPathFor: ExportPlanOptions["fontPathFor"];
+  drawtextTextAlign?: boolean;
   textFilePathFor: ExportPlanOptions["textFilePathFor"];
   fadeIn?: number;
   fadeOut?: TextFadeOut;
@@ -1398,7 +1372,7 @@ function buildKeyframedDrawTextCalls(params: {
   slices.forEach((slice, i) => {
     const isLast = i === slices.length - 1;
     const stepLabel = isLast ? outputLabel : `${outputLabel}_kf${i}`;
-    const geo = buildDrawTextGeometry(slice.style, fontPathFor);
+    const geo = buildDrawTextGeometry(slice.style, fontPathFor, params.drawtextTextAlign);
     const { y, fontSizeExpr } = applyTextMotionAnimation(clip, geo.y, geo.fontSizeExpr);
     // Last slice's own window extends to the real fade-adjusted `enableEnd` (not clipped to its own
     // nominal boundary) — matches how the un-sliced path's one-and-only call already extends past the
@@ -1472,7 +1446,8 @@ function buildKeyframedDrawTextCalls(params: {
  *  `buildKeyframedRotatedDrawTextCalls`). Pure function of `style` alone. */
 function buildRotatedDrawTextGeometry(
   style: TextStyle,
-  fontPathFor: ExportPlanOptions["fontPathFor"]
+  fontPathFor: ExportPlanOptions["fontPathFor"],
+  textAlignSupported = true,
 ): { fontFile: string; x: string; y: string; color: string; styleParams: string; lineSpacing: string } {
   const font = fontById(style.fontFamily);
   const fontFile = ffmpegPath(fontPathFor(fontFileFor(font, style.bold, style.italic)));
@@ -1484,7 +1459,7 @@ function buildRotatedDrawTextGeometry(
   const x = `(w/2)-text_w/2`;
   const y = `(h/2)-text_h/2`;
 
-  const styleParams = buildDrawTextStyleParams(style);
+  const styleParams = buildDrawTextStyleParams(style, textAlignSupported);
   const lineSpacing = n(style.fontSize * (style.lineHeightMultiplier - 1));
   const color = ffmpegColor(style.color);
 
@@ -1519,12 +1494,13 @@ function buildRotatedDrawTextFilter(params: {
   style: TextStyle;
   clip: Clip;
   fontPathFor: ExportPlanOptions["fontPathFor"];
+  drawtextTextAlign?: boolean;
   textFilePathFor: ExportPlanOptions["textFilePathFor"];
   fadeIn?: number;
   fadeOut?: TextFadeOut;
 }): string[] {
   const { inputLabel, bgIndex, outputLabel, content, style, clip, fontPathFor, textFilePathFor, fadeIn, fadeOut } = params;
-  const geo = buildRotatedDrawTextGeometry(style, fontPathFor);
+  const geo = buildRotatedDrawTextGeometry(style, fontPathFor, params.drawtextTextAlign);
   const textFile = ffmpegPath(textFilePathFor(clip, content));
 
   // Same fade/extended-window logic `buildDrawTextFilter` uses — see `buildTextFadeParams`'s own
@@ -1563,6 +1539,7 @@ function buildKeyframedRotatedDrawTextCalls(params: {
   baseStyle: TextStyle;
   clip: Clip;
   fontPathFor: ExportPlanOptions["fontPathFor"];
+  drawtextTextAlign?: boolean;
   textFilePathFor: ExportPlanOptions["textFilePathFor"];
   fadeIn?: number;
   fadeOut?: TextFadeOut;
@@ -1582,7 +1559,7 @@ function buildKeyframedRotatedDrawTextCalls(params: {
     const sliceEnd = isLast ? enableEnd : clip.timelineStart + slice.offset + slice.duration;
     const enable = `enable='between(t\\,${t(sliceStart)}\\,${t(sliceEnd)})'`;
 
-    const geo = buildRotatedDrawTextGeometry(slice.style, fontPathFor);
+    const geo = buildRotatedDrawTextGeometry(slice.style, fontPathFor, params.drawtextTextAlign);
     const { angle, maxAngle } = computeWiggleRotationAngle(clip, slice.style);
 
     const drawnLabel = `${outputLabel}_kf${i}_drawn`;
@@ -1689,6 +1666,9 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
   /** Filter-graph references for inputs that don't feed the graph as their raw `${index}:v` — an
    *  animated sticker's looped input goes through `pushImageInput`'s own trim stage first. */
   const videoInputRefs = new Map<number, string>();
+  // A final-frame hold may seek slightly before its requested source time to decode a picture.
+  // The shared input's audio must discard that preroll instead of replaying it under the blend.
+  const audioInputPreroll = new Map<number, number>();
   const videoRef = (index: number): string => videoInputRefs.get(index) ?? `${index}:v`;
 
   /** Every "I need N seconds of silence" request across the whole export — deferred rather than each
@@ -1752,6 +1732,27 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
    *    0), so each frame starts exactly when preview switches to it.
    *  - `fps=...:round=up` puts each frame on the first output frame at or after its start (the frame
    *    preview shows at that instant); `trim=duration` then cuts to exactly the length a still gets. */
+  /** `-ss start -t duration -i path` for a video source — plus, when the file ends before
+   *  `start + duration` (an outgoing transition partner running on past the end of its media, see
+   *  `transitionPartnerSourceTime`), a `tpad` that holds its final frame for the rest, so the stream
+   *  is still exactly `duration` long. Registered through `videoInputRefs` like `pushImageInput`'s
+   *  own loop stage, so every consumer picks it up via `videoRef`. */
+  function pushVideoSourceInput(clip: Clip, path: string, start: number, duration: number, index: number): void {
+    const asset = findAsset(project, clip.assetId);
+    const sourceDuration = asset?.kind === "video" ? asset.duration : undefined;
+    if (sourceDuration === undefined || !(sourceDuration > 0) || start + duration <= sourceDuration + 1e-3) {
+      inputs.push("-ss", t(start), "-t", t(duration), "-i", path);
+      return;
+    }
+    const frame = 1 / (asset?.fps || fps);
+    const seek = Math.max(0, Math.min(start, sourceDuration - 1.5 * frame));
+    if (start > seek) audioInputPreroll.set(index, start - seek);
+    inputs.push("-ss", t(seek), "-t", t(duration), "-i", path);
+    const label = `in${index}_hold`;
+    filters.push(`[${index}:v]setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=${t(duration)},trim=duration=${t(duration)}[${label}]`);
+    videoInputRefs.set(index, label);
+  }
+
   function pushImageInput(clip: Clip, path: string, sourceStart: number, duration: number, index: number): void {
     const asset = findAsset(project, clip.assetId);
     // A color-matte asset has no real file at all — `Asset.relPath` is `""` (see that field's own doc
@@ -1876,19 +1877,9 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     }
 
     if (fadeIn || fadeOut) {
-      const alphaParam = transparent ? ":alpha=1" : "";
-      // See `applySoloCorruptionPass`'s own doc comment — this is what makes a solo `glitchCut`/
-      // `waterRippleCut`/`whipPanLeft`/`whipPanRight` on a track's first/last clip actually render on
-      // export instead of silently downgrading to a plain fade. Chained (not just the first that
-      // applies) since a single very short clip can legitimately have BOTH a solo fade-in AND a solo
-      // fade-out at once.
-      let preFadeLabel = label;
-      if (fadeIn) preFadeLabel = applySoloCorruptionPass(preFadeLabel, clip.transitionIn?.type ?? "crossfade", 0, fadeIn);
-      if (fadeOut) preFadeLabel = applySoloCorruptionPass(preFadeLabel, clip.transitionOut?.type ?? "crossfade", sliceDuration - fadeOut, fadeOut);
-      const stages: string[] = [];
-      if (fadeIn) stages.push(`fade=t=in:st=0:d=${t(fadeIn)}${alphaParam}`);
-      if (fadeOut) stages.push(`fade=t=out:st=${t(sliceDuration - fadeOut)}:d=${t(fadeOut)}${alphaParam}`);
-      filters.push(`[${preFadeLabel}]${stages.join(",")}[${outputLabel}]`);
+      // The clip's own style for its solo fade-in/out — see `pushSoloTransitionStages`. A single very
+      // short clip can legitimately have both at once.
+      pushSoloTransitionStages(label, outputLabel, clip, sliceDuration, transparent, fadeIn, fadeOut);
     }
   }
 
@@ -1936,7 +1927,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     if (isImage) {
       pushImageInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex);
     } else {
-      inputs.push("-ss", t(clip.sourceIn + elapsedAtSegmentStart), "-t", t(sliceDuration), "-i", path);
+      pushVideoSourceInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex);
     }
     // ONE background color input for the whole segment too — this was ALSO duplicated per slice
     // before, an independent contributor to the same command-line-length problem.
@@ -2007,22 +1998,14 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       sliceLabels.push(`[${sliceLabel}]`);
     });
 
-    // `,fps=` renormalizes the concat output's own negotiated timebase back to the sequence rate —
-    // without it, a downstream `xfade` transition can reject this stream's timebase entirely (the same
-    // fix `buildSegments`' own outer segment concat needed for the identical reason).
-    filters.push(`${sliceLabels.join("")}concat=n=${slices.length}:v=1:a=0,fps=${fps}[${label}]`);
+    // Each slice already has the sequence frame rate. Rebuild timestamps by frame count rather than
+    // resampling concat's microsecond timestamps with fps: rounding there can drop the final frame.
+    // The explicit timebase still matches the other input of a downstream xfade.
+    filters.push(`${sliceLabels.join("")}concat=n=${slices.length}:v=1:a=0,settb=1/${fps},setpts=N[${label}]`);
 
     if (fadeIn || fadeOut) {
-      const alphaParam = transparent ? ":alpha=1" : "";
-      // See `applySoloCorruptionPass`'s own doc comment — same fix `pushClipVideoFilters` above
-      // applies, needed here too since a keyframed clip can equally be the first/last one on its track.
-      let preFadeLabel = label;
-      if (fadeIn) preFadeLabel = applySoloCorruptionPass(preFadeLabel, clip.transitionIn?.type ?? "crossfade", 0, fadeIn);
-      if (fadeOut) preFadeLabel = applySoloCorruptionPass(preFadeLabel, clip.transitionOut?.type ?? "crossfade", sliceDuration - fadeOut, fadeOut);
-      const stages: string[] = [];
-      if (fadeIn) stages.push(`fade=t=in:st=0:d=${t(fadeIn)}${alphaParam}`);
-      if (fadeOut) stages.push(`fade=t=out:st=${t(sliceDuration - fadeOut)}:d=${t(fadeOut)}${alphaParam}`);
-      filters.push(`[${preFadeLabel}]${stages.join(",")}[${outputLabel}]`);
+      // Same as `pushClipVideoFilters` — a keyframed clip can equally be the first/last on its track.
+      pushSoloTransitionStages(label, outputLabel, clip, sliceDuration, transparent, fadeIn, fadeOut);
     }
   }
 
@@ -2045,7 +2028,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     audioLabel: string,
     sliceDuration: number,
     fadeIn?: number,
-    fadeOut?: number
+    fadeOut?: number,
+    padToDuration = false
   ): void {
     const needsAudioSource = hasAudio && !clip.mutedAudio;
     let audioSourceIndex = -1;
@@ -2057,7 +2041,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       }
       audioSourceIndex = inputIndex++;
     }
-    pushClipAudioFilters(needsAudioSource, audioSourceIndex, audioLabel, sliceDuration, clip.gain ?? 1, fadeIn, fadeOut);
+    pushClipAudioFilters(needsAudioSource, audioSourceIndex, audioLabel, sliceDuration, clip.gain ?? 1, fadeIn, fadeOut, padToDuration);
   }
 
   // Pushes one source's own audio — resampled straight through (with an optional `volume=` stage —
@@ -2071,7 +2055,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     sliceDuration: number,
     gain = 1,
     fadeIn?: number,
-    fadeOut?: number
+    fadeOut?: number,
+    padToDuration = false
   ): void {
     // Silence has nothing to fade (an `afade` on a silent source is a pure no-op), so `fadeIn`/
     // `fadeOut` only ever matter on the `hasAudio` branch — same reasoning `gain`'s own "meaningless
@@ -2087,7 +2072,14 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // `volume=1.000000` is a harmless no-op filter-graph-wise, but skipping it keeps the untouched
       // (overwhelmingly common) case's generated args byte-for-byte identical to before this feature.
       const volumeStage = gain !== 1 ? `,volume=${n(gain)}` : "";
-      filters.push(`[${videoIndex}:a]aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${volumeStage}${fadeStage}[${outputLabel}]`);
+      // `padToDuration`: an outgoing transition partner's audio can run out before the blend does
+      // (its source ends — see `pushVideoSourceInput`); `acrossfade` needs the full length.
+      const padStage = padToDuration ? `,apad=whole_dur=${t(sliceDuration)}` : "";
+      const preroll = audioInputPreroll.get(videoIndex);
+      const trimStage = preroll ? `atrim=start=${t(preroll)},` : "";
+      filters.push(
+        `[${videoIndex}:a]${trimStage}aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${volumeStage}${fadeStage}${padStage}[${outputLabel}]`
+      );
     } else {
       pushSilentAudio(sliceDuration, outputLabel);
     }
@@ -2231,162 +2223,465 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     });
   }
 
-  // Five transition types render with a pre-pass filter stage on EACH side's own stream before the
-  // real `xfade` blend — mirrors `PlaybackEngine.compositeTransitionFrame`'s own glitch/water-ripple/
-  // zoomBlur/whipPan transition families, which run the equivalent pixel-domain effect on both
-  // outgoing/incoming frames before compositing, rather than just picking a different `xfade` geometry
-  // the way every other transition type does. Returns `label` UNCHANGED for every other type — the raw
-  // `_from`/`_to` streams feed `xfade` directly, exactly as before this feature existed.
+  // ---- Transitions -------------------------------------------------------------------------------
   //
-  // `waterRippleCut`/`flashZoom` ramp their own effect across the blend window (zero at both edges,
-  // peaking at the midpoint) via a plain quadratic in `T` — `4*(T/D)*(1-T/D)` is 0 at T=0 and T=D, 1 at
-  // T=D/2 — instead of `applyWaterRipple`'s continuous per-clip effect's flat full-strength wobble,
-  // matching `compositeTransitionFrame`'s own "ramp up then back down across the blend window" shape
-  // for these transition families specifically. `glitchCut`/`zoomBlur`/`whipPanLeft`/`whipPanRight`
-  // have no equivalent ramp — none of `rgbashift=`/`noise=`/`scale=`/`crop=`/`gblur=`/`boxblur=` can be
-  // driven by a `T` expression the way `geq=` can (the same limitation `pixelEffectFilter` above
-  // already documents) — so each is a FIXED corruption/blur pass for the transition's whole duration.
-  function applyTransitionCorruptionPass(label: string, transitionType: TransitionType, transitionDuration: number): string {
-    if (
-      transitionType !== "glitchCut" &&
-      transitionType !== "waterRippleCut" &&
-      transitionType !== "zoomBlur" &&
-      transitionType !== "whipPanLeft" &&
-      transitionType !== "whipPanRight" &&
-      transitionType !== "flashZoom"
-    ) {
-      return label;
-    }
-    const fxLabel = `${label}_fx`;
-    if (transitionType === "waterRippleCut") {
-      const rate = (2 * Math.PI) / WATER_RIPPLE_PERIOD_SECONDS;
-      const ramp = `4*(T/${t(transitionDuration)})*(1-T/${t(transitionDuration)})`;
-      const expr = `p(X+${n(WATER_RIPPLE_AMPLITUDE_PX)}*${ramp}*sin(Y/${n(WATER_RIPPLE_WAVELENGTH_PX)}+T*${n(rate)}),Y)`;
-      filters.push(`[${label}]geq=lum='${expr}':cb='${expr}':cr='${expr}'[${fxLabel}]`);
-    } else if (transitionType === "glitchCut") {
-      filters.push(`[${label}]rgbashift=rh=${GLITCH_SHIFT_PX}:bv=${-GLITCH_SHIFT_PX},noise=alls=${n(GLITCH_NOISE_AMOUNT)}:allf=t[${fxLabel}]`);
-    } else if (transitionType === "zoomBlur" || transitionType === "flashZoom") {
-      // A centered zoom-in (scale up, then crop back down to the original frame size — `crop`'s own
-      // default x/y IS centered) plus a fixed gaussian blur — the "zoom punch" look popular in short-
-      // form templates. Fixed, not T-ramped (see this function's own doc comment on why), which still
-      // reads as a strong, energetic snap given how short a transition's own duration typically is.
-      //
-      // `crop`'s own target is the LITERAL sequence `width`/`height` (from this function's outer
-      // closure), not an inverse `iw/zoomFactor` expression — empirically confirmed to matter: `scale`
-      // rounds its own computed float dimensions to the nearest integer pixel, and dividing THAT
-      // already-rounded value back by the same zoom factor doesn't always land on exactly the
-      // original size (a real, reproduced 640×360 → 639×360 mismatch that broke the downstream
-      // `concat` filter outright, not a theoretical edge case). `setsar=1` is the second half of that
-      // same empirical fix: independently rounding width and height also nudges the sample aspect
-      // ratio a hair off `1:1` (a real, reproduced `1756:1755` observed against this repo's own
-      // bundled ffmpeg) — pixel-identical size wasn't enough on its own, `concat` rejects a SAR
-      // mismatch just as hard as a dimension one.
-      const zoomFactor = n(1 + ZOOM_BLUR_SCALE);
-      const zoomStage = `scale=w='iw*${zoomFactor}':h='ih*${zoomFactor}',crop=w=${width}:h=${height},setsar=1,gblur=sigma=${n(ZOOM_BLUR_SIGMA_PX)}`;
-      if (transitionType === "zoomBlur") {
-        filters.push(`[${label}]${zoomStage}[${fxLabel}]`);
-      } else {
-        // flashZoom: the exact same zoom+blur pre-pass as zoomBlur, with a SECOND, T-ramped `geq=`
-        // stage chained on afterward — blending every pixel toward white (luma toward 255, chroma
-        // toward neutral 128) proportional to the same 0→1→0 parabola `waterRippleCut` uses, peaking
-        // at `FLASH_ZOOM_PEAK` (not `1.0`) right at the cut so the flash reads as a bright pulse
-        // rather than a dead blank frame. `p(X,Y)` samples the CURRENT plane (lum/cb/cr respectively)
-        // at its own coordinate, exactly like `waterRippleCut`'s own `expr` above — the only
-        // difference is this doesn't offset the sample coordinate at all (no spatial displacement),
-        // it only rewrites the sampled value itself.
-        const k = `${n(FLASH_ZOOM_PEAK)}*4*(T/${t(transitionDuration)})*(1-T/${t(transitionDuration)})`;
-        filters.push(
-          `[${label}]${zoomStage},geq=lum='p(X,Y)*(1-(${k}))+255*(${k})':cb='p(X,Y)*(1-(${k}))+128*(${k})':cr='p(X,Y)*(1-(${k}))+128*(${k})'[${fxLabel}]`
-        );
-      }
-    } else {
-      // whipPanLeft/whipPanRight — a HORIZONTAL-only box blur (vertical radius 0), the directional
-      // "motion smear" a fast camera pan leaves behind; the actual pan motion comes from the real
-      // `slideleft`/`slideright` xfade blend this pairs with (`TRANSITION_XFADE_NAME`), not from
-      // anything in this pre-pass itself.
-      filters.push(
-        `[${label}]boxblur=luma_radius=${WHIP_PAN_BLUR_RADIUS_PX}:luma_power=1:chroma_radius=${WHIP_PAN_BLUR_RADIUS_PX}:chroma_power=1[${fxLabel}]`
-      );
-    }
-    return fxLabel;
+  // Every style is built to match `PlaybackEngine.compositeTransitionFrame`/`compositeSoloReveal`
+  // frame for frame, sharing their curves through `timeline/transitionMotion.ts`. FFmpeg's own
+  // `xfade` shapes are only used where they already ARE the preview's shape (fade, wipe, slide) —
+  // its `vuslice`/`vdslice` are horizontal bands rather than the preview's vertical-strip cascade, and
+  // its `circleopen`/`circleclose` are a very soft blob that barely moves until late in the blend, so
+  // those two are composed from `crop`/`overlay`/a mask instead.
+  //
+  // Per-pixel expression filters (`xfade=custom`, `geq`) were measured at ~1s and ~0.3s per 1080×1920
+  // frame respectively, so everything that runs on BOTH sides of every two-clip transition uses native
+  // filters driven by per-frame expressions (`overlay`/`crop`/`scale` accept `t`) or by a `sendcmd`
+  // schedule (`gblur`/`rgbashift`/`colorlevels` accept runtime commands — measured working per frame
+  // against the bundled FFmpeg 6.1). `geq` is limited to narrow ripple displacement maps and
+  // quarter-resolution circle masks, avoiding full-resolution per-pixel expression evaluation.
+
+  /** Timebase the eased `xfade` styles re-time their inputs onto — fine enough that easing squeezes
+   *  consecutive frames' timestamps together without any two collapsing onto the same tick. */
+  const EASE_TIMEBASE = "1/1000000";
+
+  /** A `sendcmd` filter applying each entry's commands from its `time` onward. Times are nudged
+   *  0.5ms early so a command meant for the frame at exactly `n/fps` is always already in effect when
+   *  that frame arrives, rather than depending on how its 6-decimal rounding happens to fall. */
+  function sendcmd(entries: { time: number; commands: string[] }[]): string {
+    const intervals = entries.map((e) => `${Math.max(0, e.time - 0.0005).toFixed(6)} ${e.commands.join(",")}`);
+    return `sendcmd=c='${intervals.join(";")}'`;
   }
 
-  /** The solo-fade counterpart of `applyTransitionCorruptionPass` above — a real, confirmed bug fix,
-   *  not a defensive addition: `pushClipVideoFilters`/`pushKeyframedClipVideoFilters`'s own solo
-   *  `fadeIn`/`fadeOut` (a clip with no adjacent partner — the FIRST clip's own fade-in, or the LAST
-   *  clip's own fade-out on a track, see `Segment["clip"]["fadeIn"/"fadeOut"]`'s own doc comments)
-   *  never called `applyTransitionCorruptionPass` at all, so a `glitchCut`/`waterRippleCut`/
-   *  `whipPanLeft`/`whipPanRight` transition landing on exactly that clip silently exported as a PLAIN
-   *  fade — looking right in the live preview (`compositeSoloReveal` genuinely renders the corruption
-   *  there) but not in the file a user actually gets.
-   *
-   *  Can't just reuse `applyTransitionCorruptionPass` unchanged: that function assumes the WHOLE input
-   *  IS the transition window, true only for the two-clip case (each side is already `-ss`/`-t`-trimmed
-   *  to exactly the transition's own duration before this ever runs). A solo fade instead runs as ONE
-   *  continuous filter chain over the clip's own FULL segment duration, with the fade confined to a
-   *  `[windowStart, windowStart+windowDuration)` sub-range — so gating via ffmpeg's own `enable=`
-   *  timeline-editing option (verified empirically against this repo's own bundled ffmpeg build) is
-   *  what confines the effect to just that edge instead of corrupting the whole clip.
-   *
-   *  `zoomBlur`/`flashZoom` ARE handled here too, but via a different mechanism than the other four:
-   *  their pre-pass needs `crop=` (see `applyTransitionCorruptionPass`'s own comment on why), and this
-   *  ffmpeg build's `crop` filter does not support `enable=` AT ALL (confirmed directly: ffmpeg refuses
-   *  to even build the filtergraph, "Timeline ('enable' option) not supported with filter 'crop'"). The
-   *  workaround: `split` the stream in two, run `crop`'s zoom+blur pre-pass UNGATED on one copy (crop
-   *  never needs to know about the window at all that way), and `overlay` it back onto the untouched
-   *  copy gated by `overlay`'s OWN `enable=` support (which, unlike `crop`'s, does work) — so the
-   *  window-confinement moves from the filter that can't do it to the one right after it that can.
-   *  `waterRippleCut`'s own ramp expression (and `flashZoom`'s below) uses `(T-windowStart)`, not raw
-   *  `T` — `geq=`'s own `T` is elapsed time since the CLIP'S OWN segment start, not the fade window's
-   *  start, so without this the parabola would peak at the middle of the whole clip instead of the
-   *  middle of the fade window whenever `windowStart` isn't 0 (a `fadeOut`, which always starts partway
-   *  through the segment). */
-  function applySoloCorruptionPass(label: string, transitionType: TransitionType, windowStart: number, windowDuration: number): string {
-    if (
-      transitionType !== "glitchCut" &&
-      transitionType !== "waterRippleCut" &&
-      transitionType !== "whipPanLeft" &&
-      transitionType !== "whipPanRight" &&
-      transitionType !== "zoomBlur" &&
-      transitionType !== "flashZoom"
-    ) {
-      return label;
+  /** Output frame times across `[start, start + length)`. */
+  function frameTimesIn(start: number, length: number): number[] {
+    const first = Math.ceil(start * fps - 1e-6);
+    const last = Math.ceil((start + length) * fps - 1e-6) - 1;
+    const times: number[] = [];
+    for (let frame = Math.max(0, first); frame <= last; frame++) times.push(frame / fps);
+    return times;
+  }
+
+  /** `if(lt(t,b1),v0,if(lt(t,b2),v1,...vN))` — a piecewise-constant function of time, for values that
+   *  hold for a whole glitch burst. Boundaries are nudged early for the same reason `sendcmd`'s are. */
+  function piecewiseExpr(boundaries: number[], values: string[]): string {
+    let expr = values[values.length - 1];
+    for (let i = boundaries.length - 1; i >= 0; i--) expr = `if(lt(t,${(boundaries[i] - 0.0005).toFixed(6)}),${values[i]},${expr})`;
+    return expr;
+  }
+
+  /** `sum of between(t,a,b)` over the given half-open windows — an `enable=` expression. */
+  function windowsExpr(windows: [number, number][]): string {
+    if (windows.length === 0) return "0";
+    return windows.map(([a, b]) => `between(t,${(a - 0.0005).toFixed(6)},${(b - 0.0006).toFixed(6)})`).join("+");
+  }
+
+  /** The glitch-cut corruption (channel split + torn bands) for one stream, over bursts `0..count-1`
+   *  starting at stream time `start`, each burst's intensity given by `intensityFor`. Returns the
+   *  corrupted label. Matches `applyGlitchCut`: bands tear the already channel-split image, and a
+   *  band's vacated edge keeps the un-torn pixels underneath. */
+  function pushGlitchCutCorruption(
+    label: string,
+    name: string,
+    start: number,
+    burstCount: number,
+    intensityFor: (burstIndex: number) => number,
+    enable: string | null
+  ): string {
+    const bursts = Array.from({ length: burstCount }, (_, b) => glitchCutBurst(b, intensityFor(b)));
+    const burstStart = (b: number) => start + b * GLITCH_CUT_BURST_SECONDS;
+    const entries = bursts.map((burst, b) => ({
+      time: burstStart(b),
+      commands: [`rgbashift@${name} rh ${Math.round(burst.shiftR * width)}`, `rgbashift@${name} bh ${Math.round(burst.shiftB * width)}`],
+    }));
+    // Back to untouched once the last burst ends (a solo window sits inside a longer clip).
+    entries.push({ time: burstStart(burstCount), commands: [`rgbashift@${name} rh 0`, `rgbashift@${name} bh 0`] });
+    const bandHeight = Math.max(1, Math.round(height * GLITCH_CUT_BAND_HEIGHT_FRACTION));
+    const boundaries = Array.from({ length: burstCount }, (_, b) => burstStart(b + 1));
+    const splitLabels = Array.from({ length: GLITCH_CUT_BAND_COUNT }, (_, i) => `${label}_gb${i}`);
+    filters.push(
+      `[${label}]format=gbrap,${sendcmd(entries)},rgbashift@${name}=rh=0:bh=0:edge=smear,split=${GLITCH_CUT_BAND_COUNT + 1}[${label}_gs]${splitLabels
+        .map((l) => `[${l}]`)
+        .join("")}`
+    );
+    let chain = `${label}_gs`;
+    for (let i = 0; i < GLITCH_CUT_BAND_COUNT; i++) {
+      const tops = [...bursts.map((burst) => String(Math.round(burst.bands[i].top * height))), "0"];
+      const shifts = [...bursts.map((burst) => String(Math.round(burst.bands[i].shift * width))), "0"];
+      const yExpr = piecewiseExpr(boundaries, tops);
+      const xExpr = piecewiseExpr(boundaries, shifts);
+      const next = `${label}_go${i}`;
+      filters.push(`[${splitLabels[i]}]crop=w=${width}:h=${bandHeight}:x=0:y='${yExpr}'[${splitLabels[i]}c]`);
+      filters.push(`[${chain}][${splitLabels[i]}c]overlay=x='${xExpr}':y='${yExpr}':format=auto${enable ? `:enable='${enable}'` : ""}[${next}]`);
+      chain = next;
     }
-    const fxLabel = `${label}_fx`;
-    const enable = `enable='between(t,${t(windowStart)},${t(windowStart + windowDuration)})'`;
-    if (transitionType === "waterRippleCut") {
-      const rate = (2 * Math.PI) / WATER_RIPPLE_PERIOD_SECONDS;
-      const localT = `(T-${t(windowStart)})`;
-      const ramp = `4*(${localT}/${t(windowDuration)})*(1-${localT}/${t(windowDuration)})`;
-      const expr = `p(X+${n(WATER_RIPPLE_AMPLITUDE_PX)}*${ramp}*sin(Y/${n(WATER_RIPPLE_WAVELENGTH_PX)}+T*${n(rate)}),Y)`;
-      filters.push(`[${label}]geq=lum='${expr}':cb='${expr}':cr='${expr}':${enable}[${fxLabel}]`);
-    } else if (transitionType === "glitchCut") {
-      filters.push(
-        `[${label}]rgbashift=rh=${GLITCH_SHIFT_PX}:bv=${-GLITCH_SHIFT_PX}:${enable},noise=alls=${n(GLITCH_NOISE_AMOUNT)}:allf=t:${enable}[${fxLabel}]`
-      );
-    } else if (transitionType === "zoomBlur" || transitionType === "flashZoom") {
-      const zoomFactor = n(1 + ZOOM_BLUR_SCALE);
-      const zoomStage = `scale=w='iw*${zoomFactor}':h='ih*${zoomFactor}',crop=w=${width}:h=${height},setsar=1,gblur=sigma=${n(ZOOM_BLUR_SIGMA_PX)}`;
-      const baseLabel = `${label}_base`;
-      const srcLabel = `${label}_src`;
-      const preLabel = `${fxLabel}_pre`;
-      filters.push(`[${label}]split=2[${baseLabel}][${srcLabel}]`);
-      if (transitionType === "zoomBlur") {
-        filters.push(`[${srcLabel}]${zoomStage}[${preLabel}]`);
-      } else {
-        const localT = `(T-${t(windowStart)})`;
-        const k = `${n(FLASH_ZOOM_PEAK)}*4*(${localT}/${t(windowDuration)})*(1-${localT}/${t(windowDuration)})`;
-        filters.push(
-          `[${srcLabel}]${zoomStage},geq=lum='p(X,Y)*(1-(${k}))+255*(${k})':cb='p(X,Y)*(1-(${k}))+128*(${k})':cr='p(X,Y)*(1-(${k}))+128*(${k})'[${preLabel}]`
-        );
+    return chain;
+  }
+
+  /** Sigma per output frame of a blur that ramps with `intensityAt(time)`, as `sendcmd` entries for
+   *  `gblur@name` — plus a reset to 0 at `resetAt`, when given. `vertical` false leaves `sigmaV` at
+   *  the 0 it was created with (the whip pan's horizontal-only smear); true sends both, since a
+   *  runtime `sigma` change does NOT re-derive a `sigmaV` of -1 ("same as sigma") the way the initial
+   *  option does — measured: the result smeared horizontally only. */
+  function blurSchedule(name: string, times: number[], sigmaAt: (time: number) => number, vertical: boolean, resetAt?: number): string {
+    const entries = times.map((time) => {
+      const sigma = n(sigmaAt(time));
+      return { time, commands: vertical ? [`gblur@${name} sigma ${sigma}`, `gblur@${name} sigmaV ${sigma}`] : [`gblur@${name} sigma ${sigma}`] };
+    });
+    if (resetAt !== undefined) {
+      entries.push({ time: resetAt, commands: vertical ? [`gblur@${name} sigma 0`, `gblur@${name} sigmaV 0`] : [`gblur@${name} sigma 0`] });
+    }
+    return sendcmd(entries);
+  }
+
+  /** A centered zoom whose factor is `1 + ZOOM_BLUR_SCALE × k(t)`, followed by a blur of
+   *  `ZOOM_BLUR_SIGMA_PX × k` — `drawZoomedWithBlur`'s shape. `kExpr` is `k` as an FFmpeg expression of
+   *  `t`; `kAt` is the same function in JS (for the blur schedule). Scaling up then cropping back to
+   *  the sequence size. Both scale size and crop offsets must use the per-frame zoom expression:
+   *  crop's default centering retains the initial input dimensions when upstream scale changes,
+   *  anchoring the zoom at the top-left. `setsar=1` because rounding each side nudges the
+   *  sample aspect ratio off 1:1, which `concat` rejects. */
+  function zoomBlurStages(name: string, kExpr: string, kAt: (time: number) => number, times: number[], resetAt?: number, enable?: string): string {
+    const factor = `(1+${n(ZOOM_BLUR_SCALE)}*(${kExpr}))`;
+    const zoomWidth = `ceil(${width}*${factor}/2)*2`;
+    const zoomHeight = `ceil(${height}*${factor}/2)*2`;
+    return (
+      `scale=w='${zoomWidth}':h='${zoomHeight}':eval=frame,` +
+      `crop=w=${width}:h=${height}:x='(${zoomWidth}-${width})/2':y='(${zoomHeight}-${height})/2',setsar=1,` +
+      `${blurSchedule(name, times, (time) => ZOOM_BLUR_SIGMA_PX * kAt(time), true, resetAt)},gblur@${name}=sigma=0:sigmaV=0${enable ? `:enable='${enable}'` : ""}`
+    );
+  }
+
+  /** Build the white pulse as an explicit alpha layer. Evaluating the envelope on a 2x2
+   *  image avoids per-pixel expression work at export resolution and runtime color commands
+   *  that can leave the flash unchanged on mobile FFmpeg builds. `intensity` uses source time T. */
+  function pushFlash(label: string, output: string, length: number, intensity: string, enable?: string): void {
+    const index = inputIndex++;
+    inputs.push("-f", "lavfi", "-t", t(length), "-i", `color=c=white:s=2x2:r=${fps},format=rgba`);
+    const name = `${output}_white`;
+    filters.push(
+      `[${index}:v]geq=r=255:g=255:b=255:a='255*${n(FLASH_ZOOM_PEAK)}*clip(${intensity},0,1)',` +
+      `scale=w=${width}:h=${height}:flags=neighbor[${name}]`
+    );
+    filters.push(`[${label}][${name}]overlay=format=auto${enable ? `:enable='${enable}'` : ""}[${output}]`);
+  }
+
+  /** Whip-pan's horizontal motion blur. The preview smears with a box of radius
+   *  `WHIP_PAN_BLUR_RADIUS_PX × k`; a box that wide has a standard deviation of about radius/√3, which
+   *  is the Gaussian sigma used here. */
+  function whipBlurStages(name: string, kAt: (time: number) => number, times: number[], resetAt?: number, enable?: string): string {
+    return (
+      `${blurSchedule(name, times, (time) => (WHIP_PAN_BLUR_RADIUS_PX * kAt(time)) / Math.sqrt(3), false, resetAt)},` +
+      `gblur@${name}=sigma=0:sigmaV=0${enable ? `:enable='${enable}'` : ""}`
+    );
+  }
+
+  /** Water-ripples `label` with `displace`: every row shifts sideways by
+   *  `WATER_RIPPLE_AMPLITUDE_PX × ramp × sin(y/λ + t·rate)` — `applyWaterRipple`'s formula. The shift
+   *  map is generated two pixels wide (the offset only depends on the row; `color` rejects a width
+   *  of 1) and stretched across the frame, so the per-pixel `sin` the old `geq=` version evaluated
+   *  W×H×3 times a frame (≈5s for a one-second 360×640 blend, far more at full resolution) runs
+   *  H times instead. `rampExpr` is an
+   *  expression of the map's own `T`, which runs from 0 over `length` seconds; `start` places the map
+   *  at that stream time. Maps carry the same value in all four planes, since `displace` offsets each
+   *  plane by its own map plane — alpha included. */
+  function pushRipple(label: string, outLabel: string, start: number, length: number, rampExpr: string): void {
+    const rate = (2 * Math.PI) / WATER_RIPPLE_PERIOD_SECONDS;
+    const xIndex = inputIndex++;
+    inputs.push("-f", "lavfi", "-t", t(length), "-i", `color=c=gray:s=2x${height}:r=${fps}`);
+    const yIndex = inputIndex++;
+    inputs.push("-f", "lavfi", "-t", t(length), "-i", `color=c=0x80808080:s=${width}x${height}:r=${fps}`);
+    const shift = start > 0 ? `,setpts=PTS+${t(start)}/TB` : "";
+    // +128.5 then truncation = round-to-nearest, matching the preview's `Math.round(x + offset)`.
+    const value = `128.5+${n(WATER_RIPPLE_AMPLITUDE_PX)}*(${rampExpr})*sin(Y/${n(WATER_RIPPLE_WAVELENGTH_PX)}+(T+${t(start)})*${n(rate)})`;
+    filters.push(
+      `[${xIndex}:v]format=gbrap,geq=r='${value}':g='${value}':b='${value}':a='${value}',scale=${width}:${height}:flags=neighbor,setsar=1,setpts=PTS-STARTPTS${shift}[${outLabel}_xm]`
+    );
+    filters.push(`[${yIndex}:v]format=gbrap,setsar=1,setpts=PTS-STARTPTS${shift}[${outLabel}_ym]`);
+    filters.push(`[${label}]format=gbrap[${outLabel}_src]`);
+    filters.push(`[${outLabel}_src][${outLabel}_xm][${outLabel}_ym]displace=edge=smear[${outLabel}]`);
+  }
+
+  /** A grayscale circle mask (255 inside, 1px anti-aliased edge) of radius `radiusExpr` (an expression
+   *  of the mask's own `T`, 0 over `length`), placed at stream time `start`. Drawn at a quarter of the
+   *  frame's resolution and scaled up — a full-resolution `geq` measured ~1.5s per blend even at
+   *  360×640, and the upscale only softens the edge by a couple of pixels. */
+  function pushCircleMask(outLabel: string, start: number, length: number, radiusExpr: string): void {
+    const scale = 0.25;
+    const maskWidth = Math.max(2, Math.round(width * scale));
+    const maskHeight = Math.max(2, Math.round(height * scale));
+    const index = inputIndex++;
+    inputs.push("-f", "lavfi", "-t", t(length), "-i", `color=c=black:s=${maskWidth}x${maskHeight}:r=${fps}`);
+    const shift = start > 0 ? `,setpts=PTS+${t(start)}/TB` : "";
+    filters.push(
+      `[${index}:v]format=gray,geq=lum='255*clip((${radiusExpr})*${n(scale)}-hypot(X-${n(maskWidth / 2)},Y-${n(maskHeight / 2)})+0.5,0,1)',` +
+        `scale=${width}:${height}:flags=bilinear,setsar=1,setpts=PTS-STARTPTS${shift}[${outLabel}]`
+    );
+  }
+
+  /** `label` with its alpha multiplied by the grayscale `maskLabel` — keeps an overlay track's own
+   *  transparent letterboxing transparent inside a revealed region. */
+  function pushMaskedAlpha(label: string, maskLabel: string, outLabel: string): void {
+    filters.push(`[${label}]format=rgba,split=2[${outLabel}_c][${outLabel}_a]`);
+    filters.push(`[${outLabel}_a]alphaextract[${outLabel}_al]`);
+    filters.push(`[${outLabel}_al][${maskLabel}]blend=all_mode=multiply[${outLabel}_m]`);
+    filters.push(`[${outLabel}_c][${outLabel}_m]alphamerge[${outLabel}]`);
+  }
+
+  /** Blends `fromLabel` into `toLabel` (both exactly `D` seconds, starting at 0) as `type`, writing
+   *  `outLabel`. See the section comment above for how each style is built. */
+  function pushTransitionBlend(fromLabel: string, toLabel: string, type: TransitionType, D: number, outLabel: string, transparent: boolean): void {
+    const family = transitionFamily(type);
+    const q = `clip(t/${t(D)},0,1)`;
+    const times = frameTimesIn(0, D);
+    const midpointExpr = `4*${q}*(1-${q})`;
+    const midpointAt = (time: number) => midpointIntensity(time / D);
+    const retime = `settb=${EASE_TIMEBASE},setpts='${t(D)}*(${easeTransitionExpr(`clip(T/${t(D)},0,1)`)})/TB'`;
+    // Undo any easing re-time: one frame per `1/fps` again, whatever timestamps the blend produced.
+    const finish = `setpts=N/(${fps}*TB)`;
+
+    const easedXfade = (xfadeName: string, from: string, to: string) => {
+      filters.push(`[${from}]${retime}[${fromLabel}_e]`);
+      filters.push(`[${to}]${retime}[${toLabel}_e]`);
+      filters.push(`[${fromLabel}_e][${toLabel}_e]xfade=transition=${xfadeName}:duration=${t(D)}:offset=0,${finish}[${outLabel}]`);
+    };
+
+    if (family.kind === "wipe") {
+      easedXfade(`wipe${family.edge}`, fromLabel, toLabel);
+      return;
+    }
+    if (family.kind === "slide") {
+      easedXfade(`slide${family.edge}`, fromLabel, toLabel);
+      return;
+    }
+    if (family.kind === "whipPan") {
+      filters.push(`[${fromLabel}]${whipBlurStages(`${fromLabel}_wb`, midpointAt, times)}[${fromLabel}_w]`);
+      filters.push(`[${toLabel}]${whipBlurStages(`${toLabel}_wb`, midpointAt, times)}[${toLabel}_w]`);
+      easedXfade(`slide${family.edge}`, `${fromLabel}_w`, `${toLabel}_w`);
+      return;
+    }
+
+    if (family.kind === "slice") {
+      // Each strip of each side is cropped out and overlaid onto a blank frame at its own eased,
+      // staggered offset — the preview's per-strip push, column for column (`sliceStripBounds`).
+      const sign = family.direction === "up" ? -1 : 1;
+      const staggerStep = SLICE_STRIP_COUNT > 1 ? (1 - SLICE_WIPE_FRACTION) / (SLICE_STRIP_COUNT - 1) : 0;
+      const bgIndex = inputIndex++;
+      inputs.push("-f", "lavfi", "-t", t(D), "-i", `color=c=${transparent ? "black@0" : "black"}:s=${width}x${height}:r=${fps}${transparent ? ",format=rgba" : ""}`);
+      const fromStrips = Array.from({ length: SLICE_STRIP_COUNT }, (_, i) => `${fromLabel}_s${i}`);
+      const toStrips = Array.from({ length: SLICE_STRIP_COUNT }, (_, i) => `${toLabel}_s${i}`);
+      filters.push(`[${fromLabel}]split=${SLICE_STRIP_COUNT}${fromStrips.map((l) => `[${l}]`).join("")}`);
+      filters.push(`[${toLabel}]split=${SLICE_STRIP_COUNT}${toStrips.map((l) => `[${l}]`).join("")}`);
+      let chain = `${outLabel}_sb`;
+      filters.push(`[${bgIndex}:v]setsar=1,setpts=PTS-STARTPTS[${chain}]`);
+      for (let i = 0; i < SLICE_STRIP_COUNT; i++) {
+        const { x, width: stripWidth } = sliceStripBounds(width, i);
+        const local = easeTransitionExpr(`clip((t/${t(D)}-${n(i * staggerStep)})/${n(SLICE_WIPE_FRACTION)},0,1)`);
+        filters.push(`[${fromStrips[i]}]crop=w=${stripWidth}:h=${height}:x=${x}:y=0[${fromStrips[i]}c]`);
+        filters.push(`[${toStrips[i]}]crop=w=${stripWidth}:h=${height}:x=${x}:y=0[${toStrips[i]}c]`);
+        const afterFrom = `${outLabel}_s${i}f`;
+        const afterTo = `${outLabel}_s${i}t`;
+        filters.push(`[${chain}][${fromStrips[i]}c]overlay=x=${x}:y='${sign}*${height}*(${local})':format=auto[${afterFrom}]`);
+        filters.push(`[${afterFrom}][${toStrips[i]}c]overlay=x=${x}:y='${-sign}*${height}*(1-(${local}))':format=auto[${afterTo}]`);
+        chain = afterTo;
       }
-      filters.push(`[${baseLabel}][${preLabel}]overlay=format=auto:${enable}[${fxLabel}]`);
-    } else {
-      filters.push(
-        `[${label}]boxblur=luma_radius=${WHIP_PAN_BLUR_RADIUS_PX}:luma_power=1:chroma_radius=${WHIP_PAN_BLUR_RADIUS_PX}:chroma_power=1:${enable}[${fxLabel}]`
-      );
+      filters.push(`[${chain}]${finish}[${outLabel}]`);
+      return;
     }
-    return fxLabel;
+
+    if (family.kind === "circle") {
+      // A crisp circle from a grayscale mask, multiplied into the inner side's own alpha (so an overlay
+      // track's transparent letterboxing stays transparent inside the circle), laid over the outer side.
+      const maxRadius = Math.hypot(width, height) / 2;
+      const eased = easeTransitionExpr(`clip(T/${t(D)},0,1)`);
+      pushCircleMask(`${outLabel}_mask`, 0, D, family.opening ? `${n(maxRadius)}*(${eased})` : `${n(maxRadius)}*(1-(${eased}))`);
+      pushMaskedAlpha(family.opening ? toLabel : fromLabel, `${outLabel}_mask`, `${outLabel}_im`);
+      filters.push(`[${family.opening ? fromLabel : toLabel}][${outLabel}_im]overlay=format=auto,${finish}[${outLabel}]`);
+      return;
+    }
+
+    if (family.kind === "glitch") {
+      // Both sides corrupted by the same bursts, then a hard switch: the incoming side is laid over
+      // the outgoing one only during the bursts `glitchCutShowsIncoming` picks.
+      const burstCount = Math.ceil(D / GLITCH_CUT_BURST_SECONDS - 1e-6);
+      const intensityFor = (b: number) => midpointIntensity(glitchCutBurstProgress(b, D));
+      const fromG = pushGlitchCutCorruption(fromLabel, `${fromLabel}_g`, 0, burstCount, intensityFor, null);
+      const toG = pushGlitchCutCorruption(toLabel, `${toLabel}_g`, 0, burstCount, intensityFor, null);
+      const windows: [number, number][] = [];
+      for (let b = 0; b < burstCount; b++) {
+        if (!glitchCutShowsIncoming(b, D)) continue;
+        const start = b * GLITCH_CUT_BURST_SECONDS;
+        const end = Math.min(D + 1, (b + 1) * GLITCH_CUT_BURST_SECONDS);
+        const last = windows[windows.length - 1];
+        if (last && Math.abs(last[1] - start) < 1e-9) last[1] = end;
+        else windows.push([start, end]);
+      }
+      // The final burst can end before the last frame — anything after it shows the incoming clip.
+      const lastWindow = windows[windows.length - 1];
+      if (lastWindow && lastWindow[1] >= burstCount * GLITCH_CUT_BURST_SECONDS - 1e-9) lastWindow[1] = D + 1;
+      filters.push(`[${fromG}][${toG}]overlay=format=auto:enable='${windowsExpr(windows)}',${finish}[${outLabel}]`);
+      return;
+    }
+
+    let fromBlend = fromLabel;
+    let toBlend = toLabel;
+    if (family.kind === "waterRipple") {
+      const ramp = `4*clip(T/${t(D)},0,1)*(1-clip(T/${t(D)},0,1))`;
+      pushRipple(fromLabel, `${fromLabel}_fx`, 0, D, ramp);
+      pushRipple(toLabel, `${toLabel}_fx`, 0, D, ramp);
+      fromBlend = `${fromLabel}_fx`;
+      toBlend = `${toLabel}_fx`;
+    } else if (family.kind === "zoomBlur" || family.kind === "flashZoom") {
+      filters.push(`[${fromLabel}]${zoomBlurStages(`${fromLabel}_zb`, midpointExpr, midpointAt, times)}[${fromLabel}_fx]`);
+      filters.push(`[${toLabel}]${zoomBlurStages(`${toLabel}_zb`, midpointExpr, midpointAt, times)}[${toLabel}_fx]`);
+      fromBlend = `${fromLabel}_fx`;
+      toBlend = `${toLabel}_fx`;
+    }
+    // Crossfade the processed sides, then place the white pulse above the result (also over
+    // transparent pixels), matching Canvas fillRect on both base and overlay tracks.
+    const hasFlash = family.kind === "flashZoom";
+    const blended = hasFlash ? `${outLabel}_preflash` : outLabel;
+    filters.push(`[${fromBlend}][${toBlend}]xfade=transition=fade:duration=${t(D)}:offset=0,${finish}[${blended}]`);
+    if (hasFlash) pushFlash(blended, outLabel, D, `4*clip(T/${t(D)},0,1)*(1-clip(T/${t(D)},0,1))`);
+  }
+
+  /** The solo fade-in/fade-out window(s) of one clip — `compositeSoloReveal`'s export counterpart.
+   *  `label` is the clip's fully-built stream (the whole segment, `sliceDuration` long); writes
+   *  `outputLabel`.
+   *
+   *  Every styled window works the same way: the clip is `split`, the main copy is blanked to black (or
+   *  to transparent, on an overlay track) for just the window with a timeline-gated `drawbox`, and the
+   *  other copy is `trim`med to the window, restyled, and `overlay`ed back on top — so the per-frame
+   *  work only ever runs for the window's own frames, never the whole clip (the first version used
+   *  window-gated `geq`, which measured ~15-30s of extra export time per clip). Timestamps are left
+   *  as-is through `trim`, so every `t` below is the segment's own time. Blending styles then alpha-
+   *  fade like a crossfade does; purely geometric ones (wipe/slide/slice/circle) don't, same as the
+   *  preview. */
+  function pushSoloTransitionStages(
+    label: string,
+    outputLabel: string,
+    clip: Clip,
+    sliceDuration: number,
+    transparent: boolean,
+    fadeIn?: number,
+    fadeOut?: number
+  ): void {
+    const windows: { type: TransitionType; start: number; length: number; fadingOut: boolean; tag: string }[] = [];
+    if (fadeIn) windows.push({ type: clip.transitionIn?.type ?? "crossfade", start: 0, length: fadeIn, fadingOut: false, tag: "in" });
+    if (fadeOut) windows.push({ type: clip.transitionOut?.type ?? "crossfade", start: sliceDuration - fadeOut, length: fadeOut, fadingOut: true, tag: "out" });
+
+    let current = label;
+    const fades: string[] = [];
+    // Stages that must come AFTER the alpha fade — the flash pulse is drawn over the fading clip in the
+    // preview (`compositeSoloReveal` fills white on top), not faded to black along with it.
+    const flashes: { intensity: string; enable: string }[] = [];
+    for (const w of windows) {
+      const family = transitionFamily(w.type);
+      const alphaFade = `fade=t=${w.fadingOut ? "out" : "in"}:st=${t(w.start)}:d=${t(w.length)}${transparent ? ":alpha=1" : ""}`;
+      if (family.kind === "dissolve") {
+        fades.push(alphaFade);
+        continue;
+      }
+
+      const name = `${label}_${w.tag}`;
+      const end = w.start + w.length;
+      // trim excludes the end frame. Blanking must exclude it too or eof_action=pass exposes one
+      // blank frame between the styled window and the remainder of the clip.
+      const enable = `gte(t,${t(w.start)})*lt(t,${t(end)})`;
+      // Reveal (0 hidden → 1 shown) as an expression of stream time, and in JS.
+      const reveal = (v: string) => (w.fadingOut ? `clip(1-(${v}-${t(w.start)})/${t(w.length)},0,1)` : `clip((${v}-${t(w.start)})/${t(w.length)},0,1)`);
+      const revealAt = (time: number) => Math.min(1, Math.max(0, w.fadingOut ? 1 - (time - w.start) / w.length : (time - w.start) / w.length));
+      const eased = easeTransitionExpr(reveal("t"));
+      const times = frameTimesIn(w.start, w.length);
+
+      filters.push(`[${current}]${transparent ? "format=rgba," : ""}split=2[${name}_m][${name}_s]`);
+      filters.push(
+        `[${name}_m]drawbox=x=0:y=0:w=iw:h=ih:color=${transparent ? "black@0" : "black"}:t=fill${transparent ? ":replace=1" : ""}:enable='${enable}'[${name}_mb]`
+      );
+      filters.push(`[${name}_s]trim=start=${t(w.start)}:end=${t(end)}[${name}_w]`);
+      // Layers to place over the blanked window, each at its own (possibly per-frame) position.
+      const layers: { label: string; x: string; y: string }[] = [];
+
+      if (family.kind === "wipe") {
+        // The clip stays put while the revealed edge moves: pad a blank frame beside it, then take a
+        // frame-sized window of that at the edge's position and place it at the same position — the
+        // clip's pixels land exactly where they started, and the pad fills what isn't revealed yet.
+        const horizontal = family.edge === "left" || family.edge === "right";
+        const size = horizontal ? width : height;
+        // Offset of the revealed region's leading edge: "left"/"up" reveal from the far edge inward.
+        const offset = family.edge === "left" || family.edge === "up" ? `${size}*(1-(${eased}))` : `${size}*(${eased})-${size}`;
+        const padColor = transparent ? "black@0" : "black";
+        const pad = horizontal
+          ? `pad=w=${2 * width}:h=${height}:x=${family.edge === "left" ? 0 : width}:y=0:color=${padColor}`
+          : `pad=w=${width}:h=${2 * height}:x=0:y=${family.edge === "up" ? 0 : height}:color=${padColor}`;
+        const cropAt = family.edge === "left" || family.edge === "up" ? offset : `${size}+(${offset})`;
+        const crop = horizontal ? `crop=w=${width}:h=${height}:x='${cropAt}':y=0` : `crop=w=${width}:h=${height}:x=0:y='${cropAt}'`;
+        filters.push(`[${name}_w]${pad},${crop}[${name}_l]`);
+        layers.push(horizontal ? { label: `${name}_l`, x: offset, y: "0" } : { label: `${name}_l`, x: "0", y: offset });
+      } else if (family.kind === "slide") {
+        const horizontal = family.edge === "left" || family.edge === "right";
+        const sign = family.edge === "left" || family.edge === "up" ? -1 : 1;
+        const shift = `${-sign}*${horizontal ? width : height}*(1-(${eased}))`;
+        layers.push(horizontal ? { label: `${name}_w`, x: shift, y: "0" } : { label: `${name}_w`, x: "0", y: shift });
+      } else if (family.kind === "slice") {
+        const sign = family.direction === "up" ? -1 : 1;
+        const staggerStep = SLICE_STRIP_COUNT > 1 ? (1 - SLICE_WIPE_FRACTION) / (SLICE_STRIP_COUNT - 1) : 0;
+        const strips = Array.from({ length: SLICE_STRIP_COUNT }, (_, i) => `${name}_s${i}`);
+        filters.push(`[${name}_w]split=${SLICE_STRIP_COUNT}${strips.map((l) => `[${l}]`).join("")}`);
+        strips.forEach((strip, i) => {
+          const { x, width: stripWidth } = sliceStripBounds(width, i);
+          const local = easeTransitionExpr(`clip((${reveal("t")}-${n(i * staggerStep)})/${n(SLICE_WIPE_FRACTION)},0,1)`);
+          filters.push(`[${strip}]crop=w=${stripWidth}:h=${height}:x=${x}:y=0[${strip}c]`);
+          layers.push({ label: `${strip}c`, x: String(x), y: `${-sign}*${height}*(1-(${local}))` });
+        });
+      } else if (family.kind === "circle") {
+        const maxRadius = Math.hypot(width, height) / 2;
+        pushCircleMask(`${name}_mask`, w.start, w.length, `${n(maxRadius)}*(${easeTransitionExpr(reveal(`(T+${t(w.start)})`))})`);
+        pushMaskedAlpha(`${name}_w`, `${name}_mask`, `${name}_l`);
+        layers.push({ label: `${name}_l`, x: "0", y: "0" });
+      } else if (family.kind === "glitch") {
+        const burstCount = Math.ceil(w.length / GLITCH_CUT_BURST_SECONDS - 1e-6);
+        const corrupted = pushGlitchCutCorruption(`${name}_w`, name, w.start, burstCount, (b) => {
+          const burstProgress = glitchCutBurstProgress(b, w.length);
+          return w.fadingOut ? burstProgress : 1 - burstProgress;
+        }, null);
+        layers.push({ label: corrupted, x: "0", y: "0" });
+      } else if (family.kind === "waterRipple") {
+        // Strongest at the hidden end of the window, gone once fully shown — the preview's `1 − reveal`.
+        const ramp = w.fadingOut ? `clip(T/${t(w.length)},0,1)` : `(1-clip(T/${t(w.length)},0,1))`;
+        pushRipple(`${name}_w`, `${name}_l`, w.start, w.length, ramp);
+        layers.push({ label: `${name}_l`, x: "0", y: "0" });
+      } else if (family.kind === "zoomBlur" || family.kind === "flashZoom") {
+        const kAt = (time: number) => 1 - revealAt(time);
+        if (family.kind === "flashZoom") {
+          flashes.push({ intensity: `1-(${reveal("T")})`, enable });
+        }
+        filters.push(`[${name}_w]${zoomBlurStages(`${name}_zb`, `1-${reveal("t")}`, kAt, times)}[${name}_l]`);
+        layers.push({ label: `${name}_l`, x: "0", y: "0" });
+      } else if (family.kind === "whipPan") {
+        // Blurred, then slid in from / out to the named edge — same order as the two-clip whip pan.
+        const sign = family.edge === "left" ? -1 : 1;
+        filters.push(`[${name}_w]${whipBlurStages(`${name}_wb`, (time) => 1 - revealAt(time), times)}[${name}_l]`);
+        layers.push({ label: `${name}_l`, x: `${-sign}*${width}*(1-(${eased}))`, y: "0" });
+      }
+
+      let chain = `${name}_mb`;
+      layers.forEach((layer, i) => {
+        const next = i === layers.length - 1 ? `${name}_x` : `${name}_o${i}`;
+        // `eof_action=pass`: once the window's trimmed layer ends, the (un-blanked) clip carries on.
+        filters.push(`[${chain}][${layer.label}]overlay=x='${layer.x}':y='${layer.y}':format=auto:eof_action=pass[${next}]`);
+        chain = next;
+      });
+      current = chain;
+      if (family.kind !== "wipe" && family.kind !== "slide" && family.kind !== "slice" && family.kind !== "circle") fades.push(alphaFade);
+    }
+
+    const stages = fades;
+    let faded = flashes.length ? `${outputLabel}_preflash` : outputLabel;
+    filters.push(`[${current}]${stages.length > 0 ? stages.join(",") : "null"}[${faded}]`);
+    flashes.forEach((flash, i) => {
+      const next = i === flashes.length - 1 ? outputLabel : `${outputLabel}_flash${i}`;
+      pushFlash(faded, next, sliceDuration, flash.intensity, flash.enable);
+      faded = next;
+    });
   }
 
   // Builds ONE video track's own segment-based concat chain — everything the single-track version of
@@ -2459,23 +2754,33 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         const fromAudioLabel = `${audioLabel}_from`;
         const toAudioLabel = `${audioLabel}_to`;
 
-        // Each side of a transition is keyframe-aware independently — the OUTGOING clip's own tail D
-        // seconds is `elapsedAtSegmentStart = clipDuration(from.clip) - D` (its own final D seconds);
-        // the INCOMING clip's own head D seconds starts at `elapsedAtSegmentStart = 0` (its own first
-        // D seconds).
+        // Each side of a transition is keyframe-aware independently. The OUTGOING clip carries on past
+        // its own out-point (`elapsedAtSegmentStart = clipDuration(from.clip)`, i.e. `-ss sourceOut`)
+        // — see `transitionPartnerSourceTime` for why this is no longer a replay of its last D seconds
+        // — holding its final frame if the file runs out first. The INCOMING clip's own head D seconds
+        // start at `elapsedAtSegmentStart = 0`.
         if (hasTransformKeyframes(segment.from.clip) || hasEffectsKeyframes(segment.from.clip) || hasColorGradingKeyframes(segment.from.clip)) {
-          const fromElapsedAtSegmentStart = clipDuration(segment.from.clip) - D;
+          const fromElapsedAtSegmentStart = clipDuration(segment.from.clip);
           pushKeyframedClipVideoFilters(segment.from.clip, segment.from.path, segment.from.isImage, fromElapsedAtSegmentStart, fromVideoLabel, D, transparent);
-          pushKeyframedAudio(segment.from.clip, segment.from.path, segment.from.isImage, segment.from.hasAudio && !track.muted, fromElapsedAtSegmentStart, fromAudioLabel, D);
+          pushKeyframedAudio(segment.from.clip, segment.from.path, segment.from.isImage, segment.from.hasAudio && !track.muted, fromElapsedAtSegmentStart, fromAudioLabel, D, undefined, undefined, true);
         } else {
           if (segment.from.isImage) {
-            pushImageInput(segment.from.clip, segment.from.path, segment.from.clip.sourceOut - D, D, inputIndex);
+            pushImageInput(segment.from.clip, segment.from.path, segment.from.clip.sourceOut, D, inputIndex);
           } else {
-            inputs.push("-ss", t(segment.from.clip.sourceOut - D), "-t", t(D), "-i", segment.from.path);
+            pushVideoSourceInput(segment.from.clip, segment.from.path, segment.from.clip.sourceOut, D, inputIndex);
           }
           const fromIndex = inputIndex++;
           pushClipVideoFilters(segment.from.clip, fromIndex, fromVideoLabel, D, transparent);
-          pushClipAudioFilters(segment.from.hasAudio && !segment.from.clip.mutedAudio && !track.muted, fromIndex, fromAudioLabel, D, segment.from.clip.gain ?? 1);
+          pushClipAudioFilters(
+            segment.from.hasAudio && !segment.from.clip.mutedAudio && !track.muted,
+            fromIndex,
+            fromAudioLabel,
+            D,
+            segment.from.clip.gain ?? 1,
+            undefined,
+            undefined,
+            true
+          );
         }
 
         if (hasTransformKeyframes(segment.to.clip) || hasEffectsKeyframes(segment.to.clip) || hasColorGradingKeyframes(segment.to.clip)) {
@@ -2496,12 +2801,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         // INTO it (see that field's own doc comment), matching exactly which clip `findTransitionPartner`
         // was resolved against to produce this segment in the first place.
         const transitionType = segment.to.clip.transitionIn?.type ?? "crossfade";
-        const xfadeName = TRANSITION_XFADE_NAME[transitionType];
-        const fromBlendLabel = applyTransitionCorruptionPass(fromVideoLabel, transitionType, D);
-        const toBlendLabel = applyTransitionCorruptionPass(toVideoLabel, transitionType, D);
-        filters.push(
-          `[${fromBlendLabel}][${toBlendLabel}]xfade=transition=${xfadeName}:duration=${t(D)}:offset=0,setpts=PTS-STARTPTS[${videoLabel}]`
-        );
+        pushTransitionBlend(fromVideoLabel, toVideoLabel, transitionType, D, videoLabel, transparent);
         filters.push(`[${fromAudioLabel}][${toAudioLabel}]acrossfade=d=${t(D)}[${audioLabel}]`);
       } else {
         const gapColor = transparent ? "black@0" : "black";
@@ -2575,9 +2875,19 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         const fromAudioLabel = `${audioLabel}_from`;
         const toAudioLabel = `${audioLabel}_to`;
 
-        inputs.push("-ss", t(segment.from.clip.sourceOut - D), "-t", t(D), "-i", segment.from.path);
+        // The outgoing clip carries on past its out-point — see `transitionPartnerSourceTime`.
+        inputs.push("-ss", t(segment.from.clip.sourceOut), "-t", t(D), "-i", segment.from.path);
         const fromIndex = inputIndex++;
-        pushClipAudioFilters(segment.from.hasAudio && !segment.from.clip.mutedAudio, fromIndex, fromAudioLabel, D, (segment.from.clip.gain ?? 1) * (track.gain ?? 1));
+        pushClipAudioFilters(
+          segment.from.hasAudio && !segment.from.clip.mutedAudio,
+          fromIndex,
+          fromAudioLabel,
+          D,
+          (segment.from.clip.gain ?? 1) * (track.gain ?? 1),
+          undefined,
+          undefined,
+          true
+        );
 
         inputs.push("-ss", t(segment.to.clip.sourceIn), "-t", t(D), "-i", segment.to.path);
         const toIndex = inputIndex++;
@@ -2783,6 +3093,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
                   baseStyle: asset.textStyle,
                   clip,
                   fontPathFor: options.fontPathFor,
+                  drawtextTextAlign: options.drawtextTextAlign,
                   textFilePathFor: options.textFilePathFor,
                   fadeIn,
                   fadeOut,
@@ -2795,6 +3106,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
                   style: asset.textStyle,
                   clip,
                   fontPathFor: options.fontPathFor,
+                  drawtextTextAlign: options.drawtextTextAlign,
                   textFilePathFor: options.textFilePathFor,
                   fadeIn,
                   fadeOut,
@@ -2833,6 +3145,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
                   baseStyle: asset.textStyle,
                   clip,
                   fontPathFor: options.fontPathFor,
+                  drawtextTextAlign: options.drawtextTextAlign,
                   textFilePathFor: options.textFilePathFor,
                   fadeIn,
                   fadeOut,
@@ -2846,6 +3159,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
                   style: asset.textStyle,
                   clip,
                   fontPathFor: options.fontPathFor,
+                  drawtextTextAlign: options.drawtextTextAlign,
                   textFilePathFor: options.textFilePathFor,
                   fadeIn,
                   fadeOut,
