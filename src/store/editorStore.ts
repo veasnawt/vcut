@@ -26,6 +26,7 @@ import { translateText } from "../i18n/translations.ts";
 import type { PlaybackEngine } from "../playback/PlaybackEngine.ts";
 import { createColorAsset, createTextAsset, findAsset, findClip, sequenceDuration } from "../project/createProject.ts";
 import { assetFromBundledSfx, type SfxDefinition } from "../project/sfx.ts";
+import type { MusicTrack } from "../project/music.ts";
 import { buildProjectFromTemplate, fillTemplateSlot, setTemplateClipText, trimTemplateSlot } from "../project/template.ts";
 import type { TextStylePreset } from "../project/textStylePresets.ts";
 import type { Asset, Clip, Project, TextStyle } from "../project/types.ts";
@@ -508,6 +509,9 @@ export interface EditorState {
   /** Cancels whichever AI video job `startAiVideoGeneration` most recently started, if any is still
    *  running — mirrors `cancelInpaint`'s own "racing the job's own completion is normal" tolerance. */
   cancelAiVideoGeneration: () => void;
+  importMusicTrack: (track: MusicTrack) => Promise<Asset | null>;
+  removeClipBackground: (clipId: string) => Promise<void>;
+  runAiEdit: (clipId: string, prompt: string, strength?: "subtle" | "balanced" | "creative") => Promise<Asset>;
   removeAsset: (asset: Asset) => Promise<void>;
   /** Places a user's account-wide library item (from `MediaLibrary.tsx`'s own "All my media" view — see
    *  `api.LibraryMediaItem`'s own doc comment) into THIS project, as a real, placeable `Asset`. Pure and
@@ -1462,6 +1466,59 @@ export const useEditorStore = create<EditorState>((set, get) => {
       }
       get().run(new BatchCommand("Clear Captions", captionTracks.map((t) => new RemoveTrackCommand(t.id))));
       get().setStatus(translateText(get().language, "Cleared {n} caption track(s)", { n: captionTracks.length }));
+    },
+
+    async importMusicTrack(track) {
+      const { projectId, project } = get();
+      if (!projectId || !project) return null;
+      set({ importing: true });
+      try {
+        const asset = await api.importMusicTrack(projectId, track);
+        const current = get().project;
+        if (current) applyProject({ ...current, assets: [...current.assets, asset] });
+        get().setStatus(translateText(get().language, "Added {name}", { name: asset.name }));
+        get().addAssetAtPlayhead(asset.id, undefined, { avoidOverlap: true });
+        return asset;
+      } catch (err) {
+        get().setStatus(err instanceof Error ? err.message : String(err), "error");
+        return null;
+      } finally {
+        set({ importing: false });
+      }
+    },
+
+    async removeClipBackground(clipId) {
+      const { projectId, project } = get();
+      if (!projectId || !project) return;
+      const found = findClip(project, clipId);
+      if (!found) return;
+      const asset = findAsset(project, found.clip.assetId);
+      if (!asset) return;
+
+      get().setStatus(translateText(get().language, "Removing background..."));
+      try {
+        const newAsset = await api.removeBackground(projectId, asset.id, clipId);
+        get().run(new SwapClipAssetCommand(clipId, newAsset));
+        get().setStatus(translateText(get().language, "Background removed"));
+      } catch (err) {
+        get().setStatus(err instanceof Error ? err.message : String(err), "error");
+      }
+    },
+
+    async runAiEdit(clipId, prompt, strength = "balanced") {
+      const { projectId, project } = get();
+      if (!projectId || !project) throw new Error("Project not loaded");
+      const found = findClip(project, clipId);
+      if (!found) throw new Error("Clip not found");
+      const asset = findAsset(project, found.clip.assetId);
+      if (!asset) throw new Error("Asset not found");
+
+      const newAsset = await api.runAiEdit(projectId, asset.id, clipId, prompt, strength);
+      const current = get().project;
+      if (current) {
+        applyProject({ ...current, assets: [...current.assets, newAsset] });
+      }
+      return newAsset;
     },
 
     async removeAsset(asset) {

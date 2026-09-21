@@ -508,6 +508,40 @@ type LocalSetupPhase = "idle" | "running" | "done" | "failed" | "cancelled";
  *  same reasoning that keeps it out of the store there. `removeObjectRect`/`removeObjectArmedClipId`
  *  DO live in the store (see its own comment) since `RemoveObjectOverlay`, a completely different
  *  component mounted over the Preview canvas, needs to read/drive the same drawn rectangle. */
+function RemoveBackgroundSection({ clipId }: { clipId: string }) {
+  const t = useTranslation();
+  const removeClipBackground = useEditorStore((s) => s.removeClipBackground);
+  const [removing, setRemoving] = useState(false);
+
+  async function handleRemoveBg() {
+    if (removing) return;
+    setRemoving(true);
+    try {
+      await removeClipBackground(clipId);
+    } finally {
+      setRemoving(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 text-xs">
+      <p className="text-white/60">
+        {t("Instantly remove the background using AI cutout to create a transparent subject.")}
+      </p>
+      <button
+        onClick={handleRemoveBg}
+        disabled={removing}
+        className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-500/20 border border-sky-500/30 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-500/30 transition disabled:opacity-50"
+      >
+        <span>{removing ? t("Removing background...") : t("Remove Background (AI)")}</span>
+        <span className="rounded bg-sky-500/30 px-1.5 py-0.5 text-[10px] font-bold text-sky-300">
+          3 {t("credits")}
+        </span>
+      </button>
+    </div>
+  );
+}
+
 function RemoveObjectSection({
   clipId,
   assetName,
@@ -2095,6 +2129,18 @@ export function Inspector() {
                       clipDurationSeconds={clip.sourceOut - clip.sourceIn}
                       isImage={asset.kind === "image"}
                     />
+                  </CollapsibleSection>
+                )}
+
+                {activeTab === "transform" && track.kind === "video" && (asset?.kind === "video" || asset?.kind === "image") && (
+                  <CollapsibleSection
+                    title={t("Background Remover")}
+                    accent="bg-sky-400"
+                    open={!collapsed.has("Background Remover")}
+                    onToggle={() => toggleSection("Background Remover")}
+                    pro={CREDITS_ENABLED}
+                  >
+                    <RemoveBackgroundSection clipId={clip.id} />
                   </CollapsibleSection>
                 )}
 

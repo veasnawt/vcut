@@ -65,6 +65,8 @@ import { SaveAsTemplateDialog } from "./SaveAsTemplateDialog.tsx";
 import { StylePickerMenu } from "./StylePickerMenu.tsx";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { Preview } from "./Preview.tsx";
+import { AiEditModal } from "./AiEditModal.tsx";
+import { MusicPanel } from "./MusicPanel.tsx";
 import { ScopesPanel } from "./ScopesPanel.tsx";
 import { SfxPanel } from "./SfxPanel.tsx";
 import { StickersPanel } from "./StickersPanel.tsx";
@@ -270,6 +272,7 @@ function StatusBar({
   const applyTextAnimationToSelection = useEditorStore((s) => s.applyTextAnimationToSelection);
   const applyTextStylePresetToSelection = useEditorStore((s) => s.applyTextStylePresetToSelection);
   const armRemoveObject = useEditorStore((s) => s.armRemoveObject);
+  const removeClipBackground = useEditorStore((s) => s.removeClipBackground);
   const previewMuted = useEditorStore((s) => s.previewMuted);
   const togglePreviewMuted = useEditorStore((s) => s.togglePreviewMuted);
   const project = useEditorStore((s) => s.project);
@@ -283,9 +286,12 @@ function StatusBar({
   const [showColorMenu, setShowColorMenu] = useState(false);
   const [showEffectsMenu, setShowEffectsMenu] = useState(false);
   const [showPixelEffectMenu, setShowPixelEffectMenu] = useState(false);
+  const [showMusic, setShowMusic] = useState(false);
   const [showSfx, setShowSfx] = useState(false);
   const [showStickers, setShowStickers] = useState(false);
   const [showVoiceRecord, setShowVoiceRecord] = useState(false);
+  const [aiEditClipId, setAiEditClipId] = useState<string | null>(null);
+  const [removingBgClipId, setRemovingBgClipId] = useState<string | null>(null);
   const [showTextStyleMenu, setShowTextStyleMenu] = useState(false);
   const [showAnimationMenu, setShowAnimationMenu] = useState(false);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
@@ -814,6 +820,9 @@ function StatusBar({
                 )}
               </span>
             </ToolbarButton>
+            <ToolbarButton title={t("Browse trending & viral music")} label={t("Music")} onClick={() => setShowMusic(true)}>
+              <Music size={18} />
+            </ToolbarButton>
             <ToolbarButton title={t("Sound Effects")} label={t("SFX")} onClick={() => setShowSfx(true)}>
               <Headphone size={18} />
             </ToolbarButton>
@@ -1092,6 +1101,40 @@ function StatusBar({
           </ToolbarButton>
         )}
 
+        {!removeObjectDisabled && (
+          <ToolbarButton
+            title={t("Remove Background")}
+            label={removingBgClipId === foundForVideoEffects?.clip.id ? t("Removing...") : t("Remove BG")}
+            pro={CREDITS_ENABLED}
+            className={removingBgClipId !== null ? "opacity-50 pointer-events-none" : ""}
+            onClick={async () => {
+              if (!foundForVideoEffects || removingBgClipId) return;
+              setRemovingBgClipId(foundForVideoEffects.clip.id);
+              try {
+                await removeClipBackground(foundForVideoEffects.clip.id);
+              } finally {
+                setRemovingBgClipId(null);
+              }
+            }}
+          >
+            <Backspace size={18} />
+          </ToolbarButton>
+        )}
+
+        {!removeObjectDisabled && (
+          <ToolbarButton
+            title={t("AI Edit (Transform with text prompt)")}
+            label={t("AI Edit")}
+            pro={CREDITS_ENABLED}
+            onClick={() => {
+              if (!foundForVideoEffects) return;
+              setAiEditClipId(foundForVideoEffects.clip.id);
+            }}
+          >
+            <Ai size={18} />
+          </ToolbarButton>
+        )}
+
         {/* Detaches this clip's own embedded audio onto a new clip on an audio track (see
             `ExtractAudioCommand`'s own doc comment) — hidden, not disabled, for anything that isn't a
             video-track clip with real audio to detach, same convention every other clip-kind-gated
@@ -1131,8 +1174,10 @@ function StatusBar({
       {captionsDialog && <AutoCaptionsDialog clipIds={captionsDialog.clipIds} onClose={() => setCaptionsDialog(null)} />}
       {showVoiceRecord && <VoiceRecordModal onClose={() => setShowVoiceRecord(false)} />}
       {showTextImport && <TextToClipsDialog onClose={() => setShowTextImport(false)} />}
+      {showMusic && <MusicPanel onClose={() => setShowMusic(false)} />}
       {showSfx && <SfxPanel onClose={() => setShowSfx(false)} />}
       {showStickers && <StickersPanel onClose={() => setShowStickers(false)} />}
+      {aiEditClipId && <AiEditModal clipId={aiEditClipId} onClose={() => setAiEditClipId(null)} />}
       <NewTextComposer />
       {/* Zero-size, invisible — exists only so the picker menus above have a real DOM element to
           anchor to (`getBoundingClientRect()`) when opened FROM the context menu instead of their own

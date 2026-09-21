@@ -279,7 +279,9 @@ export class SwapClipAssetCommand implements Command {
     this.previousAssetId = found.clip.assetId;
 
     const draft = structuredClone(project);
-    draft.assets = [...draft.assets, this.newAsset];
+    if (!draft.assets.some((a) => a.id === this.newAsset.id)) {
+      draft.assets = [...draft.assets, this.newAsset];
+    }
     findClip(draft, this.clipId)!.clip.assetId = this.newAsset.id;
     draft.updatedAt = Date.now();
     return draft;

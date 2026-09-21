@@ -3,6 +3,7 @@ import { getAccessToken, getCachedAccessToken } from "@veasnawt/auth";
 import { deserializeProject } from "../project/serialize.ts";
 import type { TemplateProjectData } from "../project/template.ts";
 import type { StickerProvider, StickerType } from "../project/stickers.ts";
+import type { MusicCategory, MusicTrack } from "../project/music.ts";
 import type { Asset, CustomFontAsset, CustomSfxAsset, LutAsset, Project } from "../project/types.ts";
 import { nativeCancelExport, nativeExportAvailable, nativeStartExport, nativeWatchExport } from "./nativeExport.ts";
 import {
@@ -562,6 +563,70 @@ export async function aiImageAvailable(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Searches the music catalog by category and optional query string. */
+export async function searchMusic(category: MusicCategory = "all", query: string = ""): Promise<{ tracks: MusicTrack[] }> {
+  const params = new URLSearchParams();
+  if (category && category !== "all") params.set("category", category);
+  if (query.trim()) params.set("q", query.trim());
+  const response = await centralFetch(`/music?${params.toString()}`);
+  return unwrap<{ tracks: MusicTrack[] }>(response);
+}
+
+/** Imports a music track into the project media library and returns an Asset. */
+export async function importMusicTrack(projectId: string, track: MusicTrack): Promise<Asset> {
+  const deliverBytes = !HOSTED;
+  const response = await centralFetch(`/music?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      trackId: track.id,
+      audioUrl: track.audioUrl,
+      title: track.title,
+      artist: track.artist,
+      deliverBytes,
+    }),
+  });
+  const body = await unwrap<{ asset: Asset; bytesBase64?: string }>(response);
+  if (!body.bytesBase64) return body.asset;
+  const file = new File([base64ToBytes(body.bytesBase64).buffer as ArrayBuffer], body.asset.name, { type: "audio/mpeg" });
+  return importMedia(projectId, file);
+}
+
+/** AI Background Remover — automatically cuts out subjects from an image (or extracts video frame)
+ *  and returns a new transparent PNG Asset. */
+export async function removeBackground(projectId: string, assetId?: string, clipId?: string): Promise<Asset> {
+  const deliverBytes = !HOSTED;
+  const response = await centralFetch(`/ai-background-remove?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ assetId, clipId, deliverBytes }),
+  });
+  const body = await unwrap<{ asset: Asset; bytesBase64?: string }>(response);
+  if (!body.bytesBase64) return body.asset;
+  const file = new File([base64ToBytes(body.bytesBase64).buffer as ArrayBuffer], body.asset.name, { type: "image/png" });
+  return importMedia(projectId, file);
+}
+
+/** AI Edit — applies user's text prompt to an image/video frame using instruction-based editing. */
+export async function runAiEdit(
+  projectId: string,
+  assetId: string,
+  clipId: string | undefined,
+  prompt: string,
+  strength: "subtle" | "balanced" | "creative" = "balanced"
+): Promise<Asset> {
+  const deliverBytes = !HOSTED;
+  const response = await centralFetch(`/ai-edit?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ assetId, clipId, prompt, strength, deliverBytes }),
+  });
+  const body = await unwrap<{ asset: Asset; bytesBase64?: string }>(response);
+  if (!body.bytesBase64) return body.asset;
+  const file = new File([base64ToBytes(body.bytesBase64).buffer as ArrayBuffer], body.asset.name, { type: "image/png" });
+  return importMedia(projectId, file);
 }
 
 export interface AiVideoStarted {
