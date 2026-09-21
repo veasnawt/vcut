@@ -97,16 +97,21 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  // Clean up audio on unmount or track ended
+  // Clean up audio on unmount or track ended / error
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     function onEnded() {
       setPlayingId(null);
     }
+    function onError() {
+      setPlayingId(null);
+    }
     audio.addEventListener("ended", onEnded);
+    audio.addEventListener("error", onError);
     return () => {
       audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("error", onError);
       audio.pause();
     };
   }, []);
@@ -121,17 +126,28 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
       return;
     }
 
-    const streamUrl = track.audioUrl.startsWith("http")
-      ? track.audioUrl
-      : track.audioUrl.startsWith("/api/")
-      ? track.audioUrl
-      : `/api/vcut/music/stream?url=${encodeURIComponent(track.audioUrl)}`;
+    // Proxy through /api/vcut/music/stream so it uses 'self' origin and normalized audio/mp4 content type.
+    const proxyUrl = `/api/vcut/music/stream?url=${encodeURIComponent(track.audioUrl)}`;
+    const streamUrl = track.audioUrl.startsWith("/api/") ? track.audioUrl : proxyUrl;
+
     audio.src = streamUrl;
     audio.currentTime = 0;
-    void audio.play().catch(() => {
-      // Audio playback might be blocked if user hasn't interacted
-    });
     setPlayingId(track.id);
+
+    audio.play().catch((err) => {
+      // If proxy had an issue and it was an http URL, try direct URL as fallback
+      if (track.audioUrl.startsWith("http")) {
+        audio.src = track.audioUrl;
+        audio.currentTime = 0;
+        audio.play().catch((fallbackErr) => {
+          console.warn("Audio preview playback failed:", fallbackErr);
+          setPlayingId(null);
+        });
+      } else {
+        console.warn("Audio preview playback failed:", err);
+        setPlayingId(null);
+      }
+    });
   }
 
   async function handleAddTrack(track: MusicTrack) {
