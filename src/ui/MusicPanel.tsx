@@ -17,6 +17,7 @@ import {
   Video,
 } from "@veasnawt/vicons";
 import { filterMusicCatalog, MUSIC_CATEGORIES, type MusicCategory, type MusicTrack } from "../project/music.ts";
+import * as api from "../api/client.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
@@ -54,8 +55,8 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<MusicCategory>("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [tracks, setTracks] = useState<MusicTrack[]>(() => filterMusicCatalog(selectedCategory, searchQuery));
-  const [loading, setLoading] = useState(false);
+  const [tracks, setTracks] = useState<MusicTrack[]>([]);
+  const [loading, setLoading] = useState(true);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [addingId, setAddingId] = useState<string | null>(null);
 
@@ -66,18 +67,11 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
 
     const timer = setTimeout(async () => {
       try {
-        const params = new URLSearchParams({
-          category: selectedCategory,
-          q: searchQuery.trim(),
-        });
-        const res = await fetch(`/api/vcut/music?${params.toString()}`);
-        if (res.ok && active) {
-          const data = (await res.json()) as { tracks?: MusicTrack[] };
-          if (Array.isArray(data.tracks) && data.tracks.length > 0) {
-            setTracks(data.tracks);
-          } else {
-            setTracks(filterMusicCatalog(selectedCategory, searchQuery));
-          }
+        const data = await api.searchMusic(selectedCategory, searchQuery);
+        if (active && Array.isArray(data?.tracks) && data.tracks.length > 0) {
+          setTracks(data.tracks);
+        } else if (active) {
+          setTracks(filterMusicCatalog(selectedCategory, searchQuery));
         }
       } catch {
         if (active) {
@@ -127,7 +121,9 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
       return;
     }
 
-    const streamUrl = track.audioUrl.startsWith("/api/")
+    const streamUrl = track.audioUrl.startsWith("http")
+      ? track.audioUrl
+      : track.audioUrl.startsWith("/api/")
       ? track.audioUrl
       : `/api/vcut/music/stream?url=${encodeURIComponent(track.audioUrl)}`;
     audio.src = streamUrl;
