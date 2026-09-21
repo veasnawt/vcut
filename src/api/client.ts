@@ -585,6 +585,7 @@ export async function importMusicTrack(projectId: string, track: MusicTrack): Pr
       audioUrl: track.audioUrl,
       title: track.title,
       artist: track.artist,
+      duration: track.duration,
       deliverBytes,
     }),
   });

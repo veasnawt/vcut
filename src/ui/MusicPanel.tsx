@@ -59,6 +59,8 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [addingId, setAddingId] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [previewDuration, setPreviewDuration] = useState(30);
 
   // Fetch real tracks from API with debounce
   useEffect(() => {
@@ -97,19 +99,38 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  // Clean up audio on unmount or track ended / error
+  // Clean up audio on unmount or track ended / error & track running time
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
+
+    function onTimeUpdate() {
+      if (audio) {
+        setCurrentTime(audio.currentTime);
+      }
+    }
+    function onLoadedMetadata() {
+      if (audio && Number.isFinite(audio.duration) && audio.duration > 0) {
+        setPreviewDuration(Math.round(audio.duration));
+      }
+    }
     function onEnded() {
       setPlayingId(null);
+      setCurrentTime(0);
     }
     function onError() {
       setPlayingId(null);
+      setCurrentTime(0);
     }
+
+    audio.addEventListener("timeupdate", onTimeUpdate);
+    audio.addEventListener("loadedmetadata", onLoadedMetadata);
     audio.addEventListener("ended", onEnded);
     audio.addEventListener("error", onError);
+
     return () => {
+      audio.removeEventListener("timeupdate", onTimeUpdate);
+      audio.removeEventListener("loadedmetadata", onLoadedMetadata);
       audio.removeEventListener("ended", onEnded);
       audio.removeEventListener("error", onError);
       audio.pause();
@@ -123,6 +144,7 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
     if (playingId === track.id) {
       audio.pause();
       setPlayingId(null);
+      setCurrentTime(0);
       return;
     }
 
@@ -132,6 +154,8 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
 
     audio.src = streamUrl;
     audio.currentTime = 0;
+    setCurrentTime(0);
+    setPreviewDuration(track.duration || 30);
     setPlayingId(track.id);
 
     audio.play().catch((err) => {
@@ -142,10 +166,12 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
         audio.play().catch((fallbackErr) => {
           console.warn("Audio preview playback failed:", fallbackErr);
           setPlayingId(null);
+          setCurrentTime(0);
         });
       } else {
         console.warn("Audio preview playback failed:", err);
         setPlayingId(null);
+        setCurrentTime(0);
       }
     });
   }
@@ -177,6 +203,13 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
       }}
     >
       <audio ref={audioRef} preload="none" />
+      <style>{`
+        @keyframes vcutWave {
+          0% { height: 3px; }
+          50% { height: 14px; }
+          100% { height: 4px; }
+        }
+      `}</style>
 
       <div className="flex h-full max-h-[640px] w-full max-w-2xl flex-col rounded-2xl border border-white/10 bg-[#12151c] shadow-2xl overflow-hidden">
         {/* Header */}
@@ -252,7 +285,7 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
                   key={track.id}
                   className={`group flex items-center justify-between gap-3 rounded-xl border p-2.5 transition ${
                     isPlaying
-                      ? "border-sky-500/40 bg-sky-500/10"
+                      ? "border-white/15 bg-white/[0.04]"
                       : "border-white/5 bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.05]"
                   }`}
                 >
@@ -316,9 +349,40 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
                     </div>
                   </div>
 
-                  {/* Right: Duration and Add Button */}
+                  {/* Right: Moving Wavelength, Running Duration, and Add Button */}
                   <div className="flex shrink-0 items-center gap-2.5 ml-2">
-                    <span className="text-[11px] font-mono text-white/40">{formatDuration(track.duration)}</span>
+                    {isPlaying ? (
+                      <div className="flex items-center gap-2">
+                        {/* Moving wavelength visualizer */}
+                        <div className="flex items-end gap-[2px] h-3.5" aria-hidden="true" title="Playing">
+                          <span
+                            className="w-[2.5px] rounded-full bg-sky-400"
+                            style={{ height: "100%", animation: "vcutWave 0.7s ease-in-out infinite alternate" }}
+                          />
+                          <span
+                            className="w-[2.5px] rounded-full bg-sky-400"
+                            style={{ height: "55%", animation: "vcutWave 0.5s ease-in-out infinite alternate 0.15s" }}
+                          />
+                          <span
+                            className="w-[2.5px] rounded-full bg-sky-400"
+                            style={{ height: "85%", animation: "vcutWave 0.9s ease-in-out infinite alternate 0.3s" }}
+                          />
+                          <span
+                            className="w-[2.5px] rounded-full bg-sky-400"
+                            style={{ height: "45%", animation: "vcutWave 0.6s ease-in-out infinite alternate 0.1s" }}
+                          />
+                        </div>
+
+                        {/* Running duration */}
+                        <div className="flex items-baseline gap-0.5 font-mono text-[11px]">
+                          <span className="font-semibold text-sky-400">{formatDuration(currentTime)}</span>
+                          <span className="text-white/30 text-[10px]">/ {formatDuration(previewDuration)}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="text-[11px] font-mono text-white/40">{formatDuration(track.duration)}</span>
+                    )}
+
                     <button
                       onClick={() => handleAddTrack(track)}
                       disabled={isAdding}
