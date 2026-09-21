@@ -389,6 +389,8 @@ export const KM_TRANSLATIONS: Record<string, string> = {
     "លក្ខណៈសម្បត្តិត្រូវបានបង្ហាញម្តងមួយឈុត — សូមជ្រើសរើសតែមួយដើម្បីកែសម្រួល។",
   "Select a clip to see its properties": "ជ្រើសរើសឃ្លីបមួយដើម្បីមើលលក្ខណៈសម្បត្តិរបស់វា",
   Transform: "បំប្លែង",
+  "AI Tools": "ឧបករណ៍ AI",
+  "Smart & AI Tools": "ឧបករណ៍ឆ្លាតវៃ & AI",
   "Remove Object": "លុបវត្ថុ",
   Effects: "បែបផែន",
   Transitions: "ការផ្លាស់ប្តូរ",

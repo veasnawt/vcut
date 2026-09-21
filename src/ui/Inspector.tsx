@@ -1188,6 +1188,19 @@ export function Inspector() {
    *  recomputed on every render, so it can never show a blank or wrong-for-this-clip tab even for one
    *  frame the way a `useEffect`-based reset could. */
   const [requestedTab, setRequestedTab] = useState("text");
+  const removeObjectArmedClipId = useEditorStore((s) => s.removeObjectArmedClipId);
+
+  useEffect(() => {
+    if (removeObjectArmedClipId) {
+      setRequestedTab("ai");
+      setCollapsed((prev) => {
+        if (!prev.has("Remove Object")) return prev;
+        const next = new Set(prev);
+        next.delete("Remove Object");
+        return next;
+      });
+    }
+  }, [removeObjectArmedClipId]);
 
   const setLivePreviewOverrides = useEditorStore((s) => s.setLivePreviewOverrides);
   /** Clears whatever this panel was previewing — called right after every REAL commit below, so a
@@ -1496,6 +1509,9 @@ export function Inspector() {
             const tabs: { id: string; label: string }[] = [
               ...(asset?.kind === "text" ? [{ id: "text", label: t("Text") }] : []),
               ...(track.kind === "video" ? [{ id: "transform", label: t("Transform") }] : []),
+              ...(track.kind === "video" && (asset?.kind === "video" || asset?.kind === "image")
+                ? [{ id: "ai", label: t("AI Tools") }]
+                : []),
               ...(track.kind === "video" || track.kind === "text" || track.kind === "audio"
                 ? [{ id: "transitions", label: t("Transitions") }]
                 : []),
@@ -2208,7 +2224,7 @@ export function Inspector() {
                 {/* Video and image clips on a video track — an image goes through each provider's own
                     still-image eraser instead (see `removeObjectFromImage` in `inpaint/route.ts`).
                     `RemoveObjectOverlay`'s own resolved-clip lookup uses this identical check. */}
-                {activeTab === "transform" && track.kind === "video" && (asset?.kind === "video" || asset?.kind === "image") && (
+                {activeTab === "ai" && track.kind === "video" && (asset?.kind === "video" || asset?.kind === "image") && (
                   <CollapsibleSection
                     title={t("Remove Object")}
                     accent="bg-teal-400"
@@ -2226,7 +2242,7 @@ export function Inspector() {
                   </CollapsibleSection>
                 )}
 
-                {activeTab === "transform" && track.kind === "video" && (asset?.kind === "video" || asset?.kind === "image") && (
+                {activeTab === "ai" && track.kind === "video" && (asset?.kind === "video" || asset?.kind === "image") && (
                   <CollapsibleSection
                     title={t("Smart Cutout & AI")}
                     accent="bg-sky-400"
@@ -2240,8 +2256,8 @@ export function Inspector() {
 
                 {/* Same gate the "Audio" mute/volume section below already uses — hasAudio, not track
                     kind, so this covers a video clip's own dialogue and a dedicated voiceover/music
-                    clip alike. */}
-                {activeTab === "audio" && asset?.hasAudio && (
+                    clip alike. Also surfaced under AI Tools as an AI speech feature. */}
+                {(activeTab === "audio" || activeTab === "ai") && asset?.hasAudio && (
                   <CollapsibleSection
                     title={t("Auto Captions")}
                     accent="bg-emerald-400"

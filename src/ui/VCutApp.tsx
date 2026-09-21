@@ -46,6 +46,7 @@ import { templateSlots } from "../project/template.ts";
 import { flushPendingSave, useEditorStore } from "../store/editorStore.ts";
 import { clipAtTime } from "../timeline/queries.ts";
 import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCandidate } from "../timeline/transitions.ts";
+import { AiToolsPickerMenu } from "./AiToolsPickerMenu.tsx";
 import { AnimationPickerMenu } from "./AnimationPickerMenu.tsx";
 import { AutoCaptionsDialog } from "./AutoCaptionsDialog.tsx";
 import { ClipContextMenu, type ClipContextMenuAction } from "./ClipContextMenu.tsx";
@@ -290,6 +291,7 @@ function StatusBar({
   const [showColorMenu, setShowColorMenu] = useState(false);
   const [showEffectsMenu, setShowEffectsMenu] = useState(false);
   const [showPixelEffectMenu, setShowPixelEffectMenu] = useState(false);
+  const [showAiToolsMenu, setShowAiToolsMenu] = useState(false);
   const [showMusic, setShowMusic] = useState(false);
   const [showSfx, setShowSfx] = useState(false);
   const [showStickers, setShowStickers] = useState(false);
@@ -303,6 +305,7 @@ function StatusBar({
   const colorButtonRef = useRef<HTMLButtonElement>(null);
   const effectsButtonRef = useRef<HTMLButtonElement>(null);
   const pixelEffectButtonRef = useRef<HTMLButtonElement>(null);
+  const aiToolsButtonRef = useRef<HTMLButtonElement>(null);
   const textButtonRef = useRef<HTMLButtonElement>(null);
   const animationButtonRef = useRef<HTMLButtonElement>(null);
   const styleButtonRef = useRef<HTMLButtonElement>(null);
@@ -360,12 +363,9 @@ function StatusBar({
   const pixelEffectActive = Boolean(foundForVideoEffects?.clip.pixelEffect);
   const assetForVideoEffects = project && foundForVideoEffects ? findAsset(project, foundForVideoEffects.clip.assetId) : undefined;
 
-  // Remove Object — same selection as Effects/Pixel FX, but narrower: `RemoveObjectSection`
-  // (Inspector.tsx) only ever renders for an actual video ASSET, not every video-track clip (an
-  // image or color-matte on a video track has no frames to inpaint), so this button must match that
-  // gating rather than reusing `effectsDisabled` as-is.
-  const removeObjectDisabled = !foundForVideoEffects || assetForVideoEffects?.kind !== "video";
-  const aiToolsDisabled = !foundForVideoEffects || (assetForVideoEffects?.kind !== "video" && assetForVideoEffects?.kind !== "image");
+  // Remove Object & Smart AI tools — available for both video and image clips on video tracks:
+  const isVisualClip = assetForVideoEffects?.kind === "video" || assetForVideoEffects?.kind === "image";
+  const aiToolsDisabled = !foundForVideoEffects || !isVisualClip;
 
   // Extract Audio — same video-track gate as Effects/Pixel FX, narrowed further to a clip whose asset
   // actually HAS audio (`ExtractAudioCommand`'s own doc comment) — a silent video clip has nothing to
@@ -496,57 +496,15 @@ function StatusBar({
               },
             ]
           : []),
-        ...(!removeObjectDisabled
-          ? [
-              {
-                key: "removeObject",
-                label: t("Remove Object"),
-                icon: <Backspace size={15} />,
-                // No `setMobileSheet` here — this action only ever reaches a user through the
-                // right-click context menu, which is desktop-only by construction (a touch long-press
-                // opens a DIFFERENT menu entirely — see TimelineClip.tsx). Desktop already shows
-                // Properties in its own permanent column; setting `mobileSheet` here was the same
-                // confirmed bug the toolbar button's own version of this action just got fixed for —
-                // silently swapping the desktop Timeline row out for a second, redundant Inspector.
-                onClick: () => {
-                  if (!foundForVideoEffects) return;
-                  armRemoveObject(foundForVideoEffects.clip.id);
-                },
-              },
-            ]
-          : []),
         ...(!aiToolsDisabled
           ? [
               {
-                key: "removeBg",
-                label: t("Auto Cutout (Remove BG)"),
-                icon: <User size={15} />,
-                onClick: async () => {
-                  if (!foundForVideoEffects || removingBgClipId) return;
-                  setRemovingBgClipId(foundForVideoEffects.clip.id);
-                  try {
-                    await removeClipBackground(foundForVideoEffects.clip.id);
-                  } finally {
-                    setRemovingBgClipId(null);
-                  }
-                },
-              },
-              {
-                key: "textBehind",
-                label: t("Text Behind Subject"),
-                icon: <Text size={15} />,
-                onClick: async () => {
-                  if (!foundForVideoEffects) return;
-                  await createTextBehindSubject(foundForVideoEffects.clip.id);
-                },
-              },
-              {
-                key: "aiEdit",
-                label: t("AI Generative Edit"),
+                key: "aiTools",
+                label: t("AI Tools"),
                 icon: <Ai size={15} />,
                 onClick: () => {
-                  if (!foundForVideoEffects) return;
-                  setAiEditClipId(foundForVideoEffects.clip.id);
+                  setPickerAnchorSource("contextMenu");
+                  setShowAiToolsMenu(true);
                 },
               },
             ]
@@ -1114,80 +1072,32 @@ function StatusBar({
           </>
         )}
 
-        {/* Arms the same draw-a-rectangle flow the Inspector's `RemoveObjectSection` exposes
-            (`removeObjectArmedClipId` drives `RemoveObjectOverlay`, mounted over the Preview canvas) —
-            unlike Effects/Pixel FX above, there's no popover menu here; the prompt field and
-            run/progress UI only exist in that Inspector section, so tapping this also opens the
-            Inspector sheet on mobile. NOT unconditional, despite desktop having its own permanent
-            Properties column that never needs `mobileSheet` set — confirmed a real, reported bug:
-            `mobileSheet` doubles as "which panel replaces the TIMELINE row on a narrow screen" (see
-            that row's own comment further down), and setting it on DESKTOP too was silently swapping
-            the desktop Timeline itself out for a second, redundant Inspector instead of doing nothing
-            the way the permanent column already made correct. `lg` (1024px) is this app's own
-            breakpoint for "has that permanent column" everywhere else here, so it's what gates this
-            too. Hidden, not disabled, for anything that isn't an actual video asset — same reasoning
-            as Transition/Effects above. */}
-        {!removeObjectDisabled && (
-          <ToolbarButton
-            title={t("Remove Object")}
-            label={t("Remove")}
-            pro={CREDITS_ENABLED}
-            onClick={() => {
-              if (!foundForVideoEffects) return;
-              armRemoveObject(foundForVideoEffects.clip.id);
-              if (!window.matchMedia("(min-width: 1024px)").matches) setMobileSheet("inspector");
-            }}
-          >
-            <Backspace size={18} />
-          </ToolbarButton>
-        )}
-
+        {/* AI & Smart Tools — unified popover grouping Remove Object, Auto Cutout, Text Behind Subject, and AI Edit */}
         {!aiToolsDisabled && (
-          <ToolbarButton
-            title={t("Auto Cutout (Remove Background)")}
-            label={removingBgClipId === foundForVideoEffects?.clip.id ? t("Cutting...") : t("Cutout")}
-            pro={CREDITS_ENABLED}
-            className={removingBgClipId !== null ? "opacity-50 pointer-events-none" : ""}
-            onClick={async () => {
-              if (!foundForVideoEffects || removingBgClipId) return;
-              setRemovingBgClipId(foundForVideoEffects.clip.id);
-              try {
-                await removeClipBackground(foundForVideoEffects.clip.id);
-              } finally {
-                setRemovingBgClipId(null);
-              }
-            }}
-          >
-            <User size={18} />
-          </ToolbarButton>
-        )}
-
-        {!aiToolsDisabled && (
-          <ToolbarButton
-            title={t("Text Behind Subject (3D Layer)")}
-            label={t("Behind Text")}
-            pro={CREDITS_ENABLED}
-            onClick={async () => {
-              if (!foundForVideoEffects) return;
-              await createTextBehindSubject(foundForVideoEffects.clip.id);
-            }}
-          >
-            <Text size={18} />
-          </ToolbarButton>
-        )}
-
-        {!aiToolsDisabled && (
-          <ToolbarButton
-            title={t("AI Edit (Transform with text prompt)")}
-            label={t("AI Edit")}
-            pro={CREDITS_ENABLED}
-            onClick={() => {
-              if (!foundForVideoEffects) return;
-              setAiEditClipId(foundForVideoEffects.clip.id);
-            }}
-          >
-            <Ai size={18} />
-          </ToolbarButton>
+          <>
+            <ToolbarButton
+              ref={aiToolsButtonRef}
+              title={t("AI & Smart Tools (Remove Object, Cutout, Text Behind Subject, Generative Edit)")}
+              label={removingBgClipId ? t("Cutting...") : t("AI Tools")}
+              pro={CREDITS_ENABLED}
+              active={showAiToolsMenu}
+              onClick={() => {
+                setPickerAnchorSource("button");
+                setShowAiToolsMenu((v) => !v);
+              }}
+            >
+              <Ai size={18} />
+            </ToolbarButton>
+            {showAiToolsMenu && foundForVideoEffects && (
+              <AiToolsPickerMenu
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : aiToolsButtonRef}
+                clip={foundForVideoEffects.clip}
+                asset={assetForVideoEffects}
+                onClose={() => setShowAiToolsMenu(false)}
+                onOpenAiEdit={(clipId) => setAiEditClipId(clipId)}
+              />
+            )}
+          </>
         )}
 
         {/* Detaches this clip's own embedded audio onto a new clip on an audio track (see
