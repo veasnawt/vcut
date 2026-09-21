@@ -244,8 +244,8 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
                       : "border-white/5 bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.05]"
                   }`}
                 >
-                  {/* Left: Artwork + Play/Pause Button */}
-                  <div className="flex items-center gap-3 min-w-0">
+                  {/* Left: Artwork + Play/Pause Button + Title/Artist */}
+                  <div className="flex items-center gap-3 min-w-0 flex-1">
                     <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-white/5">
                       {track.coverUrl ? (
                         <img
@@ -274,9 +274,11 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
                     </div>
 
                     {/* Middle: Title, Artist, Tags */}
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="truncate text-xs font-semibold text-white">{track.title}</span>
+                        <span className="truncate text-xs font-semibold text-white" title={track.title}>
+                          {track.title}
+                        </span>
                         {track.featured && (
                           <span className="flex items-center gap-1 shrink-0 rounded bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">
                             <Star size={10} />
@@ -285,16 +287,16 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
                         )}
                       </div>
                       <div className="flex items-center gap-2 text-[11px] text-white/40">
-                        <span className="truncate">{track.artist}</span>
+                        <span className="truncate" title={track.artist}>{track.artist}</span>
                         {track.bpm && (
                           <>
-                            <span>•</span>
-                            <span>{track.bpm} BPM</span>
+                            <span className="shrink-0">•</span>
+                            <span className="shrink-0">{track.bpm} BPM</span>
                           </>
                         )}
                         {track.tags && track.tags.length > 0 && (
                           <>
-                            <span>•</span>
+                            <span className="shrink-0">•</span>
                             <span className="truncate capitalize">{track.tags[0]}</span>
                           </>
                         )}
@@ -303,20 +305,19 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
                   </div>
 
                   {/* Right: Duration and Add Button */}
-                  <div className="flex shrink-0 items-center gap-3">
+                  <div className="flex shrink-0 items-center gap-2.5 ml-2">
                     <span className="text-[11px] font-mono text-white/40">{formatDuration(track.duration)}</span>
                     <button
                       onClick={() => handleAddTrack(track)}
                       disabled={isAdding}
-                      className="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-sky-500 disabled:opacity-50"
+                      title={t("Add to Timeline")}
+                      aria-label={t("Add to Timeline")}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/10 text-white transition hover:bg-sky-500 active:scale-95 disabled:opacity-50"
                     >
                       {isAdding ? (
-                        <span>{t("Adding...")}</span>
+                        <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
                       ) : (
-                        <>
-                          <span className="font-bold">+</span>
-                          <span>{t("Add to Timeline")}</span>
-                        </>
+                        <span className="text-base font-bold leading-none">+</span>
                       )}
                     </button>
                   </div>
