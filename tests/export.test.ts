@@ -3232,7 +3232,44 @@ describe("buildExportPlan with multiple video tracks", () => {
     );
     assert.match(graph, /rotate=a=15\.000000\*PI\/180/);
   });
+
+  it("composites text track between two video tracks in sequence order (text behind subject effect)", () => {
+    const base = emptyProject([videoAsset("a", 10), textAsset("caption", "BEHIND"), videoAsset("b", 10)]);
+    let project = addClip(base, videoTrackId(base), "a", 0);
+    // Add text track (placed after videoTrackId)
+    project = addTrack(project, "text");
+    const tTrackId = textTrackId(project);
+    project = addClip(project, tTrackId, "caption", 0);
+    // Add second video track
+    project = addTrack(project, "video");
+    const vTrack2 = secondVideoTrackId(project);
+    project = addClip(project, vTrack2, "b", 0);
+
+    // Reorder tracks so text track sits between base video and top video: [video1, text, video2]
+    // Base video is at index 0, text track at index 1, top video at index 2
+    const tracks = project.sequence.tracks;
+    const v1 = tracks.find((t) => t.id === videoTrackId(project))!;
+    const txt = tracks.find((t) => t.id === tTrackId)!;
+    const v2 = tracks.find((t) => t.id === vTrack2)!;
+    const audio = tracks.filter((t) => t.kind === "audio");
+    project = {
+      ...project,
+      sequence: {
+        ...project.sequence,
+        tracks: [v1, txt, v2, ...audio],
+      },
+    };
+
+    const { args } = plan(project);
+    const graph = filterGraph(args);
+
+    // [cv0] has drawtext chained onto it, producing [txt0]
+    assert.match(graph, /\[cv0\].*drawtext=.*\[txt0\]/);
+    // [cv1] is then overlaid onto [txt0] (the text stream), producing [layer1]!
+    assert.match(graph, /\[txt0\]\[cv1\]overlay=format=auto\[layer1\]/);
+  });
 });
+
 
 
 describe("drawtext compatibility for the mobile FFmpeg engine", () => {

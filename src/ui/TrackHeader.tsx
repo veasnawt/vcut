@@ -2,8 +2,8 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Delete, Lock, Menu, Music, Text as TextIcon, Unlock, Video, Visibility, VisibilityOff } from "@veasnawt/vicons";
-import { RemoveTrackCommand, SetTrackFlagCommand } from "../commands/index.ts";
+import { ArrowDown, ArrowUp, Delete, Lock, Menu, Music, Text as TextIcon, Unlock, Video, Visibility, VisibilityOff } from "@veasnawt/vicons";
+import { MoveTrackLayerCommand, RemoveTrackCommand, SetTrackFlagCommand } from "../commands/index.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import type { Track } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
@@ -181,6 +181,30 @@ function TrackActionsMenu({ track, anchorRef, onClose }: { track: Track; anchorR
       <div className="my-1 border-t border-white/10" />
       <button
         role="menuitem"
+        onClick={() => {
+          onClose();
+          run(new MoveTrackLayerCommand(track.id, "up"));
+        }}
+        className="flex w-full items-center gap-2 px-3 py-2 text-xs text-white/80 transition hover:bg-white/10"
+      >
+        <ArrowUp size={13} />
+        {t("Bring Layer Forward")}
+      </button>
+      <button
+        role="menuitem"
+        onClick={() => {
+          onClose();
+          run(new MoveTrackLayerCommand(track.id, "down"));
+        }}
+        className="flex w-full items-center gap-2 px-3 py-2 text-xs text-white/80 transition hover:bg-white/10"
+      >
+        <ArrowDown size={13} />
+        {t("Send Layer Backward")}
+      </button>
+
+      <div className="my-1 border-t border-white/10" />
+      <button
+        role="menuitem"
         onClick={() => setConfirmOpen(true)}
         className="flex w-full items-center gap-2 px-3 py-2 text-xs text-rose-300/90 transition hover:bg-rose-500/10"
       >
@@ -262,17 +286,20 @@ export function TrackHeader({
 
   const { Icon: KindIcon, className: kindClassName } = KIND_ICON[track.kind];
 
-  return (
+    const isVisual = track.kind === "video" || track.kind === "text";
+    const dragGroup = isVisual ? "visual" : "audio";
+
+    return (
     <div
       style={{ height }}
       onClick={() => setActiveTrack(track.id)}
       onDragOver={(e) => {
-        if (!e.dataTransfer.types.includes(`${TRACK_DRAG_MIME}-kind-${track.kind}`)) return;
+        if (!e.dataTransfer.types.includes(`${TRACK_DRAG_MIME}-group-${dragGroup}`)) return;
         e.preventDefault();
         onDragOverRow(track.id, positionInRow(e));
       }}
       onDrop={(e) => {
-        if (!e.dataTransfer.types.includes(`${TRACK_DRAG_MIME}-kind-${track.kind}`)) return;
+        if (!e.dataTransfer.types.includes(`${TRACK_DRAG_MIME}-group-${dragGroup}`)) return;
         e.preventDefault();
         const sourceId = e.dataTransfer.getData(TRACK_DRAG_MIME);
         if (sourceId && sourceId !== track.id) onDropRow(sourceId, track.id, positionInRow(e));
@@ -296,7 +323,7 @@ export function TrackHeader({
         onDragStart={(e) => {
           e.stopPropagation();
           e.dataTransfer.setData(TRACK_DRAG_MIME, track.id);
-          e.dataTransfer.setData(`${TRACK_DRAG_MIME}-kind-${track.kind}`, "");
+          e.dataTransfer.setData(`${TRACK_DRAG_MIME}-group-${dragGroup}`, "");
           e.dataTransfer.effectAllowed = "move";
         }}
         onDragEnd={onDragEndRow}

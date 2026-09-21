@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { ChevronDown, Delete, Upload } from "@veasnawt/vicons";
+import { Ai, Backspace, ChevronDown, Delete, Text, Upload } from "@veasnawt/vicons";
 import {
   cancelCaptions,
   cancelInpaint,
@@ -511,10 +511,13 @@ type LocalSetupPhase = "idle" | "running" | "done" | "failed" | "cancelled";
 function RemoveBackgroundSection({ clipId }: { clipId: string }) {
   const t = useTranslation();
   const removeClipBackground = useEditorStore((s) => s.removeClipBackground);
+  const createTextBehindSubject = useEditorStore((s) => s.createTextBehindSubject);
+  const openAiEdit = useEditorStore((s) => s.openAiEdit);
   const [removing, setRemoving] = useState(false);
+  const [creatingBehind, setCreatingBehind] = useState(false);
 
   async function handleRemoveBg() {
-    if (removing) return;
+    if (removing || creatingBehind) return;
     setRemoving(true);
     try {
       await removeClipBackground(clipId);
@@ -523,21 +526,64 @@ function RemoveBackgroundSection({ clipId }: { clipId: string }) {
     }
   }
 
+  async function handleTextBehind() {
+    if (removing || creatingBehind) return;
+    setCreatingBehind(true);
+    try {
+      await createTextBehindSubject(clipId);
+    } finally {
+      setCreatingBehind(false);
+    }
+  }
+
   return (
     <div className="space-y-3 text-xs">
       <p className="text-white/60">
-        {t("Instantly remove the background using AI cutout to create a transparent subject.")}
+        {t("Instantly remove the background using AI cutout or place stylish text behind the subject.")}
       </p>
-      <button
-        onClick={handleRemoveBg}
-        disabled={removing}
-        className="flex w-full items-center justify-center gap-2 rounded-lg bg-sky-500/20 border border-sky-500/30 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-500/30 transition disabled:opacity-50"
-      >
-        <span>{removing ? t("Removing background...") : t("Remove Background (AI)")}</span>
-        <span className="rounded bg-sky-500/30 px-1.5 py-0.5 text-[10px] font-bold text-sky-300">
-          3 {t("credits")}
-        </span>
-      </button>
+      <div className="space-y-2">
+        <button
+          onClick={handleRemoveBg}
+          disabled={removing || creatingBehind}
+          className="flex w-full items-center justify-between gap-2 rounded-lg bg-sky-500/20 border border-sky-500/30 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-500/30 transition disabled:opacity-50"
+        >
+          <div className="flex items-center gap-2">
+            <Backspace size={14} className="shrink-0 text-sky-400" />
+            <span>{removing ? t("Removing background...") : t("Remove Background (AI)")}</span>
+          </div>
+          <span className="rounded bg-sky-500/30 px-1.5 py-0.5 text-[10px] font-bold text-sky-300">
+            3 {t("credits")}
+          </span>
+        </button>
+
+        <button
+          onClick={handleTextBehind}
+          disabled={removing || creatingBehind}
+          className="flex w-full items-center justify-between gap-2 rounded-lg bg-purple-500/20 border border-purple-500/30 px-3 py-2 text-xs font-semibold text-purple-200 hover:bg-purple-500/30 transition disabled:opacity-50"
+        >
+          <div className="flex items-center gap-2">
+            <Text size={14} className="shrink-0 text-purple-400" />
+            <span>{creatingBehind ? t("Creating text behind person...") : t("Text Behind Person (AI)")}</span>
+          </div>
+          <span className="rounded bg-purple-500/30 px-1.5 py-0.5 text-[10px] font-bold text-purple-300">
+            {t("Viral")}
+          </span>
+        </button>
+
+        <button
+          onClick={() => openAiEdit(clipId)}
+          disabled={removing || creatingBehind}
+          className="flex w-full items-center justify-between gap-2 rounded-lg bg-emerald-500/20 border border-emerald-500/30 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/30 transition disabled:opacity-50"
+        >
+          <div className="flex items-center gap-2">
+            <Ai size={14} className="shrink-0 text-emerald-400" />
+            <span>{t("AI Edit (Transform / Replace)")}</span>
+          </div>
+          <span className="rounded bg-emerald-500/30 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300">
+            3 {t("credits")}
+          </span>
+        </button>
+      </div>
     </div>
   );
 }

@@ -1858,11 +1858,7 @@ export class PlaybackEngine {
     // clip actively playing agree on which audio-track elements are currently supposed to be making
     // sound — see this method's own doc comment for the two bugs that came from getting this wrong.
     const activeAudioIds = this.activeAudioClips(project, time).map((c) => c.clip.id);
-    this.drawVideoLayer(project, context, frameWidth, frameHeight, time, activeAudioIds);
-    // Drawn unconditionally, AFTER the video layer and regardless of whether it drew anything (a gap,
-    // a missing asset, no video track at all) — text overlays a video frame OR a gap equally, the
-    // same way a caption doesn't disappear just because the footage under it cut to black.
-    this.drawTextLayer(project, context, frameWidth, frameHeight, time);
+    this.drawVisualLayers(project, context, frameWidth, frameHeight, time, activeAudioIds);
     this.lastFrameComplete = !this.drawIncomplete;
     if (this.preciseScrub) this.holdLastCompleteFrame(context);
   }
@@ -2448,144 +2444,154 @@ export class PlaybackEngine {
    *  text tracks can be simultaneously active (each its own overlay) — drawn in track order, so a
    *  lower text track is behind a higher one if they ever visually overlap, matching how stacking
    *  order works for every other track kind in this app. */
-  private drawTextLayer(project: Project, context: CanvasRenderingContext2D, frameWidth: number, frameHeight: number, time: number): void {
-    const overrides = this.host.getLiveOverrides();
+  /** Draws all visual tracks (video and text) in their sequence array order —
+   *  allowing visual tracks to be interleaved so text can be placed behind a cutout person or between video layers! */
+  private drawVisualLayers(
+    project: Project,
+    context: CanvasRenderingContext2D,
+    frameWidth: number,
+    frameHeight: number,
+    time: number,
+    activeAudioIds: string[]
+  ): void {
+    const activeClipIds = new Set<string>();
+
     for (const track of project.sequence.tracks) {
-      if (track.kind !== "text" || !track.visible) continue;
-      const clip = clipAtTime(track, time);
-      if (!clip) continue;
-      const asset = project.assets.find((a) => a.id === clip.assetId);
-      if (!asset || asset.kind !== "text" || !asset.textStyle) continue;
-      const elapsed = time - clip.timelineStart;
-      // Same live-drag override as the video layer — see `getLiveOverrides`' own comment. Falls
-      // through to `resolveTextStyle` (a keyframed clip's interpolated style at THIS instant) rather
-      // than the asset's raw static `textStyle` directly — same "the live override wins outright,
-      // otherwise resolve keyframes" order `drawVideoClip` already uses for `transform`. Zero behavior
-      // change for a never-keyframed clip: `resolveTextStyle` returns `asset.textStyle` right back.
-      const style = overrides.find((o) => o.clipId === clip.id)?.textStyle ?? resolveTextStyle(clip, elapsed, asset.textStyle);
+      if (!track.visible) continue;
 
-      // A frame-space mask, independent of the text's own position/animation — see `TextCrop`'s own
-      // doc comment. Established here, BEFORE any of the transition/animation draws below, so the
-      // window stays fixed in place regardless of what `drawAnimatedText`'s bounce/pulse/wiggle
-      // transforms or the transition compositors do to the content drawn inside it. Falls through to
-      // `resolveTextCrop` (a keyframed clip's interpolated crop at THIS instant) rather than the clip's
-      // raw static `textCrop` directly — same "live override wins outright, otherwise resolve
-      // keyframes" order `style` just above already uses. Only THIS clip's own crop gates a transition
-      // blend — a differently-cropped partner clip's own crop isn't independently respected mid-blend,
-      // a deliberate v1 simplification (transitions are transient, so this is a narrow, rare edge).
-      const textCrop = overrides.find((o) => o.clipId === clip.id)?.textCrop ?? resolveTextCrop(clip, elapsed);
-      const cropRect =
-        textCrop && !isIdentityTextCrop(textCrop)
-          ? {
-              x: frameWidth * textCrop.left,
-              y: frameHeight * textCrop.top,
-              w: frameWidth * (1 - textCrop.left - textCrop.right),
-              h: frameHeight * (1 - textCrop.top - textCrop.bottom),
-            }
-          : null;
-      function withCrop(draw: () => void): void {
-        if (cropRect) {
-          context.save();
-          context.beginPath();
-          context.rect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
-          context.clip();
-        }
-        draw();
-        if (cropRect) context.restore();
+      if (track.kind === "video") {
+        const clip = clipAtTime(track, time);
+        if (!clip) continue;
+        activeClipIds.add(clip.id);
+        const blend = findTransitionPartner(track, clip);
+        if (blend?.partner && time - clip.timelineStart < blend.duration) activeClipIds.add(blend.partner.id);
+        this.drawVideoClip(project, context, frameWidth, frameHeight, track, clip, time);
+      } else if (track.kind === "text") {
+        this.drawSingleTextTrack(project, context, frameWidth, frameHeight, track, time);
       }
-
-      // `findTransitionPartner` is track-kind-agnostic (see its own doc comment) — a text clip with a
-      // REAL partner blends from it through the EXACT same `compositeTransitionFrame` a video clip
-      // does, just with `drawText` (not `drawTransformed`) filling the two scratch canvases first. A
-      // `null` partner (solo fade-in) goes through `compositeSoloReveal` instead — see its own doc
-      // comment for why the two-panel path can't represent a solo fade correctly.
-      const transition = findTransitionPartner(track, clip);
-      if (transition && elapsed < transition.duration) {
-        const partner = transition.partner;
-        const progress = elapsed / transition.duration;
-        if (partner) {
-          const partnerAsset = project.assets.find((a) => a.id === partner.assetId);
-          if (partnerAsset?.kind === "text" && partnerAsset.textStyle) {
-            const outCtx = this.transitionCanvas("a", frameWidth, frameHeight);
-            const inCtx = this.transitionCanvas("b", frameWidth, frameHeight);
-            if (outCtx && inCtx) {
-              this.drawText(outCtx, frameWidth, frameHeight, partnerAsset.textContent ?? "", partnerAsset.textStyle, undefined, project.customFonts);
-              this.drawText(inCtx, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
-              withCrop(() => {
-                // Always a plain crossfade for text, whatever the stored style — export's `drawtext` fade
-                // has no per-style geometry, and the picker only offers Crossfade for text clips now;
-                // an older project's text clip set to e.g. Wipe must still preview as what it exports.
-                compositeTransitionFrame(
-                  context,
-                  frameWidth,
-                  frameHeight,
-                  "crossfade",
-                  progress,
-                  this.transitionCanvasA!,
-                  this.transitionCanvasB!
-                );
-              });
-              continue;
-            }
-          }
-        } else {
-          withCrop(() => {
-            compositeSoloReveal(
-              context,
-              frameWidth,
-              frameHeight,
-              "crossfade",
-              progress,
-              () => {
-                this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
-              },
-              { windowElapsed: elapsed, windowDuration: transition.duration, clipElapsed: elapsed, fadingOut: false }
-            );
-          });
-          continue;
-        }
-      }
-
-      // Fade-out: mirror of the fade-in case above, at this clip's own tail. `findTransitionOut` only
-      // ever resolves once nothing genuinely follows this clip (see its own doc comment) — a real
-      // successor's own `transitionIn` already owns that boundary.
-      const transitionOut = findTransitionOut(track, clip);
-      if (transitionOut) {
-        const remaining = clipEnd(clip) - time;
-        if (remaining < transitionOut.duration) {
-          const reveal = Math.min(1, Math.max(0, remaining / transitionOut.duration));
-          withCrop(() => {
-            compositeSoloReveal(
-              context,
-              frameWidth,
-              frameHeight,
-              "crossfade",
-              reveal,
-              () => {
-                this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
-              },
-              { windowElapsed: transitionOut.duration - remaining, windowDuration: transitionOut.duration, clipElapsed: elapsed, fadingOut: true }
-            );
-          });
-          continue;
-        }
-      }
-
-      withCrop(() => {
-        this.drawAnimatedText(
-          context,
-          frameWidth,
-          frameHeight,
-          asset.textContent ?? "",
-          style,
-          clip.textAnimation,
-          elapsed,
-          clipDuration(clip),
-          project.customFonts,
-          clip.wordTimings
-        );
-      });
     }
+
+    this.pauseInactive(new Set([...activeClipIds, ...activeAudioIds]));
+  }
+
+  private drawTextLayer(project: Project, context: CanvasRenderingContext2D, frameWidth: number, frameHeight: number, time: number): void {
+    for (const track of project.sequence.tracks) {
+      if (track.kind === "text" && track.visible) {
+        this.drawSingleTextTrack(project, context, frameWidth, frameHeight, track, time);
+      }
+    }
+  }
+
+  private drawSingleTextTrack(
+    project: Project,
+    context: CanvasRenderingContext2D,
+    frameWidth: number,
+    frameHeight: number,
+    track: Track,
+    time: number
+  ): void {
+    if (track.kind !== "text" || !track.visible) return;
+    const clip = clipAtTime(track, time);
+    if (!clip) return;
+    const asset = project.assets.find((a) => a.id === clip.assetId);
+    if (!asset || asset.kind !== "text" || !asset.textStyle) return;
+    const elapsed = time - clip.timelineStart;
+    const overrides = this.host.getLiveOverrides();
+    const style = overrides.find((o) => o.clipId === clip.id)?.textStyle ?? resolveTextStyle(clip, elapsed, asset.textStyle);
+
+    const textCrop = overrides.find((o) => o.clipId === clip.id)?.textCrop ?? resolveTextCrop(clip, elapsed);
+    const cropRect =
+      textCrop && !isIdentityTextCrop(textCrop)
+        ? {
+            x: frameWidth * textCrop.left,
+            y: frameHeight * textCrop.top,
+            w: frameWidth * (1 - textCrop.left - textCrop.right),
+            h: frameHeight * (1 - textCrop.top - textCrop.bottom),
+          }
+        : null;
+    function withCrop(draw: () => void): void {
+      if (cropRect) {
+        context.save();
+        context.beginPath();
+        context.rect(cropRect.x, cropRect.y, cropRect.w, cropRect.h);
+        context.clip();
+      }
+      draw();
+      if (cropRect) context.restore();
+    }
+
+    const transition = findTransitionPartner(track, clip);
+    if (transition && elapsed < transition.duration) {
+      const partner = transition.partner;
+      const progress = elapsed / transition.duration;
+      if (partner) {
+        const partnerAsset = project.assets.find((a) => a.id === partner.assetId);
+        if (partnerAsset?.kind === "text" && partnerAsset.textStyle) {
+          const outCtx = this.transitionCanvas("a", frameWidth, frameHeight);
+          const inCtx = this.transitionCanvas("b", frameWidth, frameHeight);
+          if (outCtx && inCtx) {
+            this.drawText(outCtx, frameWidth, frameHeight, partnerAsset.textContent ?? "", partnerAsset.textStyle, undefined, project.customFonts);
+            this.drawText(inCtx, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
+            withCrop(() => {
+              compositeTransitionFrame(context, frameWidth, frameHeight, "crossfade", progress, outCtx.canvas, inCtx.canvas, transition.duration);
+            });
+            return;
+          }
+        }
+      } else {
+        withCrop(() => {
+          compositeSoloReveal(
+            context,
+            frameWidth,
+            frameHeight,
+            "crossfade",
+            progress,
+            () => {
+              this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
+            },
+            { windowElapsed: elapsed, windowDuration: transition.duration, clipElapsed: elapsed, fadingOut: false }
+          );
+        });
+        return;
+      }
+    }
+
+    const transitionOut = findTransitionOut(track, clip);
+    if (transitionOut) {
+      const remaining = clipEnd(clip) - time;
+      if (remaining < transitionOut.duration) {
+        const reveal = Math.min(1, Math.max(0, remaining / transitionOut.duration));
+        withCrop(() => {
+          compositeSoloReveal(
+            context,
+            frameWidth,
+            frameHeight,
+            "crossfade",
+            reveal,
+            () => {
+              this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
+            },
+            { windowElapsed: transitionOut.duration - remaining, windowDuration: transitionOut.duration, clipElapsed: elapsed, fadingOut: true }
+          );
+        });
+        return;
+      }
+    }
+
+    withCrop(() => {
+      this.drawAnimatedText(
+        context,
+        frameWidth,
+        frameHeight,
+        asset.textContent ?? "",
+        style,
+        clip.textAnimation,
+        elapsed,
+        clipDuration(clip),
+        project.customFonts,
+        clip.wordTimings
+      );
+    });
   }
 
   /** Thin wrapper over the extracted, standalone `drawAnimatedTextFrame` (`textLayout.ts`) — same

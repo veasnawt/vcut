@@ -2,11 +2,45 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Close, Music, Pause, Play, Search } from "@veasnawt/vicons";
+import {
+  Close,
+  Cosmos,
+  Favorite,
+  Globe,
+  Headphone,
+  Music,
+  Pause,
+  Play,
+  Search,
+  Star,
+  TrendUp,
+  Video,
+} from "@veasnawt/vicons";
 import { filterMusicCatalog, MUSIC_CATEGORIES, type MusicCategory, type MusicTrack } from "../project/music.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
+
+function CategoryIcon({ category }: { category: MusicCategory }) {
+  switch (category) {
+    case "trending":
+      return <TrendUp size={13} />;
+    case "upbeat":
+      return <Star size={13} />;
+    case "phonk":
+      return <Headphone size={13} />;
+    case "lofi":
+      return <Cosmos size={13} />;
+    case "cinematic":
+      return <Video size={13} />;
+    case "pop":
+      return <Favorite size={13} />;
+    case "travel":
+      return <Globe size={13} />;
+    default:
+      return <Music size={13} />;
+  }
+}
 
 /** Music tool panel — modal dialog for browsing, previewing, and adding trending & viral music tracks
  *  directly to the timeline. Features categorized pills, instant audio preview with shared HTMLAudioElement,
@@ -14,7 +48,6 @@ import { formatDuration } from "../timeline/time.ts";
 export function MusicPanel({ onClose }: { onClose: () => void }) {
   const t = useTranslation();
   const projectId = useEditorStore((s) => s.projectId);
-  const playhead = useEditorStore((s) => s.playhead);
   const importMusicTrack = useEditorStore((s) => s.importMusicTrack);
   const setStatus = useEditorStore((s) => s.setStatus);
 
@@ -142,7 +175,7 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
                   : "bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
               }`}
             >
-              <span>{cat.icon}</span>
+              <CategoryIcon category={cat.id} />
               <span>{t(cat.label)}</span>
             </button>
           ))}
@@ -187,8 +220,9 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
                       <div className="flex items-center gap-2">
                         <span className="truncate text-xs font-semibold text-white">{track.title}</span>
                         {track.featured && (
-                          <span className="shrink-0 rounded bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">
-                            HOT
+                          <span className="flex items-center gap-1 shrink-0 rounded bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">
+                            <Star size={10} />
+                            TRENDING
                           </span>
                         )}
                       </div>

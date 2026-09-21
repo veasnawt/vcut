@@ -273,6 +273,9 @@ function StatusBar({
   const applyTextStylePresetToSelection = useEditorStore((s) => s.applyTextStylePresetToSelection);
   const armRemoveObject = useEditorStore((s) => s.armRemoveObject);
   const removeClipBackground = useEditorStore((s) => s.removeClipBackground);
+  const createTextBehindSubject = useEditorStore((s) => s.createTextBehindSubject);
+  const aiEditModalClipId = useEditorStore((s) => s.aiEditModalClipId);
+  const openAiEdit = useEditorStore((s) => s.openAiEdit);
   const previewMuted = useEditorStore((s) => s.previewMuted);
   const togglePreviewMuted = useEditorStore((s) => s.togglePreviewMuted);
   const project = useEditorStore((s) => s.project);
@@ -361,6 +364,7 @@ function StatusBar({
   // image or color-matte on a video track has no frames to inpaint), so this button must match that
   // gating rather than reusing `effectsDisabled` as-is.
   const removeObjectDisabled = !foundForVideoEffects || assetForVideoEffects?.kind !== "video";
+  const aiToolsDisabled = !foundForVideoEffects || (assetForVideoEffects?.kind !== "video" && assetForVideoEffects?.kind !== "image");
 
   // Extract Audio — same video-track gate as Effects/Pixel FX, narrowed further to a clip whose asset
   // actually HAS audio (`ExtractAudioCommand`'s own doc comment) — a silent video clip has nothing to
@@ -506,6 +510,42 @@ function StatusBar({
                 onClick: () => {
                   if (!foundForVideoEffects) return;
                   armRemoveObject(foundForVideoEffects.clip.id);
+                },
+              },
+            ]
+          : []),
+        ...(!aiToolsDisabled
+          ? [
+              {
+                key: "removeBg",
+                label: t("Remove Background"),
+                icon: <Backspace size={15} />,
+                onClick: async () => {
+                  if (!foundForVideoEffects || removingBgClipId) return;
+                  setRemovingBgClipId(foundForVideoEffects.clip.id);
+                  try {
+                    await removeClipBackground(foundForVideoEffects.clip.id);
+                  } finally {
+                    setRemovingBgClipId(null);
+                  }
+                },
+              },
+              {
+                key: "textBehind",
+                label: t("Text Behind Person"),
+                icon: <Text size={15} />,
+                onClick: async () => {
+                  if (!foundForVideoEffects) return;
+                  await createTextBehindSubject(foundForVideoEffects.clip.id);
+                },
+              },
+              {
+                key: "aiEdit",
+                label: t("AI Edit"),
+                icon: <Ai size={15} />,
+                onClick: () => {
+                  if (!foundForVideoEffects) return;
+                  setAiEditClipId(foundForVideoEffects.clip.id);
                 },
               },
             ]
@@ -1101,7 +1141,7 @@ function StatusBar({
           </ToolbarButton>
         )}
 
-        {!removeObjectDisabled && (
+        {!aiToolsDisabled && (
           <ToolbarButton
             title={t("Remove Background")}
             label={removingBgClipId === foundForVideoEffects?.clip.id ? t("Removing...") : t("Remove BG")}
@@ -1121,7 +1161,21 @@ function StatusBar({
           </ToolbarButton>
         )}
 
-        {!removeObjectDisabled && (
+        {!aiToolsDisabled && (
+          <ToolbarButton
+            title={t("Text Behind Person (AI effect)")}
+            label={t("Behind Text")}
+            pro={CREDITS_ENABLED}
+            onClick={async () => {
+              if (!foundForVideoEffects) return;
+              await createTextBehindSubject(foundForVideoEffects.clip.id);
+            }}
+          >
+            <Text size={18} />
+          </ToolbarButton>
+        )}
+
+        {!aiToolsDisabled && (
           <ToolbarButton
             title={t("AI Edit (Transform with text prompt)")}
             label={t("AI Edit")}
@@ -1177,7 +1231,15 @@ function StatusBar({
       {showMusic && <MusicPanel onClose={() => setShowMusic(false)} />}
       {showSfx && <SfxPanel onClose={() => setShowSfx(false)} />}
       {showStickers && <StickersPanel onClose={() => setShowStickers(false)} />}
-      {aiEditClipId && <AiEditModal clipId={aiEditClipId} onClose={() => setAiEditClipId(null)} />}
+      {(aiEditClipId || aiEditModalClipId) && (
+        <AiEditModal
+          clipId={(aiEditClipId || aiEditModalClipId)!}
+          onClose={() => {
+            setAiEditClipId(null);
+            openAiEdit(null);
+          }}
+        />
+      )}
       <NewTextComposer />
       {/* Zero-size, invisible — exists only so the picker menus above have a real DOM element to
           anchor to (`getBoundingClientRect()`) when opened FROM the context menu instead of their own

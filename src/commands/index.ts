@@ -7,7 +7,9 @@ import {
   addTrack,
   deleteClips,
   EditError,
+  createTextBehindSubject,
   moveClip,
+  moveTrackLayer,
   removeTrack,
   reorderTrack,
   setClipChromaKey,
@@ -1439,6 +1441,62 @@ export class ReorderTrackCommand implements Command {
     draft.sequence.tracks = this.previousOrder.map((id) => byId.get(id)).filter((t) => t !== undefined);
     draft.updatedAt = Date.now();
     return draft;
+  }
+}
+
+export class MoveTrackLayerCommand implements Command {
+  label = "Move Track Layer";
+  private previousOrder: string[] | null = null;
+  private trackId: string;
+  private direction: "up" | "down";
+
+  constructor(trackId: string, direction: "up" | "down") {
+    this.trackId = trackId;
+    this.direction = direction;
+    this.label = direction === "up" ? "Bring Layer Forward" : "Send Layer Backward";
+  }
+
+  apply(project: Project): Project {
+    this.previousOrder = project.sequence.tracks.map((t) => t.id);
+    return moveTrackLayer(project, this.trackId, this.direction);
+  }
+
+  revert(project: Project): Project {
+    if (!this.previousOrder) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    const draft = structuredClone(project);
+    const byId = new Map(draft.sequence.tracks.map((t) => [t.id, t]));
+    draft.sequence.tracks = this.previousOrder.map((id) => byId.get(id)).filter((t) => t !== undefined);
+    draft.updatedAt = Date.now();
+    return draft;
+  }
+}
+
+export class CreateTextBehindSubjectCommand implements Command {
+  label = "Text Behind Subject";
+  private previousProject: Project | null = null;
+  private sourceClipId: string;
+  private cutoutAsset: Asset;
+  private initialText?: string;
+  createdTextClipId: string | null = null;
+  createdCutoutClipId: string | null = null;
+
+  constructor(sourceClipId: string, cutoutAsset: Asset, initialText?: string) {
+    this.sourceClipId = sourceClipId;
+    this.cutoutAsset = cutoutAsset;
+    this.initialText = initialText;
+  }
+
+  apply(project: Project): Project {
+    this.previousProject = project;
+    const res = createTextBehindSubject(project, this.sourceClipId, this.cutoutAsset, this.initialText);
+    this.createdTextClipId = res.textClipId;
+    this.createdCutoutClipId = res.cutoutClipId;
+    return res.project;
+  }
+
+  revert(): Project {
+    if (!this.previousProject) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return this.previousProject;
   }
 }
 

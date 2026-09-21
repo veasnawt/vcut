@@ -12,16 +12,16 @@ import { useTranslation } from "../i18n/useTranslation.ts";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 
 const PROMPT_INSPIRATIONS = [
-  { label: "🎨 Anime Watercolor", prompt: "turn into high quality Japanese anime watercolor illustration style" },
-  { label: "🌆 Cyberpunk Neon", prompt: "change background to a futuristic cyberpunk city with vibrant neon lights" },
-  { label: "🌅 Golden Hour", prompt: "make lighting warm dramatic golden hour sunset with soft lens flare" },
-  { label: "❄️ Winter Snow", prompt: "add falling snow and cold winter frosted atmosphere" },
-  { label: "🕶️ Sunglasses & Jacket", prompt: "add stylish black sunglasses and a cool leather jacket" },
-  { label: "🖼️ Classic Oil Painting", prompt: "turn into an expressive classical Renaissance oil painting with rich textures" },
-  { label: "🚀 Sci-Fi Hologram", prompt: "transform into a futuristic glowing blue sci-fi holographic projection" },
-  { label: "🎞️ 1970s Vintage Film", prompt: "add 1970s vintage 35mm film grain, retro faded warm tones, and light leaks" },
-  { label: "🌸 Cherry Blossoms", prompt: "add falling pink cherry blossom petals and springtime pastel mood" },
-  { label: "⚡ Neon Glow", prompt: "outline subject with glowing electrical neon arcs and light streaks" },
+  { label: "Anime Watercolor", prompt: "turn into high quality Japanese anime watercolor illustration style" },
+  { label: "Cyberpunk Neon", prompt: "change background to a futuristic cyberpunk city with vibrant neon lights" },
+  { label: "Golden Hour Sunset", prompt: "make lighting warm dramatic golden hour sunset with soft lens flare" },
+  { label: "Winter Snow", prompt: "add falling snow and cold winter frosted atmosphere" },
+  { label: "Sunglasses & Jacket", prompt: "add stylish black sunglasses and a cool leather jacket" },
+  { label: "Classic Oil Painting", prompt: "turn into an expressive classical Renaissance oil painting with rich textures" },
+  { label: "Sci-Fi Hologram", prompt: "transform into a futuristic glowing blue sci-fi holographic projection" },
+  { label: "1970s Vintage Film", prompt: "add 1970s vintage 35mm film grain, retro faded warm tones, and light leaks" },
+  { label: "Cherry Blossoms", prompt: "add falling pink cherry blossom petals and springtime pastel mood" },
+  { label: "Electric Glow", prompt: "outline subject with glowing electrical neon arcs and light streaks" },
 ];
 
 export function AiEditModal({
@@ -236,7 +236,8 @@ export function AiEditModal({
         <div className="flex items-center justify-between border-t border-white/10 px-5 py-3 bg-[#0e1017]">
           <div className="flex items-center gap-2">
             <span className="flex items-center gap-1 rounded-full bg-sky-500/20 px-2 py-0.5 text-[10px] font-semibold text-sky-300">
-              ⚡ 6 {t("credits")}
+              <Ai size={11} className="text-sky-300" />
+              6 {t("credits")}
             </span>
             {credits !== null && (
               <span className="text-[11px] text-white/40">

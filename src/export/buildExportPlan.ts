@@ -2916,31 +2916,35 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     return `[${outputLabel}]`;
   }
 
-  videoTracks.forEach((track, trackIndex) => buildTrackStreams(track, trackIndex));
-
-  // Layers each track's own composited stream over the ones before it — base first, so the result is
-  // guaranteed fully opaque everywhere (required for the `yuv420p` output, which has no alpha channel
-  // at all): the base track's own gaps/padding are opaque by construction above, and compositing
-  // anything on top of a fully opaque frame always yields a fully opaque result regardless of the
-  // top layer's own alpha. A single video track skips this chain entirely — `videoOut` is just
-  // `[cv0]`, byte-for-byte the same seed the old literal `[cv]` used to be.
-  let videoOut = "[cv0]";
+  const videoTrackIndexMap = new Map<string, number>();
   const videoTrackAudioLabels: string[] = [];
-  for (let i = 1; i < videoTracks.length; i++) {
-    const label = `layer${i}`;
-    filters.push(`${videoOut}[cv${i}]overlay=format=auto[${label}]`);
-    videoOut = `[${label}]`;
-    videoTrackAudioLabels.push(`[ca${i}]`);
-  }
+  videoTracks.forEach((track, trackIndex) => {
+    videoTrackIndexMap.set(track.id, trackIndex);
+    buildTrackStreams(track, trackIndex);
+    if (trackIndex > 0) {
+      videoTrackAudioLabels.push(`[ca${trackIndex}]`);
+    }
+  });
 
-  // Text tracks composite ON TOP of the (possibly multi-layer) video, one `drawtext` per active clip
-  // chained onto the growing stream — see `buildDrawTextFilter`'s own comment for why this (not a
-  // true overlay-based multi-layer composite) is what makes text-over-video tractable at all. Tracks
-  // are walked in their own top-to-bottom order (matching the header list and `PlaybackEngine`'s
-  // own `drawTextLayer`), so a lower text track sits behind a higher one wherever they'd overlap.
+  // Layers visual tracks in sequence order so text tracks placed under a cutout/overlay video track
+  // render behind it, matching PlaybackEngine's drawVisualLayers order. Base video track [cv0] seeds
+  // videoOut (guaranteed fully opaque everywhere). Later video tracks overlay over the accumulated
+  // stream, and text tracks chain drawtext onto the accumulated stream.
+  let videoOut = "[cv0]";
   let textIndex = 0;
+
   for (const track of project.sequence.tracks) {
-    if (track.kind !== "text" || !track.visible) continue;
+    if (!track.visible) continue;
+
+    if (track.kind === "video") {
+      const vIdx = videoTrackIndexMap.get(track.id);
+      if (vIdx !== undefined && vIdx > 0) {
+        const label = `layer${vIdx}`;
+        filters.push(`${videoOut}[cv${vIdx}]overlay=format=auto[${label}]`);
+        videoOut = `[${label}]`;
+      }
+    } else if (track.kind === "text") {
+      if (track.clips.length === 0) continue;
 
     // Precomputed once per track: which clip is the OUTGOING side of some other clip's active
     // transition, and for how long — `findTransitionPartner` only ever answers "what do I blend FROM"
@@ -3223,6 +3227,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       videoOut = `[${outputLabel}]`;
     }
   }
+}
 
   // Audio-track clips (voiceover, music) are mixed over the video track's own audio — one stream per
   // audio track, via `buildAudioTrackStream` (its own comment explains why this replaced a flat

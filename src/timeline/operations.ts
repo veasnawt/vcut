@@ -1,6 +1,6 @@
-import { clipDuration, clipEnd, createClip, findAsset, findClip, findTrack, newId } from "../project/createProject.ts";
+import { clipDuration, clipEnd, createClip, createTextAsset, findAsset, findClip, findTrack, newId } from "../project/createProject.ts";
 import type { ChromaKeySettings, Asset, Clip, ClipEffects, ClipTransform, ColorCurve, ColorGrading, CoverSelection, Project, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
-import { IMAGE_DEFAULT_DURATION, isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop, isIdentityTransform, TEXT_DEFAULT_DURATION } from "../project/types.ts";
+import { DEFAULT_TEXT_STYLE, IMAGE_DEFAULT_DURATION, isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop, isIdentityTransform, TEXT_DEFAULT_DURATION } from "../project/types.ts";
 import { frameDuration, snapToFrame } from "./time.ts";
 
 /** Every operation here is PURE: it takes a project and returns a NEW project, never mutating the
@@ -442,21 +442,21 @@ export function setExportCover(project: Project, cover: CoverSelection | null): 
  *  layer), then text (composited over it), then audio (no visual role at all). Interleaving them
  *  would make "drag a clip one track down" land on a mismatched track kind and look like the drag
  *  simply failed — every editor groups by kind for this reason. */
-const TRACK_KIND_ORDER: TrackKind[] = ["video", "text", "audio"];
+export const isVisualTrackKind = (kind: TrackKind): boolean => kind === "video" || kind === "text";
 
 const TRACK_ID_PREFIX: Record<TrackKind, string> = { video: "v", audio: "a", text: "t" };
 const TRACK_NAME_PREFIX: Record<TrackKind, string> = { video: "V", audio: "A", text: "T" };
 
-/** Where a track of `kind` belongs in `tracks`, keeping `TRACK_KIND_ORDER`'s grouping: right after
- *  the last existing track whose kind is this kind or one that sorts before it. Shared by `addTrack`
- *  (a brand new track) and `reorderTrack` (moving one to "the end of its own kind-group"). */
 function insertionIndexForKind(tracks: Track[], kind: TrackKind): number {
-  const rank = TRACK_KIND_ORDER.indexOf(kind);
-  let insertAt = 0;
-  for (let i = 0; i < tracks.length; i++) {
-    if (TRACK_KIND_ORDER.indexOf(tracks[i].kind) <= rank) insertAt = i + 1;
+  if (kind === "video") {
+    const firstNonVideo = tracks.findIndex((t) => t.kind !== "video");
+    return firstNonVideo !== -1 ? firstNonVideo : tracks.length;
   }
-  return insertAt;
+  if (kind === "text") {
+    const firstAudio = tracks.findIndex((t) => t.kind === "audio");
+    return firstAudio !== -1 ? firstAudio : tracks.length;
+  }
+  return tracks.length;
 }
 
 /** One past the HIGHEST `${prefix}N` currently used by a same-kind track — NOT just "count of
@@ -483,7 +483,7 @@ function nextTrackName(tracks: Track[], kind: TrackKind): string {
   return `${prefix}${maxN + 1}`;
 }
 
-/** Adds a track, keeping same-kind tracks grouped together (see `TRACK_KIND_ORDER`). */
+/** Adds a track, placing visual tracks in the visual stack and audio tracks in the audio group. */
 export function addTrack(project: Project, kind: TrackKind, trackId?: string): Project {
   return edit(project, (draft) => {
     const name = nextTrackName(draft.sequence.tracks, kind);
@@ -504,13 +504,9 @@ function newTrackId(kind: TrackKind): string {
   return newId(TRACK_ID_PREFIX[kind]);
 }
 
-/** Moves `trackId` to just before `beforeTrackId` within its own track list. `beforeTrackId: null`
- *  means "move to the end of its kind-group" (dropped past the last track, or past the last track of
- *  its own kind).
- *
- *  Reordering is deliberately confined to same-kind tracks — see `TRACK_KIND_ORDER`, the same
- *  invariant `addTrack` maintains when inserting a new one. Locked doesn't block this: a lock
- *  protects a track's CONTENT from edits, not where the track sits in the stack. */
+/** Moves `trackId` to just before `beforeTrackId` within its own group (visual or audio).
+ *  `beforeTrackId: null` means "move to the end of its group".
+ *  Visual tracks (video and text) can be freely interleaved to control layer order! */
 export function reorderTrack(project: Project, trackId: string, beforeTrackId: string | null): Project {
   return edit(project, (draft) => {
     const tracks = draft.sequence.tracks;
@@ -519,19 +515,138 @@ export function reorderTrack(project: Project, trackId: string, beforeTrackId: s
 
     const target = beforeTrackId ? tracks.find((t) => t.id === beforeTrackId) : undefined;
     if (beforeTrackId && !target) throw new EditError("That track no longer exists");
-    if (target && target.kind !== from.kind) {
-      throw new EditError(`${from.kind[0].toUpperCase()}${from.kind.slice(1)} and ${target.kind} tracks can't be mixed together`);
+
+    if (target && isVisualTrackKind(from.kind) !== isVisualTrackKind(target.kind)) {
+      throw new EditError(`${isVisualTrackKind(from.kind) ? "Visual" : "Audio"} and ${isVisualTrackKind(target.kind) ? "visual" : "audio"} tracks can't be mixed together`);
     }
 
     const without = tracks.filter((t) => t.id !== trackId);
-    // No explicit target: append to the end of `from`'s own kind-group, mirroring `addTrack`'s own
-    // placement rule exactly — needed so this stays correct even in the edge case where `from` was
-    // the ONLY track of its kind, where "the last same-kind track's position" doesn't exist to anchor
-    // off of.
     const insertAt = target ? without.findIndex((t) => t.id === beforeTrackId) : insertionIndexForKind(without, from.kind);
     without.splice(insertAt, 0, from);
     draft.sequence.tracks = without;
   });
+}
+
+/** Moves a visual or audio track one step up or down in the layer stack.
+ *  In the timeline sequence array:
+ *  - index 0 is the base layer (drawn first)
+ *  - higher index is a higher layer (drawn on top)
+ *  Direction "up" (bring forward) moves to higher index (+1).
+ *  Direction "down" (send backward) moves to lower index (-1). */
+export function moveTrackLayer(project: Project, trackId: string, direction: "up" | "down"): Project {
+  return edit(project, (draft) => {
+    const tracks = draft.sequence.tracks;
+    const index = tracks.findIndex((t) => t.id === trackId);
+    if (index === -1) throw new EditError("That track no longer exists");
+
+    const track = tracks[index];
+    const isVisual = isVisualTrackKind(track.kind);
+
+    const targetIndex = direction === "up" ? index + 1 : index - 1;
+    if (targetIndex < 0 || targetIndex >= tracks.length) return;
+
+    const targetTrack = tracks[targetIndex];
+    if (isVisualTrackKind(targetTrack.kind) !== isVisual) return;
+
+    tracks[index] = targetTrack;
+    tracks[targetIndex] = track;
+  });
+}
+
+/** Creates the viral 'Text Behind Subject' effect:
+ *  1. Inserts a new text track directly after the source track.
+ *  2. Adds a bold styled Text clip on that text track matching the source clip's duration and position.
+ *  3. Inserts a new video track directly after the text track.
+ *  4. Adds the cutout clip with the removed background on that top video track.
+ *  Because tracks render in sequence order, the text sits behind the cutout subject! */
+export function createTextBehindSubject(
+  project: Project,
+  sourceClipId: string,
+  cutoutAsset: Asset,
+  initialText = "TEXT BEHIND PERSON",
+  customTextClipId?: string,
+  customCutoutClipId?: string
+): { project: Project; textClipId: string; cutoutClipId: string } {
+  const found = findClip(project, sourceClipId);
+  if (!found) throw new EditError("Clip not found");
+  const sourceClip = found.clip;
+
+  const textTrackId = newTrackId("text");
+  const cutoutTrackId = newTrackId("video");
+  const textClipId = customTextClipId ?? newId("c");
+  const cutoutClipId = customCutoutClipId ?? newId("c");
+
+  const duration = sourceClip.sourceOut - sourceClip.sourceIn;
+
+  // Modern bold punchy text style for the effect
+  const boldStyle: TextStyle = {
+    ...DEFAULT_TEXT_STYLE,
+    fontSize: 90,
+    bold: true,
+    color: "#ffffff",
+    align: "center",
+    shadowColor: "rgba(0,0,0,0.6)",
+    shadowOffsetX: 2,
+    shadowOffsetY: 4,
+  };
+
+  const textAsset = createTextAsset(initialText, boldStyle);
+
+  const updatedProject = edit(project, (draft) => {
+    // Add text asset
+    draft.assets.push(textAsset);
+    // Add cutout asset if not already present
+    if (!draft.assets.some((a) => a.id === cutoutAsset.id)) {
+      draft.assets.push(cutoutAsset);
+    }
+
+    const sourceTrackIdx = draft.sequence.tracks.findIndex((t) => t.id === found.track.id);
+    const insertIdx = sourceTrackIdx !== -1 ? sourceTrackIdx + 1 : insertionIndexForKind(draft.sequence.tracks, "text");
+
+    const textTrack: Track = {
+      id: textTrackId,
+      kind: "text",
+      name: nextTrackName(draft.sequence.tracks, "text"),
+      clips: [
+        {
+          id: textClipId,
+          assetId: textAsset.id,
+          timelineStart: sourceClip.timelineStart,
+          sourceIn: 0,
+          sourceOut: duration,
+        },
+      ],
+      locked: false,
+      visible: true,
+      muted: false,
+      solo: false,
+    };
+
+    const cutoutTrack: Track = {
+      id: cutoutTrackId,
+      kind: "video",
+      name: nextTrackName(draft.sequence.tracks, "video"),
+      clips: [
+        {
+          id: cutoutClipId,
+          assetId: cutoutAsset.id,
+          timelineStart: sourceClip.timelineStart,
+          sourceIn: sourceClip.sourceIn,
+          sourceOut: sourceClip.sourceOut,
+          transform: sourceClip.transform ? { ...sourceClip.transform } : undefined,
+        },
+      ],
+      locked: false,
+      visible: true,
+      muted: false,
+      solo: false,
+    };
+
+    // Insert text track, then cutout video track right above it
+    draft.sequence.tracks.splice(insertIdx, 0, textTrack, cutoutTrack);
+  });
+
+  return { project: updatedProject, textClipId, cutoutClipId };
 }
 
 /** Removes a track and everything on it. Locked is a deliberate refusal, not a silent skip like
