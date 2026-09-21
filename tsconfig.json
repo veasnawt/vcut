@@ -18,6 +18,8 @@
     // specifiers, and it requires noEmit, which is correct here: this package is consumed as source
     // via the host app's `transpilePackages`, never compiled to its own dist.
     "allowImportingTsExtensions": true,
+    "typeRoots": ["./node_modules/@types", "../../node_modules/@types"],
+    "types": ["node", "react", "react-dom"],
     "noEmit": true
   },
   "include": ["src/**/*", "tests/**/*"]
