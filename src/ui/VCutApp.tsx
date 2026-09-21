@@ -28,6 +28,7 @@ import {
   Star,
   Text,
   Transition,
+  User,
   Video,
   Volume,
 } from "@veasnawt/vicons";
@@ -518,8 +519,8 @@ function StatusBar({
           ? [
               {
                 key: "removeBg",
-                label: t("Remove Background"),
-                icon: <Backspace size={15} />,
+                label: t("Auto Cutout (Remove BG)"),
+                icon: <User size={15} />,
                 onClick: async () => {
                   if (!foundForVideoEffects || removingBgClipId) return;
                   setRemovingBgClipId(foundForVideoEffects.clip.id);
@@ -532,7 +533,7 @@ function StatusBar({
               },
               {
                 key: "textBehind",
-                label: t("Text Behind Person"),
+                label: t("Text Behind Subject"),
                 icon: <Text size={15} />,
                 onClick: async () => {
                   if (!foundForVideoEffects) return;
@@ -541,7 +542,7 @@ function StatusBar({
               },
               {
                 key: "aiEdit",
-                label: t("AI Edit"),
+                label: t("AI Generative Edit"),
                 icon: <Ai size={15} />,
                 onClick: () => {
                   if (!foundForVideoEffects) return;
@@ -1143,8 +1144,8 @@ function StatusBar({
 
         {!aiToolsDisabled && (
           <ToolbarButton
-            title={t("Remove Background")}
-            label={removingBgClipId === foundForVideoEffects?.clip.id ? t("Removing...") : t("Remove BG")}
+            title={t("Auto Cutout (Remove Background)")}
+            label={removingBgClipId === foundForVideoEffects?.clip.id ? t("Cutting...") : t("Cutout")}
             pro={CREDITS_ENABLED}
             className={removingBgClipId !== null ? "opacity-50 pointer-events-none" : ""}
             onClick={async () => {
@@ -1157,13 +1158,13 @@ function StatusBar({
               }
             }}
           >
-            <Backspace size={18} />
+            <User size={18} />
           </ToolbarButton>
         )}
 
         {!aiToolsDisabled && (
           <ToolbarButton
-            title={t("Text Behind Person (AI effect)")}
+            title={t("Text Behind Subject (3D Layer)")}
             label={t("Behind Text")}
             pro={CREDITS_ENABLED}
             onClick={async () => {

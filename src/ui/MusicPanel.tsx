@@ -54,10 +54,45 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<MusicCategory>("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [tracks, setTracks] = useState<MusicTrack[]>(() => filterMusicCatalog(selectedCategory, searchQuery));
+  const [loading, setLoading] = useState(false);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [addingId, setAddingId] = useState<string | null>(null);
 
-  const tracks = filterMusicCatalog(selectedCategory, searchQuery);
+  // Fetch real tracks from API with debounce
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({
+          category: selectedCategory,
+          q: searchQuery.trim(),
+        });
+        const res = await fetch(`/api/vcut/music?${params.toString()}`);
+        if (res.ok && active) {
+          const data = (await res.json()) as { tracks?: MusicTrack[] };
+          if (Array.isArray(data.tracks) && data.tracks.length > 0) {
+            setTracks(data.tracks);
+          } else {
+            setTracks(filterMusicCatalog(selectedCategory, searchQuery));
+          }
+        }
+      } catch {
+        if (active) {
+          setTracks(filterMusicCatalog(selectedCategory, searchQuery));
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    }, 280);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [selectedCategory, searchQuery]);
 
   // Close on Escape key
   useEffect(() => {
@@ -92,7 +127,10 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
       return;
     }
 
-    audio.src = `/api/vcut/music/stream?url=${encodeURIComponent(track.audioUrl)}`;
+    const streamUrl = track.audioUrl.startsWith("/api/")
+      ? track.audioUrl
+      : `/api/vcut/music/stream?url=${encodeURIComponent(track.audioUrl)}`;
+    audio.src = streamUrl;
     audio.currentTime = 0;
     void audio.play().catch(() => {
       // Audio playback might be blocked if user hasn't interacted
@@ -136,8 +174,13 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
               <Music size={18} />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-white">{t("Music Library")}</h2>
-              <p className="text-[11px] text-white/50">{t("Browse trending & viral music for your video")}</p>
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold text-white">{t("Music Library")}</h2>
+                {loading && (
+                  <div className="h-3 w-3 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+                )}
+              </div>
+              <p className="text-[11px] text-white/50">{t("Browse & search trending viral music for your video")}</p>
             </div>
           </div>
           <button
@@ -157,7 +200,7 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
               type="search"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder={t("Search music, genres, vibes, artists...")}
+              placeholder={t("Search millions of songs, artists, genres, vibes...")}
               className="w-full rounded-xl border border-white/10 bg-white/5 pl-9 pr-3 py-2 text-xs text-white placeholder-white/40 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
             />
           </div>
@@ -183,7 +226,7 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
 
         {/* Tracks List */}
         <div className="scrollbar-none min-h-0 flex-1 overflow-y-auto p-4 space-y-2">
-          {tracks.length === 0 ? (
+          {tracks.length === 0 && !loading ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <Music size={32} className="text-white/20 mb-2" />
               <p className="text-xs text-white/50">{t("No music tracks found")}</p>
@@ -201,19 +244,34 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
                       : "border-white/5 bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.05]"
                   }`}
                 >
-                  {/* Left: Play/Pause Button */}
+                  {/* Left: Artwork + Play/Pause Button */}
                   <div className="flex items-center gap-3 min-w-0">
-                    <button
-                      onClick={() => togglePreview(track)}
-                      aria-label={isPlaying ? t("Pause preview") : t("Play preview")}
-                      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition ${
-                        isPlaying
-                          ? "bg-sky-500 text-white shadow-md shadow-sky-500/20"
-                          : "bg-white/10 text-white hover:bg-sky-500 hover:text-white"
-                      }`}
-                    >
-                      {isPlaying ? <Pause size={16} /> : <Play size={16} className="ml-0.5" />}
-                    </button>
+                    <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-lg bg-white/5">
+                      {track.coverUrl ? (
+                        <img
+                          src={track.coverUrl}
+                          alt={track.title}
+                          className="h-full w-full object-cover"
+                          loading="lazy"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center text-white/30">
+                          <Music size={20} />
+                        </div>
+                      )}
+                      {/* Play/Pause overlay */}
+                      <button
+                        onClick={() => togglePreview(track)}
+                        aria-label={isPlaying ? t("Pause preview") : t("Play preview")}
+                        className={`absolute inset-0 flex items-center justify-center transition ${
+                          isPlaying
+                            ? "bg-sky-500/80 text-white"
+                            : "bg-black/40 text-white opacity-0 group-hover:opacity-100"
+                        }`}
+                      >
+                        {isPlaying ? <Pause size={18} /> : <Play size={18} className="ml-0.5" />}
+                      </button>
+                    </div>
 
                     {/* Middle: Title, Artist, Tags */}
                     <div className="min-w-0">
@@ -232,6 +290,12 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
                           <>
                             <span>•</span>
                             <span>{track.bpm} BPM</span>
+                          </>
+                        )}
+                        {track.tags && track.tags.length > 0 && (
+                          <>
+                            <span>•</span>
+                            <span className="truncate capitalize">{track.tags[0]}</span>
                           </>
                         )}
                       </div>

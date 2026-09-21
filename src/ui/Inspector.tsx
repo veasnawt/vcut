@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Ai, Backspace, ChevronDown, Delete, Text, Upload } from "@veasnawt/vicons";
+import { Ai, Backspace, ChevronDown, Delete, Text, Upload, User } from "@veasnawt/vicons";
 import {
   cancelCaptions,
   cancelInpaint,
@@ -508,13 +508,14 @@ type LocalSetupPhase = "idle" | "running" | "done" | "failed" | "cancelled";
  *  same reasoning that keeps it out of the store there. `removeObjectRect`/`removeObjectArmedClipId`
  *  DO live in the store (see its own comment) since `RemoveObjectOverlay`, a completely different
  *  component mounted over the Preview canvas, needs to read/drive the same drawn rectangle. */
-function RemoveBackgroundSection({ clipId }: { clipId: string }) {
+function SmartCutoutSection({ clipId }: { clipId: string }) {
   const t = useTranslation();
   const removeClipBackground = useEditorStore((s) => s.removeClipBackground);
   const createTextBehindSubject = useEditorStore((s) => s.createTextBehindSubject);
   const openAiEdit = useEditorStore((s) => s.openAiEdit);
   const [removing, setRemoving] = useState(false);
   const [creatingBehind, setCreatingBehind] = useState(false);
+  const [behindText, setBehindText] = useState("TEXT");
 
   async function handleRemoveBg() {
     if (removing || creatingBehind) return;
@@ -530,58 +531,105 @@ function RemoveBackgroundSection({ clipId }: { clipId: string }) {
     if (removing || creatingBehind) return;
     setCreatingBehind(true);
     try {
-      await createTextBehindSubject(clipId);
+      await createTextBehindSubject(clipId, behindText.trim() || undefined);
     } finally {
       setCreatingBehind(false);
     }
   }
 
   return (
-    <div className="space-y-3 text-xs">
-      <p className="text-white/60">
-        {t("Instantly remove the background using AI cutout or place stylish text behind the subject.")}
-      </p>
-      <div className="space-y-2">
+    <div className="space-y-2.5 text-xs">
+      {/* 1. Auto Cutout Card */}
+      <div className="rounded-lg border border-white/5 bg-white/[0.02] p-3 space-y-2 hover:border-white/10 transition">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex h-6 w-6 items-center justify-center rounded bg-sky-500/10 text-sky-400">
+              <User size={13} />
+            </div>
+            <span className="font-semibold text-white text-[12px]">{t("Auto Cutout")}</span>
+          </div>
+          <span className="text-[10px] text-white/40">3 {t("credits")}</span>
+        </div>
+        <p className="text-[11px] text-white/45 leading-relaxed">
+          {t("Automatically isolate the main subject and remove the background.")}
+        </p>
         <button
           onClick={handleRemoveBg}
           disabled={removing || creatingBehind}
-          className="flex w-full items-center justify-between gap-2 rounded-lg bg-sky-500/20 border border-sky-500/30 px-3 py-2 text-xs font-semibold text-sky-200 hover:bg-sky-500/30 transition disabled:opacity-50"
+          className="w-full flex items-center justify-center gap-2 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 py-1.5 px-3 text-[11px] font-medium text-white transition active:scale-[0.99] disabled:opacity-50"
         >
-          <div className="flex items-center gap-2">
-            <Backspace size={14} className="shrink-0 text-sky-400" />
-            <span>{removing ? t("Removing background...") : t("Remove Background (AI)")}</span>
-          </div>
-          <span className="rounded bg-sky-500/30 px-1.5 py-0.5 text-[10px] font-bold text-sky-300">
-            3 {t("credits")}
-          </span>
+          {removing ? (
+            <>
+              <div className="h-3 w-3 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
+              <span>{t("Removing background...")}</span>
+            </>
+          ) : (
+            <span>{t("Apply Cutout")}</span>
+          )}
         </button>
+      </div>
 
-        <button
-          onClick={handleTextBehind}
-          disabled={removing || creatingBehind}
-          className="flex w-full items-center justify-between gap-2 rounded-lg bg-purple-500/20 border border-purple-500/30 px-3 py-2 text-xs font-semibold text-purple-200 hover:bg-purple-500/30 transition disabled:opacity-50"
-        >
+      {/* 2. Text Behind Subject Card */}
+      <div className="rounded-lg border border-white/5 bg-white/[0.02] p-3 space-y-2 hover:border-white/10 transition">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Text size={14} className="shrink-0 text-purple-400" />
-            <span>{creatingBehind ? t("Creating text behind person...") : t("Text Behind Person (AI)")}</span>
+            <div className="flex h-6 w-6 items-center justify-center rounded bg-purple-500/10 text-purple-400">
+              <Text size={13} />
+            </div>
+            <span className="font-semibold text-white text-[12px]">{t("Text Behind Subject")}</span>
           </div>
-          <span className="rounded bg-purple-500/30 px-1.5 py-0.5 text-[10px] font-bold text-purple-300">
-            {t("Viral")}
-          </span>
-        </button>
+          <span className="text-[10px] text-purple-400/80 font-medium">{t("Layered")}</span>
+        </div>
+        <p className="text-[11px] text-white/45 leading-relaxed">
+          {t("Creates a cutout layer and inserts customizable text behind the person.")}
+        </p>
+        <div className="flex items-center gap-1.5 pt-0.5">
+          <input
+            type="text"
+            value={behindText}
+            onChange={(e) => setBehindText(e.target.value)}
+            placeholder={t("e.g. TEXT")}
+            maxLength={30}
+            className="flex-1 min-w-0 rounded border border-white/10 bg-white/5 px-2.5 py-1.5 text-[11px] text-white placeholder-white/30 focus:border-sky-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+          />
+          <button
+            onClick={handleTextBehind}
+            disabled={removing || creatingBehind}
+            className="shrink-0 flex items-center gap-1.5 rounded bg-sky-500 hover:bg-sky-400 px-3 py-1.5 text-[11px] font-semibold text-white transition active:scale-[0.99] disabled:opacity-50"
+          >
+            {creatingBehind ? (
+              <>
+                <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                <span>{t("Creating...")}</span>
+              </>
+            ) : (
+              <span>{t("Create Effect")}</span>
+            )}
+          </button>
+        </div>
+      </div>
 
+      {/* 3. AI Scene Edit Card */}
+      <div className="rounded-lg border border-white/5 bg-white/[0.02] p-3 space-y-2 hover:border-white/10 transition">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex h-6 w-6 items-center justify-center rounded bg-emerald-500/10 text-emerald-400">
+              <Ai size={13} />
+            </div>
+            <span className="font-semibold text-white text-[12px]">{t("AI Generative Edit")}</span>
+          </div>
+          <span className="text-[10px] text-white/40">3 {t("credits")}</span>
+        </div>
+        <p className="text-[11px] text-white/45 leading-relaxed">
+          {t("Transform visual style, replace scene elements, or alter outfits with text prompts.")}
+        </p>
         <button
           onClick={() => openAiEdit(clipId)}
           disabled={removing || creatingBehind}
-          className="flex w-full items-center justify-between gap-2 rounded-lg bg-emerald-500/20 border border-emerald-500/30 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/30 transition disabled:opacity-50"
+          className="w-full flex items-center justify-center gap-2 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 py-1.5 px-3 text-[11px] font-medium text-white transition active:scale-[0.99] disabled:opacity-50"
         >
-          <div className="flex items-center gap-2">
-            <Ai size={14} className="shrink-0 text-emerald-400" />
-            <span>{t("AI Edit (Transform / Replace)")}</span>
-          </div>
-          <span className="rounded bg-emerald-500/30 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300">
-            3 {t("credits")}
-          </span>
+          <Ai size={13} className="text-emerald-400" />
+          <span>{t("Open AI Edit Studio...")}</span>
         </button>
       </div>
     </div>
@@ -2180,13 +2228,13 @@ export function Inspector() {
 
                 {activeTab === "transform" && track.kind === "video" && (asset?.kind === "video" || asset?.kind === "image") && (
                   <CollapsibleSection
-                    title={t("Background Remover")}
+                    title={t("Smart Cutout & AI")}
                     accent="bg-sky-400"
-                    open={!collapsed.has("Background Remover")}
-                    onToggle={() => toggleSection("Background Remover")}
+                    open={!collapsed.has("Smart Cutout & AI")}
+                    onToggle={() => toggleSection("Smart Cutout & AI")}
                     pro={CREDITS_ENABLED}
                   >
-                    <RemoveBackgroundSection clipId={clip.id} />
+                    <SmartCutoutSection clipId={clip.id} />
                   </CollapsibleSection>
                 )}
 
