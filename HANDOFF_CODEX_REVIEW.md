@@ -6,6 +6,29 @@ Updated: 2026-09-21 (Asia/Bangkok).
 
 The user authorized implementation, testing, and subsequent commit/push of the recent updates ("approved"). The latest transition changes (cross transition ribbon redesign, handles, center badge, and blur overhaul), hosted captions voiceover path fix, iOS Safari microphone access fix (WebKit AudioSession handling and prerequisite button removal), production web deployment (vcut.io), and all native builds (Windows Desktop, Android APK, iOS Capacitor sync) have been completed and verified.
 
+### AI Background Remover, AI Edit, and Music Tool Release — 2026-09-21
+
+- **Features Implemented:**
+  1. **AI Background Remover Tool**:
+     - Route: `POST /api/vcut/ai-background-remove` using Replicate `briaai/rmbg-1.4` (3 credits; preserves ~60% margin). Supports both images and video frames, generates transparent PNG assets, and handles desktop/mobile offline sync.
+     - UI: Toolbar **Remove BG** button and Inspector **Remove Background (AI)** collapsible section. Uses `SwapClipAssetCommand` for instant undo/redo.
+  2. **AI Edit Tool (Generative Text-to-Edit)**:
+     - Route: `POST /api/vcut/ai-edit` using Replicate `timothybrooks/instruct-pix2pix` (6 credits) with Subtle, Balanced, and Creative guidance strengths.
+     - UI: `AiEditModal.tsx` with Before/After preview split, prompt ideas, Pro credit gate, and options to **Apply to Clip** or **Add as New Clip**.
+  3. **Viral & Trending Song / Music Tool**:
+     - Catalog & Types: `packages/vcut/src/project/music.ts` with categories (`trending`, `upbeat`, `phonk`, `lofi`, `cinematic`, `pop`, `travel`).
+     - Proxy: `GET /api/vcut/music/stream` audio streaming proxy ensuring all preview audio originates from `'self'` to strictly honor production CSP.
+     - Route: `GET /api/vcut/music` (search & filter) and `POST /api/vcut/music` (download & import with waveform analysis).
+     - UI: `MusicPanel.tsx` with category pills, live search, audio player, and **+ Add to Timeline** placement.
+  4. **Internationalization (i18n)**:
+     - Complete Khmer (`km`) and English (`en`) translations in `packages/vcut/src/i18n/translations.ts`.
+- **Git Commits & Push:**
+  - `packages/vcut`: commit `014c53e` pushed to `https://github.com/veasnawt/vcut.git` (`main`).
+  - `veasna-os`: commit `6cd191f` pushed to `https://github.com/veasnawt/veasna-os.git` (`main`).
+- **Production Deployment:**
+  - Railway service `vcut` deployment `df79051d-0909-4c94-8227-89ed6dbca859` (**SUCCESS**).
+  - Verified live: `https://vcut.io/` (HTTP 200), `https://vcut.io/edit` (HTTP 200), and `https://vcut.io/api/vcut/music` (HTTP 401 Unauthorized for unauthenticated, route active).
+
 ### HTTP Security Headers & MDN Observatory Compliance — 2026-09-21
 
 - **Problem:** Missing HTTP security response headers on `vcut.io` resulted in MDN Observatory failures for CSP, HSTS, X-Content-Type-Options, X-Frame-Options/frame-ancestors, and Referrer-Policy.
