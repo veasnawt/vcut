@@ -63,6 +63,16 @@ export interface TextBlockLayout {
   lineWidths: number[];
 }
 
+export function applyTextTransform(text: string, transform?: "none" | "uppercase" | "lowercase" | "capitalize"): string {
+  if (!transform || transform === "none") return text;
+  if (transform === "uppercase") return text.toUpperCase();
+  if (transform === "lowercase") return text.toLowerCase();
+  if (transform === "capitalize") {
+    return text.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  return text;
+}
+
 /** Measures and positions a text block — the ONE place this math is written, shared by
  *  `PlaybackEngine.drawText` (which then draws it) and `TextTransformHandles` (which needs the same
  *  box, unrotated, to position on-canvas drag/resize/rotate handles). Mutates `context.font`/
@@ -82,7 +92,8 @@ export function computeTextBlock(
   style: TextStyle,
   customFonts: CustomFontAsset[] = []
 ): TextBlockLayout {
-  const lines = content.length > 0 ? content.split("\n") : [""];
+  const transformed = applyTextTransform(content, style.textTransform);
+  const lines = transformed.length > 0 ? transformed.split("\n") : [""];
   const font = resolveFont(style.fontFamily, customFonts);
   const variant = resolveFontVariant(font, style.bold, style.italic);
   const weight = variant.bold ? "bold" : "normal";
@@ -91,24 +102,13 @@ export function computeTextBlock(
   context.textBaseline = "alphabetic";
   context.textAlign = "left"; // always left — `blockLeft` below already encodes the align setting.
 
+  if ("letterSpacing" in context) {
+    (context as unknown as { letterSpacing: string }).letterSpacing = style.letterSpacing ? `${style.letterSpacing}px` : "0px";
+  }
+
   const lineHeight = style.fontSize * style.lineHeightMultiplier;
   const blockHeight = lineHeight * lines.length;
 
-  // Real ink metrics of the ACTUAL rendered glyphs (not a fontSize-based guess) for where the
-  // baseline sits within its own line. Deliberately `actualBoundingBox*`, not `fontBoundingBox*`: the
-  // latter reports the FONT's own worst-case design metrics — generous enough to fit any character the
-  // face could ever render, descenders included, whether or not this string has any — so an all-caps,
-  // no-descender line like "BEYOND PERSPECTIVE" still got padded as if it had one, visibly shoving the
-  // text toward the bottom of its own background box (confirmed live, not just from spec: a red-boxed
-  // logo wordmark with zero descenders showed a large gap above the text and almost none below).
-  // `actualBoundingBox*` measures the tight ink extent of THIS specific text instead, which is what
-  // "equal padding around what I can actually see" means. Taken as the max across every line (not
-  // just the first) so a multi-line block with, say, one all-caps line and one with a Khmer subscript
-  // stack centers on whichever line is genuinely tallest/deepest, not whichever happens to be first.
-  // Any EXTRA leading `lineHeightMultiplier` adds beyond that real ink height is split evenly
-  // above/below, the same way CSS `line-height` distributes leading around a font's own box.
-  // Measured once per line and reused for `blockWidth` below too — no reason to call `measureText`
-  // twice per line for two different pieces of the same result.
   const lineMetrics = lines.map((line) => context.measureText(line || " "));
   const lineWidths = lineMetrics.map((m) => m.width);
   const blockWidth = Math.max(...lineWidths);
@@ -116,16 +116,6 @@ export function computeTextBlock(
   const descent = Math.max(...lineMetrics.map((m) => m.actualBoundingBoxDescent ?? 0)) || style.fontSize * 0.2;
   const baselineOffset = ascent + (lineHeight - (ascent + descent)) / 2;
 
-  // The block's own on-screen position depends ONLY on `offsetX`/`offsetY` — the frame's center,
-  // nudged by the user's own drag/offset — never on `align`. `align` used to also pick WHICH edge the
-  // block anchors to (left hugging the left margin, right hugging the right margin), so clicking
-  // through Left/Center/Right visibly teleported the whole text box across the frame instead of just
-  // re-justifying its lines — confirmed as a real, reported bug, not a deliberate design: a text box
-  // you've dragged to a specific spot should stay there when you change how its lines justify, exactly
-  // like every word processor/design tool. `blockLeft`'s own align branch (now the only place `align`
-  // still matters, alongside the per-LINE `lineX` offset `PlaybackEngine.drawText` computes from
-  // `lineWidths`) is gone for the same reason: the box's own left edge is now always `blockWidth/2`
-  // left of center, regardless of which way its lines justify.
   const anchorX = canvasWidth / 2 + style.offsetX;
   const blockLeft = anchorX - blockWidth / 2;
   const blockTop = canvasHeight / 2 + style.offsetY - blockHeight / 2;
@@ -150,11 +140,6 @@ export function drawTextFrame(
   customFonts: CustomFontAsset[] = []
 ): void {
   const block = computeTextBlock(context, frameWidth, frameHeight, content, style, customFonts);
-  // The block's NATURAL (align-anchored, offset-EXCLUDED) position — offsetX/Y are additive terms in
-  // `computeTextBlock`'s own anchor formula, so subtracting them back out recovers this without a
-  // second measurement pass. This is what gets rotated; the offset then applies as a translate
-  // OUTSIDE the rotation, exactly mirroring `buildRotatedDrawTextFilter`'s draw-then-rotate-then-
-  // overlay order.
   const drawLeft = style.rotationDeg !== 0 ? block.blockLeft - style.offsetX : block.blockLeft;
   const drawTop = style.rotationDeg !== 0 ? block.blockTop - style.offsetY : block.blockTop;
   const frameCenterX = frameWidth / 2;
@@ -168,26 +153,37 @@ export function drawTextFrame(
     context.translate(-frameCenterX, -frameCenterY);
   }
 
-  if (style.backgroundColor) {
-    context.fillStyle = style.backgroundColor;
-    context.fillRect(
-      drawLeft - TEXT_BOX_PADDING,
-      drawTop - TEXT_BOX_PADDING,
-      block.blockWidth + TEXT_BOX_PADDING * 2,
-      block.blockHeight + TEXT_BOX_PADDING * 2
-    );
+  if (style.opacity !== undefined) {
+    context.globalAlpha *= Math.max(0, Math.min(1, style.opacity));
+  }
+  if (style.blendMode) {
+    context.globalCompositeOperation = style.blendMode;
   }
 
-  // `baselineOffset` is derived from the browser's own real font metrics (see `computeTextBlock`'s
-  // own comment) — not a fontSize-based guess, so the glyphs actually center within their own
-  // padded background box regardless of how a script's ascent/descent proportions compare to Latin.
+  if (style.backgroundColor) {
+    const pad = style.backgroundPadding ?? TEXT_BOX_PADDING;
+    const bgX = drawLeft - pad;
+    const bgY = drawTop - pad;
+    const bgW = block.blockWidth + pad * 2;
+    const bgH = block.blockHeight + pad * 2;
+    const radius = style.backgroundCornerRadius ?? 0;
+
+    context.save();
+    if (style.backgroundOpacity !== undefined) {
+      context.globalAlpha *= Math.max(0, Math.min(1, style.backgroundOpacity));
+    }
+    context.fillStyle = style.backgroundColor;
+    if (radius > 0 && typeof (context as unknown as { roundRect?: Function }).roundRect === "function") {
+      context.beginPath();
+      (context as unknown as { roundRect: Function }).roundRect(bgX, bgY, bgW, bgH, radius);
+      context.fill();
+    } else {
+      context.fillRect(bgX, bgY, bgW, bgH);
+    }
+    context.restore();
+  }
+
   const firstBaseline = drawTop + block.baselineOffset;
-  // Per-LINE horizontal offset within the block — `drawLeft` alone is only correct for `align:
-  // "left"` (every line already starts flush there); a shorter line under "center"/"right" needs to
-  // sit `(blockWidth - thisLine'sWidth)` further right (all the way, for right; split in half, for
-  // center) so multi-line text visually centers/right-aligns line-by-line, not just as one flush-left
-  // block that happens to sit in a centered/right-anchored box. Matches FFmpeg's own `text_align`
-  // option in the export path exactly — see `buildDrawTextStyleParams`'s own comment.
   const lineX = (i: number) => {
     if (style.align === "left") return drawLeft;
     const gap = block.blockWidth - block.lineWidths[i];
@@ -196,41 +192,86 @@ export function drawTextFrame(
   const drawLines = (draw: (line: string, x: number, y: number) => void) =>
     block.lines.forEach((line, i) => draw(line, lineX(i), firstBaseline + block.lineHeight * i));
 
-  // Set AFTER the background box (which shouldn't get a shadow of its own) and left active through
-  // both the stroke and fill draws below — canvas naturally draws a shadow under EACH, but since both
-  // land on the identical glyph shapes, the two shadow instances just overlap into one, matching
-  // FFmpeg's own fixed draw order for `drawtext`: shadow, then outline, then fill (see
-  // `buildDrawTextStyleParams`'s comment). `shadowBlur` stays 0 — FFmpeg's shadow is a hard-edged
-  // offset duplicate, not a blurred one, and there's no blur radius to match if there were.
-  if (style.shadowColor) {
+  if ("letterSpacing" in context) {
+    (context as unknown as { letterSpacing: string }).letterSpacing = style.letterSpacing ? `${style.letterSpacing}px` : "0px";
+  }
+
+  if (style.glowColor) {
+    context.shadowColor = style.glowColor;
+    context.shadowOffsetX = 0;
+    context.shadowOffsetY = 0;
+    context.shadowBlur = style.glowBlur ?? 16;
+  } else if (style.shadowColor) {
     context.shadowColor = style.shadowColor;
     context.shadowOffsetX = style.shadowOffsetX;
     context.shadowOffsetY = style.shadowOffsetY;
-    context.shadowBlur = 0;
+    context.shadowBlur = style.shadowBlur ?? 0;
   }
 
+  // Secondary outer stroke (layered outlines)
+  if (style.strokeColor2 && style.strokeWidth2 && style.strokeWidth2 > 0) {
+    context.save();
+    context.strokeStyle = style.strokeColor2;
+    context.lineWidth = (style.strokeWidth + style.strokeWidth2) * 2;
+    context.lineJoin = "round";
+    drawLines((line, x, y) => context.strokeText(line, x, y));
+    context.restore();
+  }
+
+  // Primary stroke
   if (style.strokeColor) {
     context.strokeStyle = style.strokeColor;
-    // `strokeText` centers the stroke ON the glyph's own outline — half the width lands INSIDE the
-    // glyph (invisible, covered by the fill drawn next) and half OUTSIDE (the only part actually
-    // visible). Doubling here makes the VISIBLE thickness equal `strokeWidth`, matching FFmpeg's
-    // `borderw`, which specifies the outer border thickness directly rather than a centered stroke.
     context.lineWidth = style.strokeWidth * 2;
-    context.lineJoin = "round"; // avoids spiky miters at sharp glyph corners, closer to FFmpeg's own border rendering
+    context.lineJoin = "round";
     drawLines((line, x, y) => context.strokeText(line, x, y));
   }
 
+  // Multi-shadow layers if specified
+  if (style.shadows && style.shadows.length > 0) {
+    for (const sh of style.shadows) {
+      context.save();
+      context.shadowColor = sh.color;
+      context.shadowOffsetX = sh.offsetX;
+      context.shadowOffsetY = sh.offsetY;
+      context.shadowBlur = sh.blur;
+      context.fillStyle = sh.color;
+      drawLines((line, x, y) => context.fillText(line, x, y));
+      context.restore();
+    }
+  }
+
+  // Determine fill (gradient or solid)
+  let fill: string | CanvasGradient = style.color;
+  if (style.gradient && style.gradient.stops && style.gradient.stops.length >= 2) {
+    if (style.gradient.type === "radial") {
+      const cx = drawLeft + block.blockWidth / 2;
+      const cy = drawTop + block.blockHeight / 2;
+      const r = Math.max(block.blockWidth, block.blockHeight) / 2;
+      const grad = context.createRadialGradient(cx, cy, 0, cx, cy, r);
+      for (const stop of style.gradient.stops) {
+        grad.addColorStop(stop.offset, stop.color);
+      }
+      fill = grad;
+    } else {
+      const angleRad = ((style.gradient.angleDeg ?? 180) * Math.PI) / 180;
+      const cx = drawLeft + block.blockWidth / 2;
+      const cy = drawTop + block.blockHeight / 2;
+      const halfW = block.blockWidth / 2;
+      const halfH = block.blockHeight / 2;
+      const r = Math.hypot(halfW, halfH);
+      const x0 = cx - Math.sin(angleRad) * r;
+      const y0 = cy + Math.cos(angleRad) * r;
+      const x1 = cx + Math.sin(angleRad) * r;
+      const y1 = cy - Math.cos(angleRad) * r;
+      const grad = context.createLinearGradient(x0, y0, x1, y1);
+      for (const stop of style.gradient.stops) {
+        grad.addColorStop(stop.offset, stop.color);
+      }
+      fill = grad;
+    }
+  }
+
   if (wordHighlight) {
-    // Per-word fill only — shadow/stroke/background above stay whole-line, matching how a caption's
-    // outline/box reads as one continuous shape rather than N separate word-sized ones. Walks EVERY
-    // `segmentLine` token (not just the word-like ones) so whitespace/punctuation between words
-    // still advances `x` by its own measured width rather than an assumed space size — matters for
-    // tab-indented or multiple-space-separated captions, where a guessed width would visibly drift
-    // the line. `segmentLine` (not a plain `.split(/\s+/)`) is what makes this correct for Khmer and
-    // the other scripts that don't space words at all — see its own comment in
-    // `timeline/textAnimation.ts`. `globalWordIndex` only advances on WORD segments, matching
-    // `splitWords`'s own counting exactly, so `wordHighlight.activeWordIndex` always lands on the
-    // same word this loop actually colors.
     let globalWordIndex = 0;
     block.lines.forEach((line, i) => {
       const y = firstBaseline + block.lineHeight * i;
@@ -241,16 +282,43 @@ export function drawTextFrame(
           x += context.measureText(token.text).width;
           continue;
         }
-        context.fillStyle = globalWordIndex === wordHighlight.activeWordIndex ? wordHighlight.highlightColor : style.color;
+        context.fillStyle = globalWordIndex === wordHighlight.activeWordIndex ? wordHighlight.highlightColor : fill;
         context.fillText(token.text, x, y);
         x += context.measureText(token.text).width;
         globalWordIndex++;
       }
     });
   } else {
-    context.fillStyle = style.color;
+    context.fillStyle = fill;
     drawLines((line, x, y) => context.fillText(line, x, y));
   }
+
+  // Text decorations (underline / line-through)
+  if (style.textDecoration && style.textDecoration !== "none") {
+    context.save();
+    context.strokeStyle = typeof fill === "string" ? fill : style.color;
+    context.lineWidth = Math.max(2, Math.round(style.fontSize * 0.06));
+    block.lines.forEach((line, i) => {
+      const y = firstBaseline + block.lineHeight * i;
+      const x = lineX(i);
+      const w = block.lineWidths[i];
+      if (style.textDecoration === "underline") {
+        const lineY = y + Math.round(style.fontSize * 0.1);
+        context.beginPath();
+        context.moveTo(x, lineY);
+        context.lineTo(x + w, lineY);
+        context.stroke();
+      } else if (style.textDecoration === "line-through") {
+        const lineY = y - Math.round(style.fontSize * 0.28);
+        context.beginPath();
+        context.moveTo(x, lineY);
+        context.lineTo(x + w, lineY);
+        context.stroke();
+      }
+    });
+    context.restore();
+  }
+
   context.restore();
 }
 

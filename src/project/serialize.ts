@@ -14,6 +14,8 @@ import type {
   Project,
   Sequence,
   TextCrop,
+  TextGradient,
+  TextShadow,
   TextStyle,
   Track,
 } from "./types.ts";
@@ -60,6 +62,42 @@ function bool(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function parseTextGradient(raw: unknown): TextGradient | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const type = r.type === "radial" ? "radial" : "linear";
+  const angleDeg = typeof r.angleDeg === "number" && Number.isFinite(r.angleDeg) ? r.angleDeg : 180;
+  if (!Array.isArray(r.stops) || r.stops.length === 0) return undefined;
+  const stops = r.stops
+    .map((s): { offset: number; color: string } | undefined => {
+      if (!s || typeof s !== "object") return undefined;
+      const sr = s as Record<string, unknown>;
+      if (typeof sr.offset !== "number" || !Number.isFinite(sr.offset)) return undefined;
+      if (typeof sr.color !== "string" || !sr.color.trim()) return undefined;
+      return { offset: Math.max(0, Math.min(1, sr.offset)), color: sr.color.trim() };
+    })
+    .filter((s): s is { offset: number; color: string } => s !== undefined)
+    .sort((a, b) => a.offset - b.offset);
+  if (stops.length < 2) return undefined;
+  return { type, angleDeg, stops };
+}
+
+function parseTextShadows(raw: unknown): TextShadow[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const shadows = raw
+    .map((s): TextShadow | undefined => {
+      if (!s || typeof s !== "object") return undefined;
+      const sr = s as Record<string, unknown>;
+      if (typeof sr.color !== "string" || !sr.color.trim()) return undefined;
+      const offsetX = typeof sr.offsetX === "number" && Number.isFinite(sr.offsetX) ? sr.offsetX : 0;
+      const offsetY = typeof sr.offsetY === "number" && Number.isFinite(sr.offsetY) ? sr.offsetY : 0;
+      const blur = typeof sr.blur === "number" && Number.isFinite(sr.blur) ? Math.max(0, sr.blur) : 0;
+      return { color: sr.color.trim(), offsetX, offsetY, blur };
+    })
+    .filter((s): s is TextShadow => s !== undefined);
+  return shadows.length > 0 ? shadows : undefined;
+}
+
 /** Same leniency as `parseClipTransform` below, and for the same reason: a text asset's style is
  *  additive presentation data, not something that defines what the asset fundamentally IS the way
  *  `textContent` does. Missing/malformed fields fall back field-by-field to `DEFAULT_TEXT_STYLE`
@@ -74,6 +112,10 @@ function parseTextStyle(raw: unknown): TextStyle {
     typeof r.fontFamily === "string" && FONT_REGISTRY.some((f) => f.id === r.fontFamily)
       ? r.fontFamily
       : DEFAULT_TEXT_STYLE.fontFamily;
+
+  const gradient = parseTextGradient(r.gradient);
+  const shadows = parseTextShadows(r.shadows);
+
   return {
     fontFamily,
     fontSize: num(r.fontSize, "text font size", DEFAULT_TEXT_STYLE.fontSize),
@@ -82,11 +124,46 @@ function parseTextStyle(raw: unknown): TextStyle {
     italic: bool(r.italic, DEFAULT_TEXT_STYLE.italic),
     align,
     ...(typeof r.backgroundColor === "string" ? { backgroundColor: r.backgroundColor } : null),
+    ...(typeof r.backgroundOpacity === "number" && Number.isFinite(r.backgroundOpacity)
+      ? { backgroundOpacity: Math.max(0, Math.min(1, r.backgroundOpacity)) }
+      : null),
+    ...(typeof r.backgroundPadding === "number" && Number.isFinite(r.backgroundPadding)
+      ? { backgroundPadding: Math.max(0, r.backgroundPadding) }
+      : null),
+    ...(typeof r.backgroundCornerRadius === "number" && Number.isFinite(r.backgroundCornerRadius)
+      ? { backgroundCornerRadius: Math.max(0, r.backgroundCornerRadius) }
+      : null),
     ...(typeof r.strokeColor === "string" ? { strokeColor: r.strokeColor } : null),
     strokeWidth: num(r.strokeWidth, "text stroke width", DEFAULT_TEXT_STYLE.strokeWidth),
+    ...(typeof r.strokeColor2 === "string" ? { strokeColor2: r.strokeColor2 } : null),
+    ...(typeof r.strokeWidth2 === "number" && Number.isFinite(r.strokeWidth2)
+      ? { strokeWidth2: Math.max(0, r.strokeWidth2) }
+      : null),
     ...(typeof r.shadowColor === "string" ? { shadowColor: r.shadowColor } : null),
     shadowOffsetX: num(r.shadowOffsetX, "text shadow offset", DEFAULT_TEXT_STYLE.shadowOffsetX),
     shadowOffsetY: num(r.shadowOffsetY, "text shadow offset", DEFAULT_TEXT_STYLE.shadowOffsetY),
+    ...(typeof r.shadowBlur === "number" && Number.isFinite(r.shadowBlur)
+      ? { shadowBlur: Math.max(0, r.shadowBlur) }
+      : null),
+    ...(shadows ? { shadows } : null),
+    ...(typeof r.glowColor === "string" ? { glowColor: r.glowColor } : null),
+    ...(typeof r.glowBlur === "number" && Number.isFinite(r.glowBlur)
+      ? { glowBlur: Math.max(0, r.glowBlur) }
+      : null),
+    ...(gradient ? { gradient } : null),
+    ...(typeof r.letterSpacing === "number" && Number.isFinite(r.letterSpacing)
+      ? { letterSpacing: r.letterSpacing }
+      : null),
+    ...(typeof r.textTransform === "string" && ["none", "uppercase", "lowercase", "capitalize"].includes(r.textTransform)
+      ? { textTransform: r.textTransform as "none" | "uppercase" | "lowercase" | "capitalize" }
+      : null),
+    ...(typeof r.textDecoration === "string" && ["none", "underline", "line-through"].includes(r.textDecoration)
+      ? { textDecoration: r.textDecoration as "none" | "underline" | "line-through" }
+      : null),
+    ...(typeof r.opacity === "number" && Number.isFinite(r.opacity)
+      ? { opacity: Math.max(0, Math.min(1, r.opacity)) }
+      : null),
+    ...(typeof r.blendMode === "string" ? { blendMode: r.blendMode as GlobalCompositeOperation } : null),
     lineHeightMultiplier: num(r.lineHeightMultiplier, "text line height", DEFAULT_TEXT_STYLE.lineHeightMultiplier),
     offsetX: num(r.offsetX, "text offset", DEFAULT_TEXT_STYLE.offsetX),
     offsetY: num(r.offsetY, "text offset", DEFAULT_TEXT_STYLE.offsetY),

@@ -73,7 +73,7 @@ function lerpTextCrop(a: TextCrop, b: TextCrop, p: number): TextCrop {
  *  "held, not extrapolated" outside-the-range convention `resolveClipTransform` already uses, just
  *  applied per-field instead of per-whole-keyframe. */
 function lerpTextStyle(a: TextStyle, b: TextStyle, p: number): TextStyle {
-  return {
+  const result: TextStyle = {
     ...a,
     fontSize: lerp(a.fontSize, b.fontSize, p),
     strokeWidth: lerp(a.strokeWidth, b.strokeWidth, p),
@@ -82,10 +82,35 @@ function lerpTextStyle(a: TextStyle, b: TextStyle, p: number): TextStyle {
     lineHeightMultiplier: lerp(a.lineHeightMultiplier, b.lineHeightMultiplier, p),
     offsetX: lerp(a.offsetX, b.offsetX, p),
     offsetY: lerp(a.offsetY, b.offsetY, p),
-    // Same "never wrapped, a multi-turn drag can exceed 360" convention as `lerpTransform`'s own
-    // `rotationDeg` — see its comment.
     rotationDeg: lerp(a.rotationDeg, b.rotationDeg, p),
   };
+
+  if (a.letterSpacing !== undefined || b.letterSpacing !== undefined) {
+    result.letterSpacing = lerp(a.letterSpacing ?? 0, b.letterSpacing ?? 0, p);
+  }
+  if (a.opacity !== undefined || b.opacity !== undefined) {
+    result.opacity = lerp(a.opacity ?? 1, b.opacity ?? 1, p);
+  }
+  if (a.shadowBlur !== undefined || b.shadowBlur !== undefined) {
+    result.shadowBlur = lerp(a.shadowBlur ?? 0, b.shadowBlur ?? 0, p);
+  }
+  if (a.glowBlur !== undefined || b.glowBlur !== undefined) {
+    result.glowBlur = lerp(a.glowBlur ?? 0, b.glowBlur ?? 0, p);
+  }
+  if (a.strokeWidth2 !== undefined || b.strokeWidth2 !== undefined) {
+    result.strokeWidth2 = lerp(a.strokeWidth2 ?? 0, b.strokeWidth2 ?? 0, p);
+  }
+  if (a.backgroundOpacity !== undefined || b.backgroundOpacity !== undefined) {
+    result.backgroundOpacity = lerp(a.backgroundOpacity ?? 1, b.backgroundOpacity ?? 1, p);
+  }
+  if (a.backgroundPadding !== undefined || b.backgroundPadding !== undefined) {
+    result.backgroundPadding = lerp(a.backgroundPadding ?? 12, b.backgroundPadding ?? 12, p);
+  }
+  if (a.backgroundCornerRadius !== undefined || b.backgroundCornerRadius !== undefined) {
+    result.backgroundCornerRadius = lerp(a.backgroundCornerRadius ?? 0, b.backgroundCornerRadius ?? 0, p);
+  }
+
+  return result;
 }
 
 /** Finds the two keyframes bracketing `elapsedSeconds` and returns how far between them it falls

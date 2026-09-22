@@ -162,6 +162,24 @@ export interface Asset {
   soundEffect?: true;
 }
 
+export interface TextGradientStop {
+  offset: number; // 0 to 1
+  color: string;  // Hex or CSS color string
+}
+
+export interface TextGradient {
+  type: "linear" | "radial";
+  angleDeg?: number; // Linear angle in degrees (default 180 = top-to-bottom)
+  stops: TextGradientStop[];
+}
+
+export interface TextShadow {
+  color: string;
+  offsetX: number;
+  offsetY: number;
+  blur: number;
+}
+
 /** Visual style for a text asset. Simpler than `ClipTransform`: font size already controls "how big"
  *  (no separate scale multiplier), and there's no crop — but position AND rotation are real, on-canvas-
  *  draggable properties, same as a video clip's. */
@@ -184,6 +202,12 @@ export interface TextStyle {
   /** Hex; absent means no background box — plain text, the more common "title" look. Present enables
    *  a solid box behind the text block, the more common "caption" look. */
   backgroundColor?: string;
+  /** Background box opacity multiplier (0..1). Absent means fully opaque. */
+  backgroundOpacity?: number;
+  /** Background box padding in sequence pixels (absent defaults to TEXT_BOX_PADDING = 12). */
+  backgroundPadding?: number;
+  /** Background box corner radius in pixels (absent defaults to 0). */
+  backgroundCornerRadius?: number;
   /** Hex; absent means no outline. Present draws a `strokeWidth`-pixel border around each glyph — the
    *  classic "white text, black outline" caption look, legible over any footage without needing
    *  `backgroundColor`'s solid box. Both FFmpeg's `drawtext` (`bordercolor`/`borderw`) and Canvas2D
@@ -194,6 +218,10 @@ export interface TextStyle {
    *  bundled into an optional sub-object) for the same reason `offsetX`/`offsetY` are, matching this
    *  style object's existing flat shape. */
   strokeWidth: number;
+  /** Secondary/outer stroke color for multi-layer / comic / sports outlines. */
+  strokeColor2?: string;
+  /** Secondary stroke width in sequence pixels. */
+  strokeWidth2?: number;
   /** Hex; absent means no drop shadow. */
   shadowColor?: string;
   /** Pixels; only meaningful when `shadowColor` is set. FFmpeg's `drawtext` shadow is a hard-edged
@@ -201,6 +229,26 @@ export interface TextStyle {
    *  neither renderer has one (Canvas2D's `shadowBlur` is left at 0 to match). */
   shadowOffsetX: number;
   shadowOffsetY: number;
+  /** Shadow blur radius in pixels for soft drop shadows. */
+  shadowBlur?: number;
+  /** Layered multi-shadows for high-end cinematic or pop-art depth. */
+  shadows?: TextShadow[];
+  /** Radiant glow color. */
+  glowColor?: string;
+  /** Radiant glow blur radius in sequence pixels. */
+  glowBlur?: number;
+  /** Multi-stop gradient fill. When set, renders gradient fill on canvas, falling back to `color` on FFmpeg drawtext. */
+  gradient?: TextGradient;
+  /** Extra letter spacing in sequence pixels. */
+  letterSpacing?: number;
+  /** Casing transform: uppercase, lowercase, capitalize, or none. */
+  textTransform?: "none" | "uppercase" | "lowercase" | "capitalize";
+  /** Text decoration: underline or line-through. */
+  textDecoration?: "none" | "underline" | "line-through";
+  /** Overall text opacity multiplier (0..1). */
+  opacity?: number;
+  /** Canvas compositing blend mode (e.g. screen, overlay, multiply). */
+  blendMode?: GlobalCompositeOperation;
   /** Multiplies `fontSize` to get the vertical space each line occupies — was a hardcoded constant
    *  (`textLayout.ts`'s old `LINE_HEIGHT_MULTIPLIER`) until this became a real per-style field. */
   lineHeightMultiplier: number;

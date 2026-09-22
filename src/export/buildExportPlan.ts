@@ -1,4 +1,4 @@
-import { TEXT_BOX_PADDING, TEXT_MARGIN_PX } from "../playback/textLayout.ts";
+import { applyTextTransform, TEXT_BOX_PADDING, TEXT_MARGIN_PX } from "../playback/textLayout.ts";
 import { clipDuration, clipEnd, findAsset, sequenceDuration } from "../project/createProject.ts";
 import { fontById, fontFileFor, resolveFontVariant } from "../project/fonts.ts";
 import type { AssFontMetrics, FontDefinition } from "../project/fonts.ts";
@@ -3007,10 +3007,11 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // anything not pre-rendered (a non-Khmer clip, or a caller — `nativeExport.ts` — that doesn't
       // support this path), falling through to the untouched paths below exactly like every other
       // optional resolver here degrades when omitted.
+      const clipTextContent = applyTextTransform(asset.textContent ?? "", asset.textStyle.textTransform);
       const khmerWindows =
         !hasTextStyleKeyframes(clip) &&
         !((clip.textCrop && !isIdentityTextCrop(clip.textCrop)) || hasTextCropKeyframes(clip)) &&
-        containsKhmerScript(asset.textContent ?? "")
+        containsKhmerScript(clipTextContent)
           ? options.khmerTextWindowsFor?.(clip)
           : undefined;
       if (khmerWindows && khmerWindows.length > 0) {
@@ -3030,7 +3031,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           ? buildWordHighlightSubtitlesFilter({
               inputLabel: videoOut,
               outputLabel,
-              content: asset.textContent ?? "",
+              content: clipTextContent,
               style: asset.textStyle,
               clip,
               frameWidth: width,
@@ -3093,7 +3094,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
               ? buildKeyframedDrawTextCalls({
                   inputLabel: drawInputLabel,
                   outputLabel: drawOutputLabel,
-                  content: asset.textContent ?? "",
+                  content: clipTextContent,
                   baseStyle: asset.textStyle,
                   clip,
                   fontPathFor: options.fontPathFor,
@@ -3106,7 +3107,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
               : buildDrawTextFilter({
                   inputLabel: drawInputLabel,
                   outputLabel: drawOutputLabel,
-                  content: asset.textContent ?? "",
+                  content: clipTextContent,
                   style: asset.textStyle,
                   clip,
                   fontPathFor: options.fontPathFor,
@@ -3145,7 +3146,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
                   inputLabel: drawInputLabel,
                   bgIndex,
                   outputLabel: drawOutputLabel,
-                  content: asset.textContent ?? "",
+                  content: clipTextContent,
                   baseStyle: asset.textStyle,
                   clip,
                   fontPathFor: options.fontPathFor,
@@ -3159,7 +3160,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
                   inputLabel: drawInputLabel,
                   bgIndex,
                   outputLabel: drawOutputLabel,
-                  content: asset.textContent ?? "",
+                  content: clipTextContent,
                   style: asset.textStyle,
                   clip,
                   fontPathFor: options.fontPathFor,
