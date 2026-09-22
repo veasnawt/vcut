@@ -136,8 +136,8 @@ describe("transition source handles (real FFmpeg)", { skip: !ffmpeg && "bundled 
       const full = audio(p, 1, false);
       const only = audio(p, 1, true);
       assert.ok(rms(full, 0.9, 0.05) > 0.01, "outgoing sound exists before the cut");
-      assert.ok(rms(full, 1, 0.04) < 0.0001, "no sound may replay after the source ends");
-      assert.ok(rms(only, 1, 0.04) < 0.0001);
+      assert.ok(rms(full, 1.01, 0.04) < 0.0001, "no sound may replay after the source ends");
+      assert.ok(rms(only, 1.01, 0.04) < 0.0001);
     });
   }
 

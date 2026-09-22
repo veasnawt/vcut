@@ -49,6 +49,16 @@ const root = path.resolve(__dirname, '../../../..');
       saved = JSON.parse(fs.readFileSync(file)).sequence.tracks[0].clips[0];
       assert.ok(saved.transform.scale > 1, 'keyboard resize should increase scale');
       await cropButton.click();
+      assert.equal(await page.getByText('100%', { exact: true }).count(), 0, 'preview toolbar must not cover the canvas with a scale label');
+      const ruler = page.getByRole('slider', { name: 'Straighten rotation' }); await ruler.waitFor();
+      await ruler.focus(); await page.keyboard.press('ArrowRight');
+      await page.keyboard.press('Control+s'); await page.getByText('All changes saved', { exact: true }).waitFor();
+      saved = JSON.parse(fs.readFileSync(file)).sequence.tracks[0].clips[0];
+      assert.equal(saved.transform.rotationDeg, 0.5, 'rotation ruler keyboard step should commit');
+      await page.keyboard.press('Home');
+      await page.keyboard.press('Control+s'); await page.getByText('All changes saved', { exact: true }).waitFor();
+      saved = JSON.parse(fs.readFileSync(file)).sequence.tracks[0].clips[0];
+      assert.equal(saved.transform.rotationDeg, 0, 'rotation ruler Home should straighten the clip');
       const left = page.getByRole('slider', { name: 'Crop left' }); await left.waitFor();
       const right = page.getByRole('slider', { name: 'Crop right' });
       assert.equal(await page.locator('[role="slider"][aria-label^="Crop "]').count(), 4);
@@ -70,7 +80,7 @@ const root = path.resolve(__dirname, '../../../..');
       assert.ok(saved.transform.crop.left > 0, 'keyboard crop adjustment should commit');
       await page.screenshot({ path: path.join(os.tmpdir(), `vcut-crop-${width}.png`) });
       assert.deepEqual(errors, []);
-      console.log(`PASS ${width}px: one-edge crop, four handles, one-click keyframe, keyboard controls, save and single undo`);
+      console.log(`PASS ${width}px: one-edge crop, docked ruler, four handles, one-click keyframe, keyboard controls, save and single undo`);
       await context.close();
     }
   } finally {

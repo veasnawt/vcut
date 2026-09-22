@@ -965,7 +965,9 @@ function RemoveObjectSection({
         <p className="text-[12px] leading-relaxed text-amber-200/80">
           {Capacitor.isNativePlatform()
             ? t("Remove Object isn't available on mobile yet — try it on desktop or the web app.")
-            : t("FFmpeg isn't available — reinstall dependencies to use this.")}
+            : hosted
+              ? t("Remove Object is temporarily unavailable — please try again later.")
+              : t("FFmpeg isn't available — reinstall dependencies to use this.")}
         </p>
       </>
     );

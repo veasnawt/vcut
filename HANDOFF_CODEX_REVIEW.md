@@ -1,8 +1,43 @@
 # VCut handover: Codex review for Claude
 
-Updated: 2026-09-22 (Asia/Bangkok).
+Updated: 2026-09-23 (Asia/Bangkok).
 
 ## Current handoff (takes precedence over the historical review below)
+
+### Centered Transition Timing & Production "Remove Object" Fix — 2026-09-23
+
+- **Transition Timing Alignment (`[cut - D/2, cut + D/2]`)**:
+  - Previously, transitions rendered only on the incoming clip starting at the cut seam (`[cut, cut + D]`), while the timeline UI displayed transitions centered symmetrically across the junction spanning `[cut - D/2, cut + D/2]`.
+  - Updated `findActiveTransitionAtTime` and `PlaybackEngine` to render centered transition blends during playback (`[cut - D/2, cut + D/2]`).
+  - Updated `transitionPartnerSourceTime`, `transitionTailExtension`, and `resolveAudioTransitionGain` in `src/timeline/transitions.ts` for centered lead-in and crossfades.
+  - Updated `buildSegments` in `src/export/buildExportPlan.ts` and `src/export/buildAudioOnlyExportPlan.ts`:
+    - Snaps `halfD = snapToFrame(D / 2, fps)` to frame boundaries, ensuring all video cut points land on integer frame boundaries.
+    - Predecessor's solo segment ends at `cut - halfD`.
+    - Transition segment runs from `cut - halfD` to `cut + (D - halfD)` with `from.sourceIn = partner.sourceOut - halfD` and `to.sourceIn = clip.sourceIn - halfD`.
+    - Head underflows (`to.sourceIn < 0`) are padded with `tpad` and synchronized with `adelay`.
+    - Refactored `buildAudioTrackStream` to use centered `fromSourceIn`/`toSourceIn` with `adelay`.
+- **Production "Remove Object" Web Architecture Root Cause & Fix**:
+  - In hosted mode on `https://vcut.io`, clicking "Remove Object" reported: *"FFmpeg isn't available — reinstall dependencies to use this."*
+  - Root cause: Capability `HEAD` probes (`/api/vcut/inpaint`, `/api/vcut/inpaint/predict`, `/api/vcut/export`, `/api/vcut/captions`, `/api/vcut/captions/transcribe`, `/api/vcut/ai-video`) were wrapped in `hostedSessionRoute` / `hostedSessionRouteCors` which rejected unauthenticated visitors with `401 Unauthorized`.
+  - Frontend `inpaintAvailable()` received 401, returned false, and Inspector fell back to the desktop error message.
+  - Solution: Replaced `hostedSessionRoute` on capability probe `HEAD` handlers with `publicSessionRoute` / `publicSessionRouteCors` so capability probes succeed for guests. Updated Inspector fallback copy in hosted mode to *"Remove Object is temporarily unavailable — please try again later."*
+- **Verification**:
+  - All **1,104 tests pass** across 183 suites in `packages/vcut`.
+  - Zero TypeScript errors in `packages/vcut` and `studios/vcut`.
+  - Next.js production build (`next build --webpack`) in `studios/vcut` succeeds with code 0.
+
+### One-edge crop and one-click transform keyframes — released (2026-09-22)
+
+- Crop now preserves the source's original fit instead of re-fitting and centering the cropped remainder. Dragging Top, Right, Bottom, or Left moves only that edge and keeps the opposite edge fixed, including for rotated clips.
+- Preview and FFmpeg export use the same geometry. Export scales against the full source and pads the retained crop back into its original transparent position before rotation.
+- The Inspector Crop section presents one selected direction at a time and includes **Edit crop on preview**. The preview still provides four direct edge handles and rule-of-thirds guides.
+- A diamond in the preview toolbar adds or updates a transform keyframe at the playhead with one click; clicking a diamond at an existing keyframe removes it.
+- Git: `5cb2add` (`feat(editor): simplify crop and keyframe controls`) pushed to `veasnawt/vcut` `main`.
+- Verification: **1,102 tests pass**; Studios and strict mobile production builds pass; responsive browser checks pass at 1440px and 390px; a real FFmpeg render confirms the opposite crop edge remains fixed.
+- Production: Railway deployment `c7cae957-439d-4203-b63b-9ffcc13f0723` completed with `SUCCESS`; live `/` and `/edit` return HTTP 200.
+- Windows installer: `apps/vcut-desktop/release/VCut Setup 0.2.2-crop-keyframe-update.exe`, 232,504,941 bytes, SHA-256 `189A0214B85960F327B83AF2191E63266BFA09ED71742838181C26D0E9DF11B9`. NSIS archive integrity passed; unsigned as before.
+- Android APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.2-crop-keyframe-update.apk`, 200,744,587 bytes, SHA-256 `FEAFF19EA095806BAAC2358A6ECEAF4E9A5FDDD6B76863831E539F2BFA66C40D`. Gradle passed and APK Signature Scheme v2 verified.
+- iOS production assets are synced. Final compilation and signing still require macOS with CocoaPods/Xcode.
 
 ### Preview crop and resize UX — released (2026-09-22)
 

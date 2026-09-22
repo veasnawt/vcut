@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { clipEnd } from "../src/project/createProject.ts";
 import type { Track } from "../src/project/types.ts";
 import { addClip, setClipTransitionIn, setClipTransitionOut } from "../src/timeline/operations.ts";
-import { findTransitionCandidate, findTransitionOut, findTransitionPartner, resolveAudioTransitionGain } from "../src/timeline/transitions.ts";
+import { findActiveTransitionAtTime, findTransitionCandidate, findTransitionOut, findTransitionPartner, resolveAudioTransitionGain } from "../src/timeline/transitions.ts";
 import { audioAsset, audioTrackId, clipsOf, closeTo, emptyProject, videoAsset, videoTrackId } from "./fixture.ts";
 
 /** Two clips placed back-to-back on the same video track, with zero gap between them — the baseline
@@ -237,7 +237,7 @@ describe("resolveAudioTransitionGain", () => {
     assert.equal(result.partner, null);
   });
 
-  it("ramps both clips in opposite directions through a real crossfade blend, in the incoming clip's own timeline window", () => {
+  it("ramps both clips in opposite directions through a real crossfade blend, centered at the cut [4.5, 5.5]", () => {
     const base = emptyProject([audioAsset("a", 5), audioAsset("b", 5)]);
     let project = addClip(base, audioTrackId(base), "a", 0);
     let [clipA] = clipsOf(project, audioTrackId(project));
@@ -247,27 +247,33 @@ describe("resolveAudioTransitionGain", () => {
     const track = project.sequence.tracks.find((t) => t.id === audioTrackId(project)) as Track;
     [clipA, clipB] = clipsOf(project, audioTrackId(project));
 
-    // clipB.timelineStart === 5 (clipA is 5s long) — the 1s blend window is [5, 6).
-    const atStart = resolveAudioTransitionGain(track, clipB, 5);
-    assert.ok(closeTo(atStart.gain, 0), "incoming clip starts silent");
+    // clipB.timelineStart === 5 (clipA is 5s long) — the 1s blend window is [4.5, 5.5] centered at cut=5.
+    const atStart = resolveAudioTransitionGain(track, clipB, 4.5);
+    assert.ok(closeTo(atStart.gain, 0), "incoming clip starts silent at left edge");
     assert.ok(atStart.partner);
     assert.equal(atStart.partner!.clip.id, clipA.id);
-    assert.ok(closeTo(atStart.partner!.gain, 1), "outgoing clip starts at full volume");
-    assert.ok(closeTo(atStart.partner!.sourceTime, clipA.sourceOut), "outgoing clip continues past its out-point");
+    assert.ok(closeTo(atStart.partner!.gain, 1), "outgoing clip starts at full volume at left edge");
+    assert.ok(closeTo(atStart.partner!.sourceTime, clipA.sourceOut - 0.5), "outgoing clip starts at sourceOut - D/2");
 
-    const atMid = resolveAudioTransitionGain(track, clipB, 5.5);
-    assert.ok(closeTo(atMid.gain, 0.5));
-    assert.ok(closeTo(atMid.partner!.gain, 0.5));
-    assert.ok(closeTo(atMid.partner!.sourceTime, clipA.sourceOut + 0.5), "outgoing clip's own sourceTime keeps advancing with the blend");
+    const atCut = resolveAudioTransitionGain(track, clipB, 5.0);
+    assert.ok(closeTo(atCut.gain, 0.5), "incoming clip at 0.5 at cut seam");
+    assert.ok(closeTo(atCut.partner!.gain, 0.5), "outgoing clip at 0.5 at cut seam");
+    assert.ok(closeTo(atCut.partner!.sourceTime, clipA.sourceOut), "outgoing clip reaches out-point exactly at the cut");
 
-    const nearEnd = resolveAudioTransitionGain(track, clipB, 5.9);
+    const nearEnd = resolveAudioTransitionGain(track, clipB, 5.4);
     assert.ok(closeTo(nearEnd.gain, 0.9));
     assert.ok(closeTo(nearEnd.partner!.gain, 0.1));
 
     // Past the blend window (still within clipB's own overall duration) — a plain, untouched clip.
-    const afterBlend = resolveAudioTransitionGain(track, clipB, 7);
+    const afterBlend = resolveAudioTransitionGain(track, clipB, 6);
     assert.equal(afterBlend.gain, 1);
     assert.equal(afterBlend.partner, null);
+
+    // Also verify outgoing clip directly:
+    const outgoingBefore = resolveAudioTransitionGain(track, clipA, 4.0);
+    assert.equal(outgoingBefore.gain, 1);
+    const outgoingMid = resolveAudioTransitionGain(track, clipA, 5.0);
+    assert.ok(closeTo(outgoingMid.gain, 0.5));
   });
 
   it("ramps up from silence for a solo fade-in (no adjacent predecessor to blend from)", () => {
@@ -329,3 +335,57 @@ describe("resolveAudioTransitionGain", () => {
     assert.equal(result.partner, null);
   });
 });
+
+describe("findActiveTransitionAtTime", () => {
+  it("detects junction transition spanning [cut - D/2, cut + D/2]", () => {
+    const { track, clipB } = twoAdjacentClips(5, 5);
+    const clipBWithTransition = { ...clipB, transitionIn: { duration: 1, type: "crossfade" as const } };
+    const trackWithTransition: Track = { ...track, clips: [track.clips[0], clipBWithTransition] };
+
+    // cut = 5.0, D = 1.0 -> transition window is [4.5, 5.5]
+    assert.equal(findActiveTransitionAtTime(trackWithTransition, 4.0), null);
+    assert.equal(findActiveTransitionAtTime(trackWithTransition, 6.0), null);
+
+    const atStart = findActiveTransitionAtTime(trackWithTransition, 4.5);
+    assert.ok(atStart);
+    assert.equal(atStart!.kind, "junction");
+    assert.ok(closeTo(atStart!.progress, 0));
+    assert.ok(closeTo(atStart!.duration, 1));
+    assert.equal(atStart!.fromClip?.id, track.clips[0].id);
+    assert.equal(atStart!.toClip?.id, clipB.id);
+
+    const atCut = findActiveTransitionAtTime(trackWithTransition, 5.0);
+    assert.ok(atCut);
+    assert.ok(closeTo(atCut!.progress, 0.5));
+    assert.ok(closeTo(atCut!.fromSourceTime!, track.clips[0].sourceOut));
+    assert.ok(closeTo(atCut!.toSourceTime!, clipB.sourceIn));
+
+    const atEnd = findActiveTransitionAtTime(trackWithTransition, 5.5);
+    assert.ok(atEnd);
+    assert.ok(closeTo(atEnd!.progress, 1));
+  });
+
+  it("detects solo-in and solo-out transitions", () => {
+    const base = emptyProject([videoAsset("a", 5)]);
+    let project = addClip(base, videoTrackId(base), "a", 2);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    const soloInClip = { ...clip, transitionIn: { duration: 1, type: "crossfade" as const } };
+    const trackIn: Track = { ...project.sequence.tracks[0], clips: [soloInClip] };
+
+    // Solo-in: [2.0, 3.0]
+    const soloInActive = findActiveTransitionAtTime(trackIn, 2.5);
+    assert.ok(soloInActive);
+    assert.equal(soloInActive!.kind, "solo-in");
+    assert.ok(closeTo(soloInActive!.progress, 0.5));
+
+    const soloOutClip = { ...clip, transitionOut: { duration: 1, type: "crossfade" as const } };
+    const trackOut: Track = { ...project.sequence.tracks[0], clips: [soloOutClip] };
+
+    // Solo-out: clipEnd is 7.0, window [6.0, 7.0]
+    const soloOutActive = findActiveTransitionAtTime(trackOut, 6.5);
+    assert.ok(soloOutActive);
+    assert.equal(soloOutActive!.kind, "solo-out");
+    assert.ok(closeTo(soloOutActive!.progress, 0.5));
+  });
+});
+

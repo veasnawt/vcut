@@ -127,32 +127,30 @@ function findAdjacentSuccessor(track: Track, clip: Clip): Clip | undefined {
   return track.clips.find((c) => Math.abs(c.timelineStart - clipEnd(clip)) < ADJACENCY_TOLERANCE);
 }
 
-/** Where the OUTGOING clip's own footage/audio is, `elapsed` seconds into a two-clip blend: it simply
- *  keeps playing past its out-point into the rest of its source, the way an NLE uses "handles". The
- *  blend window sits at the start of the incoming clip, so the outgoing clip has already played right
- *  up to its out-point when the blend begins.
+/** Where the OUTGOING clip's own footage/audio is, `elapsedPastCut` seconds past the nominal cut seam:
+ *  it simply keeps playing past its out-point into the rest of its source, the way an NLE uses "handles".
+ *  In the centered transition model, the blend window spans `[cut - duration/2, cut + duration/2]`.
+ *  At the cut (`elapsedPastCut = 0`), the outgoing clip is exactly at `partner.sourceOut`. Past the cut
+ *  (`elapsedPastCut > 0`), it consumes its tail handle.
  *
- *  This used to rewind to `sourceOut - duration` instead — replaying the outgoing clip's last
- *  `duration` seconds a second time, underneath the blend — so every transition visibly (and
- *  audibly) jumped back in time at the cut: A ends, then A's last half-second plays again while B
- *  fades in. With `sourceDuration` given, the result is clamped to the end of the source — a clip
- *  used right to the end of its file holds its final frame (and goes silent) for the rest of the
- *  blend rather than running past the media. */
-export function transitionPartnerSourceTime(partner: Clip, elapsed: number, sourceDuration?: number): number {
-  const time = partner.sourceOut + Math.max(0, elapsed);
+ *  With `sourceDuration` given, the result is clamped to the end of the source — a clip used right to
+ *  the end of its file holds its final frame (and goes silent) for the rest of the blend rather than
+ *  running past the media. */
+export function transitionPartnerSourceTime(partner: Clip, elapsedPastCut: number, sourceDuration?: number): number {
+  const time = partner.sourceOut + elapsedPastCut;
   if (sourceDuration === undefined || !(sourceDuration > 0)) return time;
-  return Math.min(time, Math.max(partner.sourceOut, sourceDuration));
+  return Math.min(time, Math.max(partner.sourceIn, sourceDuration));
 }
 
-/** How far PAST its own out-point `clip`'s media keeps playing, because the clip right after it
- *  blends out of it (see `transitionPartnerSourceTime`) — 0 when nothing does. What an audio scheduler
- *  needs so the outgoing clip's audio flows straight on into the blend instead of stopping at the cut
- *  and restarting a tick later. */
+/** How far PAST its own nominal out-point `clip`'s media keeps playing, because the clip right after it
+ *  blends out of it centered on the cut — `blend.duration / 2` when one does, 0 when nothing does.
+ *  What an audio scheduler needs so the outgoing clip's audio flows straight on into the second half of
+ *  the blend instead of stopping at the cut. */
 export function transitionTailExtension(track: Track, clip: Clip): number {
   const successor = findAdjacentSuccessor(track, clip);
   if (!successor) return 0;
   const blend = findTransitionPartner(track, successor);
-  return blend?.partner?.id === clip.id ? blend.duration : 0;
+  return blend?.partner?.id === clip.id ? blend.duration / 2 : 0;
 }
 
 /** Whether `clip` has an eligible following neighbor to blend INTO, independent of whether
@@ -161,7 +159,7 @@ export function transitionTailExtension(track: Track, clip: Clip): number {
  *  when there isn't one) in the "Out" tab's preview tiles, the same way `findTransitionCandidate`
  *  already lets the "In" tab preview the real previous clip. */
 export function findTransitionSuccessorCandidate(track: Track, clip: Clip): Clip | undefined {
-  return findAdjacentSuccessor(track, clip);
+  return findAdjacentSuccessor(track, clip) ?? undefined;
 }
 
 /** Resolves a clip's `transitionOut` (see its own doc comment) into an effective fade-out duration,
@@ -182,61 +180,172 @@ export function findTransitionOut(track: Track, clip: Clip): { duration: number 
   return { duration };
 }
 
+/** Detail of a transition actively underway at the given timeline time, for live playback / preview rendering. */
+export interface ActiveTransitionInfo {
+  kind: "junction" | "solo-in" | "solo-out";
+  type: TransitionType;
+  duration: number;
+  progress: number;
+  elapsed: number;
+  fromClip?: Clip;
+  toClip?: Clip;
+  fromSourceTime?: number;
+  toSourceTime?: number;
+  cut?: number;
+}
+
+/** Detects if `time` falls inside an active transition on `track`, whether a two-clip junction
+ *  transition centered on the cut `[cut - D/2, cut + D/2]` or a solo fade-in / fade-out.
+ *  Returns the active clips, transition type, progress [0, 1] (exactly 0.5 at the cut seam),
+ *  and exact source times for both sides. */
+export function findActiveTransitionAtTime(track: Track, time: number): ActiveTransitionInfo | null {
+  for (const clip of track.clips) {
+    const blend = findTransitionPartner(track, clip);
+    if (blend) {
+      const D = blend.duration;
+      if (blend.partner) {
+        const cut = clip.timelineStart;
+        const start = cut - D / 2;
+        const end = cut + D / 2;
+        if (time >= start && time <= end) {
+          const elapsed = time - start;
+          const progress = Math.min(1, Math.max(0, elapsed / D));
+          const fromClip = blend.partner;
+          const toClip = clip;
+          const fromSourceTime = transitionPartnerSourceTime(fromClip, elapsed - D / 2);
+          const toSourceTime = Math.max(0, toClip.sourceIn - D / 2 + elapsed);
+          return {
+            kind: "junction",
+            type: clip.transitionIn?.type ?? "crossfade",
+            duration: D,
+            progress,
+            elapsed,
+            fromClip,
+            toClip,
+            fromSourceTime,
+            toSourceTime,
+            cut,
+          };
+        }
+      } else {
+        // Solo fade-in: [clip.timelineStart, clip.timelineStart + D]
+        const start = clip.timelineStart;
+        const end = start + D;
+        if (time >= start && time <= end) {
+          const elapsed = time - start;
+          const progress = Math.min(1, Math.max(0, elapsed / D));
+          return {
+            kind: "solo-in",
+            type: clip.transitionIn?.type ?? "crossfade",
+            duration: D,
+            progress,
+            elapsed,
+            toClip: clip,
+            toSourceTime: clip.sourceIn + elapsed,
+          };
+        }
+      }
+    }
+
+    const transitionOut = findTransitionOut(track, clip);
+    if (transitionOut) {
+      const D = transitionOut.duration;
+      const start = clip.timelineStart + clipDuration(clip) - D;
+      const end = clip.timelineStart + clipDuration(clip);
+      if (time >= start && time <= end) {
+        const elapsed = time - start;
+        const progress = Math.min(1, Math.max(0, elapsed / D));
+        return {
+          kind: "solo-out",
+          type: clip.transitionOut?.type ?? "crossfade",
+          duration: D,
+          progress,
+          elapsed,
+          fromClip: clip,
+          fromSourceTime: clip.sourceIn + (time - clip.timelineStart),
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
 /** What `clip`'s own live audio gain should be RIGHT NOW, given `time` (the current playhead position,
- *  already known to fall within `clip`'s own `[timelineStart, timelineStart+duration)` window — this
- *  never checks that itself, same "caller already knows this clip is active" contract
- *  `findTransitionPartner`/`findTransitionOut` both already have) — plus, during a real crossfade
- *  blend, the OUTGOING partner clip that should ALSO be audible at this exact instant, with its own
- *  gain and the `sourceTime` its own footage should be at.
+ *  already known to fall within `clip`'s own `[timelineStart, timelineStart+duration)` window) — plus,
+ *  during a real crossfade blend, the partner clip that should ALSO be audible at this exact instant,
+ *  with its own gain and `sourceTime`.
  *
- *  `gain`/`partner.gain` are pure [0,1] RAMP MULTIPLIERS, not final volumes — multiplying in `Clip.gain`
- *  (the separate, unrelated volume-slider concept) is the caller's job, same separation of concerns
- *  `findTransitionPartner`/`findTransitionOut` already draw between "timing" and "rendering".
- *
- *  This is `PlaybackEngine`'s live-preview counterpart to `buildAudioTrackStream`'s export-time
- *  `acrossfade`/`afade` — the one place both agree on exactly how far into a transition `time` is and
- *  what that means for loudness, even though the underlying MECHANISM is completely different (a gain
- *  ramped every animation frame here, one FFmpeg filter call baked into the export ahead of time
- *  there). Always linear — this app never exposes a fade curve choice for audio (see
- *  `buildAudioTrackStream`'s own comment on why `acrossfade` never varies by `TransitionType`), so
- *  "how far through the window, 0 to 1" IS the gain, both directions.
- *
- *  Three cases, checked in order — a clip can only ever be in one at a time, since a `transitionIn`
- *  blend window and a `transitionOut` fade window can never overlap (the earliest a fade-out window
- *  can start is at `duration - transitionOut.duration`, and `findTransitionOut` already refuses to
- *  return anything at all once a genuine successor exists, which is exactly the case a `transitionIn`
- *  blend on THIS clip would require to not apply to the CURRENT clip in the first place):
- *  1. Inside this clip's own `transitionIn` window, blending from a real partner — both ramp
- *     opposite directions (`gain` rises 0→1, `partner.gain` falls 1→0), and the partner's `sourceTime`
- *     carries on past its own out-point (`transitionPartnerSourceTime`), advancing at the same rate
- *     the blend itself progresses. Mirrors export's "transition" segment exactly (the partner's slice
- *     starting at `-ss sourceOut`), just evaluated live instead of baked into a filter graph.
- *  2. Inside this clip's own `transitionIn` window, but SOLO (no partner) — only this clip ramps, up
- *     from silence.
- *  3. Inside this clip's own `transitionOut` window (checked only once neither of the above applies,
- *     which — per the note above — is already guaranteed whenever `transitionOut` would even resolve
- *     to non-null) — only this clip ramps, down toward silence.
- *  Outside all three: `gain: 1`, `partner: null` — the ordinary, untouched case. */
+ *  In the centered transition model, the blend window spans `[cut - D/2, cut + D/2]`:
+ *  - During `[cut - D/2, cut)`: `clip` is Clip A (predecessor), ramping down from 1 to 0.5;
+ *    partner is Clip B (successor), ramping up from 0 to 0.5.
+ *  - During `[cut, cut + D/2)`: `clip` is Clip B (successor), ramping up from 0.5 to 1.0;
+ *    partner is Clip A (predecessor), ramping down from 0.5 to 0.0.
+ *  At the cut (`time = cut`), both clips have gain 0.5. */
 export interface AudioTransitionGain {
   gain: number;
   partner: { clip: Clip; gain: number; sourceTime: number } | null;
 }
 
 export function resolveAudioTransitionGain(track: Track, clip: Clip, time: number): AudioTransitionGain {
-  const transitionIn = findTransitionPartner(track, clip);
-  if (transitionIn && time < clip.timelineStart + transitionIn.duration) {
-    const elapsed = time - clip.timelineStart;
-    const progress = Math.min(1, Math.max(0, elapsed / transitionIn.duration));
-    if (transitionIn.partner) {
-      const partner = transitionIn.partner;
-      return {
-        gain: progress,
-        partner: { clip: partner, gain: 1 - progress, sourceTime: transitionPartnerSourceTime(partner, elapsed) },
-      };
+  // Case 1: Tail transition into successor (this clip is outgoing partner Clip A)
+  const successor = findAdjacentSuccessor(track, clip);
+  if (successor) {
+    const successorTransition = findTransitionPartner(track, successor);
+    if (successorTransition && successorTransition.partner?.id === clip.id) {
+      const D = successorTransition.duration;
+      const cut = successor.timelineStart;
+      const transitionStart = cut - D / 2;
+      const transitionEnd = cut + D / 2;
+      if (time >= transitionStart && time <= transitionEnd) {
+        const elapsed = time - transitionStart;
+        const progress = Math.min(1, Math.max(0, elapsed / D));
+        const partnerSourceTime = Math.max(0, successor.sourceIn - D / 2 + elapsed);
+        return {
+          gain: 1 - progress,
+          partner: {
+            clip: successor,
+            gain: progress,
+            sourceTime: partnerSourceTime,
+          },
+        };
+      }
     }
-    return { gain: progress, partner: null };
   }
 
+  // Case 2: Head transition (this clip is Clip B)
+  const transitionIn = findTransitionPartner(track, clip);
+  if (transitionIn) {
+    const D = transitionIn.duration;
+    if (transitionIn.partner) {
+      const cut = clip.timelineStart;
+      const transitionStart = cut - D / 2;
+      const transitionEnd = cut + D / 2;
+      if (time >= transitionStart && time <= transitionEnd) {
+        const elapsed = time - transitionStart;
+        const progress = Math.min(1, Math.max(0, elapsed / D));
+        const partner = transitionIn.partner;
+        const partnerSourceTime = transitionPartnerSourceTime(partner, elapsed - D / 2);
+        return {
+          gain: progress,
+          partner: {
+            clip: partner,
+            gain: 1 - progress,
+            sourceTime: partnerSourceTime,
+          },
+        };
+      }
+    } else {
+      // Solo fade-in: [clip.timelineStart, clip.timelineStart + D)
+      if (time < clip.timelineStart + D) {
+        const elapsed = time - clip.timelineStart;
+        const progress = Math.min(1, Math.max(0, elapsed / D));
+        return { gain: progress, partner: null };
+      }
+    }
+  }
+
+  // Case 3: Solo fade-out: [clipEnd - D, clipEnd)
   const transitionOut = findTransitionOut(track, clip);
   if (transitionOut) {
     const fadeOutStart = clip.timelineStart + clipDuration(clip) - transitionOut.duration;

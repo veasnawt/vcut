@@ -53,17 +53,17 @@ describe("outgoing source handles", () => {
   const track: Track = { id: "v", name: "V1", kind: "video", clips: [outgoing, incoming], locked: false, visible: true, muted: false, solo: false };
 
   it("continues past the out-point and clamps to the available source", () => {
-    assert.equal(transitionPartnerSourceTime(outgoing, -1), 5);
+    assert.equal(transitionPartnerSourceTime(outgoing, -1), 4);
     assert.equal(transitionPartnerSourceTime(outgoing, 0.5), 5.5);
     assert.equal(transitionPartnerSourceTime(outgoing, 0.5, 5.2), 5.2);
     assert.equal(transitionPartnerSourceTime(outgoing, 0.5, 5), 5);
   });
 
   it("extends only clips that feed a real adjacent blend", () => {
-    assert.equal(transitionTailExtension(track, outgoing), 1);
+    assert.equal(transitionTailExtension(track, outgoing), 0.5);
     assert.equal(transitionTailExtension(track, incoming), 0);
     assert.equal(transitionTailExtension({ ...track, clips: [outgoing, { ...incoming, timelineStart: 4 }] }, outgoing), 0);
     assert.equal(transitionTailExtension({ ...track, clips: [outgoing, { ...incoming, transitionIn: undefined }] }, outgoing), 0);
-    assert.equal(transitionTailExtension({ ...track, clips: [outgoing, { ...incoming, sourceOut: 0.2 }] }, outgoing), 0.2);
+    assert.equal(transitionTailExtension({ ...track, clips: [outgoing, { ...incoming, sourceOut: 0.2 }] }, outgoing), 0.1);
   });
 });

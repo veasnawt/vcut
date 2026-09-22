@@ -2656,7 +2656,7 @@ describe("buildExportPlan with transitions", () => {
     }
   });
 
-  it("the outgoing clip's own segment is emitted in full; only the incoming clip is shortened, at its head", () => {
+  it("the transition is centered at the cut: clip A's solo segment is shortened by D/2, the transition runs for D, and clip B starts at sourceIn + D/2", () => {
     const base = emptyProject([videoAsset("a", 8), videoAsset("b", 5)]);
     let project = addClip(base, videoTrackId(base), "a", 0);
     project = trimClip(project, clipsOf(project, videoTrackId(project))[0].id, "out", 5);
@@ -2668,14 +2668,14 @@ describe("buildExportPlan with transitions", () => {
     const { args } = plan(project);
 
     const aInputs = inputsFor(args, "/media/a.mp4");
-    assert.equal(aInputs.length, 2, "clip A's own full segment, plus the transition's FROM slice of it");
-    assert.ok(aInputs.some((x) => closeTo(x.ss, 0) && closeTo(x.t, 5)), "clip A's own segment must be unshortened");
-    assert.ok(aInputs.some((x) => closeTo(x.ss, 5) && closeTo(x.t, 1)), "the transition continues A past its out-point");
+    assert.equal(aInputs.length, 2, "clip A's own solo segment, plus the transition's FROM slice of it");
+    assert.ok(aInputs.some((x) => closeTo(x.ss, 0) && closeTo(x.t, 4.5)), "clip A's solo segment is shortened by D/2");
+    assert.ok(aInputs.some((x) => closeTo(x.ss, 4.5) && closeTo(x.t, 1)), "the transition starts D/2 before A's out-point");
 
     const bInputs = inputsFor(args, "/media/b.mp4");
-    assert.equal(bInputs.length, 2, "the transition's TO slice, plus clip B's own head-shortened remainder");
-    assert.ok(bInputs.some((x) => closeTo(x.ss, 0) && closeTo(x.t, 1)), "the transition's TO slice is B's own first 1s");
-    assert.ok(bInputs.some((x) => closeTo(x.ss, 1) && closeTo(x.t, 4)), "clip B's own remaining segment starts 1s into its footage");
+    assert.equal(bInputs.length, 2, "the transition's TO slice, plus clip B's remaining solo segment");
+    assert.ok(bInputs.some((x) => closeTo(x.ss, 0) && closeTo(x.t, 0.5)), "the transition's TO slice reads available head footage");
+    assert.ok(bInputs.some((x) => closeTo(x.ss, 0.5) && closeTo(x.t, 4.5)), "clip B's remaining segment starts at sourceIn + D/2");
   });
 
   it("clamps the blend duration to the shorter clip's own length rather than the requested value", () => {
@@ -3019,7 +3019,7 @@ describe("buildExportPlan with audio-track transitions", () => {
     assert.ok(!graph.includes("wipeleft"), "the video-only xfade transition NAME never reaches an audio-only track");
   });
 
-  it("the outgoing clip's own segment is emitted in full; only the incoming clip is shortened, at its head", () => {
+  it("both clips are shortened by half the blend duration to center the transition on the cut", () => {
     let project = baseWithVideo();
     project = addClip(project, audioTrackId(project), "a", 0);
     const [clipA] = clipsOf(project, audioTrackId(project));
@@ -3030,14 +3030,14 @@ describe("buildExportPlan with audio-track transitions", () => {
     const { args } = plan(project);
 
     const aInputs = inputsFor(args, "/media/a.mp4");
-    assert.equal(aInputs.length, 2, "clip A's own full segment, plus the transition's FROM slice of it");
-    assert.ok(aInputs.some((x) => closeTo(x.ss, 0) && closeTo(x.t, 5)), "clip A's own segment must be unshortened");
-    assert.ok(aInputs.some((x) => closeTo(x.ss, 5) && closeTo(x.t, 1)), "the transition continues A past its out-point");
+    assert.equal(aInputs.length, 2, "clip A's own shortened segment, plus the transition's FROM slice of it");
+    assert.ok(aInputs.some((x) => closeTo(x.ss, 0) && closeTo(x.t, 4.5)), "clip A's solo segment ends D/2 before the cut");
+    assert.ok(aInputs.some((x) => closeTo(x.ss, 4.5) && closeTo(x.t, 1)), "the transition FROM slice starts at sourceOut - D/2");
 
     const bInputs = inputsFor(args, "/media/b.mp4");
-    assert.equal(bInputs.length, 2, "the transition's TO slice, plus clip B's own head-shortened remainder");
-    assert.ok(bInputs.some((x) => closeTo(x.ss, 0) && closeTo(x.t, 1)), "the transition's TO slice is B's own first 1s");
-    assert.ok(bInputs.some((x) => closeTo(x.ss, 1) && closeTo(x.t, 4)), "clip B's own remaining segment starts 1s into its footage");
+    assert.equal(bInputs.length, 2, "the transition's TO slice, plus clip B's own shortened remainder");
+    assert.ok(bInputs.some((x) => closeTo(x.ss, 0) && closeTo(x.t, 0.5)), "the transition's TO slice reads available head footage");
+    assert.ok(bInputs.some((x) => closeTo(x.ss, 0.5) && closeTo(x.t, 4.5)), "clip B's own remaining segment starts D/2 into its footage");
   });
 
   it("clamps the blend duration to the shorter clip's own length rather than the requested value", () => {

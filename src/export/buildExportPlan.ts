@@ -182,6 +182,7 @@ interface TransitionSide {
   hasAudio: boolean;
   isImage: boolean;
   path: string;
+  sourceIn?: number;
 }
 
 export type Segment =
@@ -271,21 +272,41 @@ export function buildSegments(
       const partner = transition.partner;
       const partnerAsset = findAsset(project, partner.assetId);
       if (!partnerAsset) throw new ExportError(`A clip references media that is no longer in the project`);
-      if (partnerAsset.offline) throw new ExportError(`"${partnerAsset.name}" is offline. Relink it before exporting.`);
+      const fps = project.exportSettings?.fps || project.sequence.fps || 30;
+      const D = transition.duration;
+      const halfD = snapToFrame(D / 2, fps);
+      const tailD = D - halfD;
+
+      // The transition spans [cut - halfD, cut + tailD], where cut = clip.timelineStart.
+      // Shorten the preceding partner's solo segment by halfD.
+      const prevSegment = segments[segments.length - 1];
+      if (prevSegment && prevSegment.kind === "clip" && prevSegment.clip.id === partner.id) {
+        prevSegment.duration -= halfD;
+        if (prevSegment.duration <= 1e-6) {
+          segments.pop();
+        }
+      }
 
       segments.push({
         kind: "transition",
-        duration: transition.duration,
+        duration: D,
         from: {
           clip: partner,
           hasAudio: partnerAsset.hasAudio,
           isImage: partnerAsset.kind === "image" || partnerAsset.kind === "color",
           path: options.inputPathFor(partner.assetId),
+          sourceIn: partner.sourceOut - halfD,
         },
-        to: { clip, hasAudio: asset.hasAudio, isImage, path },
+        to: {
+          clip,
+          hasAudio: asset.hasAudio,
+          isImage,
+          path,
+          sourceIn: clip.sourceIn - halfD,
+        },
       });
 
-      const remaining = fullDuration - transition.duration;
+      const remaining = fullDuration - tailD;
       if (remaining > 1e-6) {
         segments.push({
           kind: "clip",
@@ -293,7 +314,7 @@ export function buildSegments(
           hasAudio: asset.hasAudio,
           isImage,
           path,
-          sourceIn: clip.sourceIn + transition.duration,
+          sourceIn: clip.sourceIn + tailD,
           duration: remaining,
           fadeOut,
         });
@@ -1679,6 +1700,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
   // A final-frame hold may seek slightly before its requested source time to decode a picture.
   // The shared input's audio must discard that preroll instead of replaying it under the blend.
   const audioInputPreroll = new Map<number, number>();
+  const audioInputDelay = new Map<number, number>();
   const videoRef = (index: number): string => videoInputRefs.get(index) ?? `${index}:v`;
 
   /** Every "I need N seconds of silence" request across the whole export — deferred rather than each
@@ -1750,12 +1772,34 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
   function pushVideoSourceInput(clip: Clip, path: string, start: number, duration: number, index: number): void {
     const asset = findAsset(project, clip.assetId);
     const sourceDuration = asset?.kind === "video" ? asset.duration : undefined;
-    if (sourceDuration === undefined || !(sourceDuration > 0) || start + duration <= sourceDuration + 1e-3) {
+    const hasSourceDuration = sourceDuration !== undefined && sourceDuration > 0;
+    const headUnderflow = start < -1e-6 ? -start : 0;
+    const tailOverflow = hasSourceDuration && (start + duration > sourceDuration + 1e-3);
+
+    if (headUnderflow === 0 && !tailOverflow) {
       inputs.push("-ss", t(start), "-t", t(duration), "-i", path);
       return;
     }
+
+    if (headUnderflow > 0) {
+      const availableDuration = hasSourceDuration ? Math.max(0, sourceDuration!) : duration;
+      const readDuration = Math.max(0, Math.min(duration - headUnderflow, availableDuration));
+      inputs.push("-ss", "0", "-t", t(readDuration), "-i", path);
+      audioInputDelay.set(index, headUnderflow);
+      const label = `in${index}_hold`;
+      const padParts: string[] = [
+        `start_mode=clone:start_duration=${t(headUnderflow)}`,
+      ];
+      if (tailOverflow) {
+        padParts.push(`stop_mode=clone:stop_duration=${t(duration)}`);
+      }
+      filters.push(`[${index}:v]setpts=PTS-STARTPTS,tpad=${padParts.join(":")},trim=duration=${t(duration)}[${label}]`);
+      videoInputRefs.set(index, label);
+      return;
+    }
+
     const frame = 1 / (asset?.fps || fps);
-    const seek = Math.max(0, Math.min(start, sourceDuration - 1.5 * frame));
+    const seek = Math.max(0, Math.min(start, sourceDuration! - 1.5 * frame));
     if (start > seek) audioInputPreroll.set(index, start - seek);
     inputs.push("-ss", t(seek), "-t", t(duration), "-i", path);
     const label = `in${index}_hold`;
@@ -2044,10 +2088,16 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     const needsAudioSource = hasAudio && !clip.mutedAudio;
     let audioSourceIndex = -1;
     if (needsAudioSource) {
+      const sourceStart = clip.sourceIn + elapsedAtSegmentStart;
       if (isImage) {
         inputs.push("-loop", "1", "-framerate", String(fps), "-t", t(sliceDuration), "-i", path);
+      } else if (sourceStart < -1e-6) {
+        const underflow = -sourceStart;
+        const readDuration = Math.max(0, sliceDuration - underflow);
+        inputs.push("-ss", "0", "-t", t(readDuration), "-i", path);
+        audioInputDelay.set(inputIndex, underflow);
       } else {
-        inputs.push("-ss", t(clip.sourceIn + elapsedAtSegmentStart), "-t", t(sliceDuration), "-i", path);
+        inputs.push("-ss", t(sourceStart), "-t", t(sliceDuration), "-i", path);
       }
       audioSourceIndex = inputIndex++;
     }
@@ -2087,8 +2137,11 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       const padStage = padToDuration ? `,apad=whole_dur=${t(sliceDuration)}` : "";
       const preroll = audioInputPreroll.get(videoIndex);
       const trimStage = preroll ? `atrim=start=${t(preroll)},` : "";
+      const delay = audioInputDelay.get(videoIndex);
+      const delayMs = delay ? Math.round(delay * 1000) : 0;
+      const delayStage = delayMs ? `adelay=${delayMs}|${delayMs},` : "";
       filters.push(
-        `[${videoIndex}:a]${trimStage}aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${volumeStage}${fadeStage}${padStage}[${outputLabel}]`
+        `[${videoIndex}:a]${trimStage}${delayStage}aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${volumeStage}${fadeStage}${padStage}[${outputLabel}]`
       );
     } else {
       pushSilentAudio(sliceDuration, outputLabel);
@@ -2759,25 +2812,27 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         // verified against the real bundled FFmpeg binary (frame extraction + pixel sampling through
         // the blend) before being trusted, per this feature's own development notes.
         const D = segment.duration;
+        const halfD = D / 2;
         const fromVideoLabel = `${videoLabel}_from`;
         const toVideoLabel = `${videoLabel}_to`;
         const fromAudioLabel = `${audioLabel}_from`;
         const toAudioLabel = `${audioLabel}_to`;
+        const fromSourceIn = segment.from.sourceIn ?? (segment.from.clip.sourceOut - halfD);
+        const toSourceIn = segment.to.sourceIn ?? (segment.to.clip.sourceIn - halfD);
+
+        const fromElapsedAtSegmentStart = fromSourceIn - segment.from.clip.sourceIn;
+        const toElapsedAtSegmentStart = toSourceIn - segment.to.clip.sourceIn;
 
         // Each side of a transition is keyframe-aware independently. The OUTGOING clip carries on past
-        // its own out-point (`elapsedAtSegmentStart = clipDuration(from.clip)`, i.e. `-ss sourceOut`)
-        // — see `transitionPartnerSourceTime` for why this is no longer a replay of its last D seconds
-        // — holding its final frame if the file runs out first. The INCOMING clip's own head D seconds
-        // start at `elapsedAtSegmentStart = 0`.
+        // its own out-point holding its final frame if the file runs out first.
         if (hasTransformKeyframes(segment.from.clip) || hasEffectsKeyframes(segment.from.clip) || hasColorGradingKeyframes(segment.from.clip)) {
-          const fromElapsedAtSegmentStart = clipDuration(segment.from.clip);
           pushKeyframedClipVideoFilters(segment.from.clip, segment.from.path, segment.from.isImage, fromElapsedAtSegmentStart, fromVideoLabel, D, transparent);
           pushKeyframedAudio(segment.from.clip, segment.from.path, segment.from.isImage, segment.from.hasAudio && !track.muted, fromElapsedAtSegmentStart, fromAudioLabel, D, undefined, undefined, true);
         } else {
           if (segment.from.isImage) {
-            pushImageInput(segment.from.clip, segment.from.path, segment.from.clip.sourceOut, D, inputIndex);
+            pushImageInput(segment.from.clip, segment.from.path, fromSourceIn, D, inputIndex);
           } else {
-            pushVideoSourceInput(segment.from.clip, segment.from.path, segment.from.clip.sourceOut, D, inputIndex);
+            pushVideoSourceInput(segment.from.clip, segment.from.path, fromSourceIn, D, inputIndex);
           }
           const fromIndex = inputIndex++;
           pushClipVideoFilters(segment.from.clip, fromIndex, fromVideoLabel, D, transparent);
@@ -2794,13 +2849,13 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         }
 
         if (hasTransformKeyframes(segment.to.clip) || hasEffectsKeyframes(segment.to.clip) || hasColorGradingKeyframes(segment.to.clip)) {
-          pushKeyframedClipVideoFilters(segment.to.clip, segment.to.path, segment.to.isImage, 0, toVideoLabel, D, transparent);
-          pushKeyframedAudio(segment.to.clip, segment.to.path, segment.to.isImage, segment.to.hasAudio && !track.muted, 0, toAudioLabel, D);
+          pushKeyframedClipVideoFilters(segment.to.clip, segment.to.path, segment.to.isImage, toElapsedAtSegmentStart, toVideoLabel, D, transparent);
+          pushKeyframedAudio(segment.to.clip, segment.to.path, segment.to.isImage, segment.to.hasAudio && !track.muted, toElapsedAtSegmentStart, toAudioLabel, D);
         } else {
           if (segment.to.isImage) {
-            pushImageInput(segment.to.clip, segment.to.path, segment.to.clip.sourceIn, D, inputIndex);
+            pushImageInput(segment.to.clip, segment.to.path, toSourceIn, D, inputIndex);
           } else {
-            inputs.push("-ss", t(segment.to.clip.sourceIn), "-t", t(D), "-i", segment.to.path);
+            pushVideoSourceInput(segment.to.clip, segment.to.path, toSourceIn, D, inputIndex);
           }
           const toIndex = inputIndex++;
           pushClipVideoFilters(segment.to.clip, toIndex, toVideoLabel, D, transparent);
@@ -2882,11 +2937,14 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         );
       } else if (segment.kind === "transition") {
         const D = segment.duration;
+        const halfD = D / 2;
         const fromAudioLabel = `${audioLabel}_from`;
         const toAudioLabel = `${audioLabel}_to`;
+        const fromSourceIn = segment.from.sourceIn ?? (segment.from.clip.sourceOut - halfD);
+        const toSourceIn = segment.to.sourceIn ?? (segment.to.clip.sourceIn - halfD);
 
-        // The outgoing clip carries on past its out-point — see `transitionPartnerSourceTime`.
-        inputs.push("-ss", t(segment.from.clip.sourceOut), "-t", t(D), "-i", segment.from.path);
+        // The outgoing clip carries on across the centered junction.
+        inputs.push("-ss", t(fromSourceIn), "-t", t(D), "-i", segment.from.path);
         const fromIndex = inputIndex++;
         pushClipAudioFilters(
           segment.from.hasAudio && !segment.from.clip.mutedAudio,
@@ -2899,8 +2957,15 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           true
         );
 
-        inputs.push("-ss", t(segment.to.clip.sourceIn), "-t", t(D), "-i", segment.to.path);
         const toIndex = inputIndex++;
+        if (toSourceIn < -1e-6) {
+          const underflow = -toSourceIn;
+          const readDuration = Math.max(0, D - underflow);
+          inputs.push("-ss", "0", "-t", t(readDuration), "-i", segment.to.path);
+          audioInputDelay.set(toIndex, underflow);
+        } else {
+          inputs.push("-ss", t(toSourceIn), "-t", t(D), "-i", segment.to.path);
+        }
         pushClipAudioFilters(segment.to.hasAudio && !segment.to.clip.mutedAudio, toIndex, toAudioLabel, D, (segment.to.clip.gain ?? 1) * (track.gain ?? 1));
 
         filters.push(`[${fromAudioLabel}][${toAudioLabel}]acrossfade=d=${t(D)}[${audioLabel}]`);

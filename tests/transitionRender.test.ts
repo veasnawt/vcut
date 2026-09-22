@@ -86,7 +86,7 @@ describe("Flash Zoom white pulse (real FFmpeg)", () => {
         } else if (mode === "in") track.clips[0].transitionIn = { type: "flashZoom", duration: 1 };
         else track.clips[0].transitionOut = { type: "flashZoom", duration: 1 };
         const raw = render(ffmpeg!, p);
-        const start = mode === "blend" ? 30 : mode === "out" ? 60 : 0;
+        const start = mode === "blend" ? 15 : mode === "out" ? 60 : 0;
         for (const frame of [0, 6, 15, 24, 29]) {
           const q = frame / 30;
           const k = mode === "blend" ? 4 * q * (1 - q) : mode === "in" ? 1 - q : q;

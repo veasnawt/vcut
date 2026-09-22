@@ -1,6 +1,53 @@
 # VCut handoff: Claude review after Codex
 
-Updated: 2026-09-22 (Asia/Bangkok).
+Updated: 2026-09-23 (Asia/Bangkok).
+
+## Latest release: Centered Transition Timing & Production "Remove Object" Fix — 2026-09-23
+
+### 1. Transition Timing Alignment (`[cut - D/2, cut + D/2]`)
+- **Problem**: Previously, transitions between adjacent clips rendered exclusively on the incoming clip starting at the cut point (`[cut, cut + D]`), while the timeline UI displayed transitions centered symmetrically across the junction spanning `[cut - D/2, cut + D/2]`. This caused a severe visual and audio mismatch between the editor timeline and the rendered export/playback.
+- **Timeline & Playback Geometry (`src/timeline/transitions.ts`, `src/playback/PlaybackEngine.ts`)**:
+  - `findActiveTransitionAtTime(track, time)`: Accurately identifies junction transitions spanning `[cut - D/2, cut + D/2]`, calculating `progress = (time - (cut - D/2)) / D`, `fromSourceTime = transitionPartnerSourceTime(fromClip, elapsed - D/2)`, and `toSourceTime = toClip.sourceIn - D/2 + elapsed`.
+  - `transitionPartnerSourceTime`: Handles negative `elapsedPastCut` values before the cut without clamping to 0, ensuring smooth lead-in playback across the predecessor clip before the junction seam.
+  - `transitionTailExtension`: Computes `blend.duration / 2` for the outgoing clip, allowing audio mix scheduling to seamlessly play outgoing audio through the junction midpoint into silence or tail handles.
+  - `resolveAudioTransitionGain`: Ramps both outgoing and incoming audio channels across `[cut - D/2, cut + D/2]`, crossing at `gain: 0.5` at the cut seam.
+  - `PlaybackEngine`: Visual layer rendering (`drawVisualLayers`, `drawVideoClip`, `drawTransitionPartner`, and text layers) utilizes `findActiveTransitionAtTime` to composite centered transition frames during playback.
+- **Export Filtergraph Generation (`src/export/buildExportPlan.ts`, `src/export/buildAudioOnlyExportPlan.ts`)**:
+  - `buildSegments`:
+    - Snaps `halfD = snapToFrame(D / 2, fps)` to the project frame grid so that all video cuts align with discrete frame boundaries.
+    - Predecessor's solo segment duration is shortened by `halfD`.
+    - Transition segment is emitted with `from.sourceIn = partner.sourceOut - halfD` and `to.sourceIn = clip.sourceIn - halfD`.
+    - Successor's solo segment starts at `clip.sourceIn + (D - halfD)` with duration `fullDuration - (D - halfD)`.
+    - Total sequence duration is strictly conserved to the microsecond.
+  - Head underflow handling (`pushVideoSourceInput`, `pushKeyframedAudio`, `buildAudioTrackStream`): When `to.sourceIn < 0`, inputs seek at `-ss 0` with read duration `D - underflow`, video is padded using `tpad=start_mode=clone:start_duration=${underflow}`, and audio is synchronized using `adelay=${underflowMs}`.
+  - `buildAudioTrackStream`: Refactored to utilize centered `fromSourceIn` and `toSourceIn` with `adelay` for audio-track crossfades.
+- **Test Suite Updates**:
+  - Updated `tests/transitionMotion.test.ts`, `tests/transitions.test.ts`, `tests/export.test.ts`, `tests/buildAudioOnlyExportPlan.test.ts`, `tests/transitionRender.test.ts`, and `tests/transitionHandlesRender.test.ts` to assert the centered transition model.
+
+### 2. Production "Remove Object" Web Architecture Root Cause & Fix
+- **Problem**: On the production web app (`https://vcut.io`), clicking "Remove Object" reported: *"FFmpeg isn't available — reinstall dependencies to use this."*
+- **Root Cause Analysis**:
+  - On the desktop app, Remove Object relies on locally installed ffmpeg.
+  - On the hosted web app, client `inpaintAvailable()` performs a `HEAD /api/vcut/inpaint` probe to verify server capabilities.
+  - All capability `HEAD` handlers (`/api/vcut/inpaint`, `/api/vcut/inpaint/predict`, `/api/vcut/export`, `/api/vcut/captions`, `/api/vcut/captions/transcribe`, `/api/vcut/ai-video`) were wrapped in `hostedSessionRoute` / `hostedSessionRouteCors`.
+  - In hosted mode, `hostedSessionRoute` requires an active authenticated user session (`resolveHostedSessionOrUnauthorized`). For unauthenticated or guest users, it returned `401 Unauthorized`.
+  - Frontend `inpaintAvailable()` in `src/ui/Inspector.tsx` received the 401 response and returned `false`.
+  - The Inspector UI defaulted to showing the desktop-specific message *"FFmpeg isn't available — reinstall dependencies to use this."*
+- **Permanent Solution**:
+  - Switched capability probe handlers (`HEAD`) across `studios/vcut/app/api/vcut/*` from `hostedSessionRoute` to `publicSessionRoute` and `publicSessionRouteCors`. These routes now report capability availability without requiring login.
+  - Updated `src/ui/Inspector.tsx` fallback messaging: in hosted/web mode, when AI inpainting is unavailable, it renders *"Remove Object is temporarily unavailable — please try again later."* instead of the irrelevant desktop FFmpeg dependency notice.
+
+### 3. Verification
+- **All 1,104 tests pass** across 183 test suites in `packages/vcut` (`npm test`).
+- **Zero TypeScript errors** in `packages/vcut` (`npx tsc --noEmit`).
+- **Zero TypeScript errors** in `studios/vcut` (`npx tsc --noEmit`).
+- **Production build succeeds** in `studios/vcut` (`next build --webpack`).
+
+## Latest release: one-edge crop and one-click transform keyframes
+
+Crop no longer re-fits and recenters the remaining image. Top, Right, Bottom, and Left move independently while the opposite edge stays fixed in preview and export, including rotated clips. The Inspector exposes one direction at a time plus **Edit crop on preview**. The preview toolbar now has a diamond that adds/updates a transform keyframe at the playhead in one click and removes the current keyframe when clicked again.
+
+Commit `5cb2add` is pushed. All 1,102 tests pass, both production builds pass, responsive browser checks pass at 1440px/390px, and a real FFmpeg render verifies one-sided crop output. Railway deployment `c7cae957-439d-4203-b63b-9ffcc13f0723` is live with `SUCCESS`. Fresh artifacts are `VCut Setup 0.2.2-crop-keyframe-update.exe` (SHA-256 `189A0214B85960F327B83AF2191E63266BFA09ED71742838181C26D0E9DF11B9`) and `VCut-0.2.2-crop-keyframe-update.apk` (SHA-256 `FEAFF19EA095806BAAC2358A6ECEAF4E9A5FDDD6B76863831E539F2BFA66C40D`). iOS assets are synced; compilation/signing requires a Mac.
 
 ## Latest release: preview crop and resize UX
 

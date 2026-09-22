@@ -88,7 +88,7 @@ describe("buildAudioOnlyExportPlan with audio-track transitions", () => {
     assert.match(graph, /acrossfade=d=1\.000000/);
     assert.match(graph, /apad=whole_dur=1\.000000/);
     const outgoingSeeks = args.flatMap((arg, i) => arg === "/media/a.mp4" ? [args[i - 4]] : []);
-    assert.deepEqual(outgoingSeeks, ["0.000000", "5.000000"], "continue after the out-point, never replay its tail");
+    assert.deepEqual(outgoingSeeks, ["0.000000", "4.500000"], "continue across the centered blend, never replay its tail");
   });
 
   it("skips a muted audio track entirely, transitions and all", () => {

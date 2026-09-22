@@ -22,6 +22,8 @@ import {
 } from "../timeline/transitionMotion.ts";
 import { audibleClips, clipAtTime, visibleVideoClips } from "../timeline/queries.ts";
 import {
+  type ActiveTransitionInfo,
+  findActiveTransitionAtTime,
   findTransitionOut,
   findTransitionPartner,
   resolveAudioTransitionGain,
@@ -1873,7 +1875,8 @@ export class PlaybackEngine {
     frameHeight: number,
     track: Track,
     clip: Clip,
-    time: number
+    time: number,
+    activeTransition?: ActiveTransitionInfo | null
   ): void {
     const asset = project.assets.find((a) => a.id === clip.assetId);
 
@@ -1914,7 +1917,10 @@ export class PlaybackEngine {
           sourceHeight = element.naturalHeight;
         }
       } else if (element instanceof HTMLVideoElement) {
-        const sourceTime = clip.sourceIn + (time - clip.timelineStart);
+        const sourceTime =
+          activeTransition?.kind === "junction" && activeTransition.toSourceTime !== undefined
+            ? activeTransition.toSourceTime
+            : Math.max(0, clip.sourceIn + (time - clip.timelineStart));
         // The track's own visibility no longer needs checking here: `drawVideoLayer` already skips
         // hidden tracks entirely before this is ever called.
         this.syncMedia(clip.id, element, sourceTime, this.host.isPlaying());
@@ -1979,73 +1985,119 @@ export class PlaybackEngine {
     // call (see its own doc comment), so a broken precondition just falls through to drawing this clip
     // alone, same as a plain cut always has. Operates entirely within THIS track — a transition on one
     // track has no effect on any other track's own compositing.
-    const transition = findTransitionPartner(track, clip);
-    if (transition && elapsed < transition.duration) {
-      const progress = elapsed / transition.duration;
-      if (transition.partner) {
-        const outCtx = this.transitionCanvas("a", frameWidth, frameHeight);
-        const inCtx = this.transitionCanvas("b", frameWidth, frameHeight);
-        const partnerDrawn =
-          outCtx && this.drawTransitionPartner(project, outCtx, frameWidth, frameHeight, transition.partner, transition.duration, elapsed, track.muted);
-        if (partnerDrawn && inCtx) {
-          this.drawTransformed(inCtx, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
-          compositeTransitionFrame(
-            context,
+    if (activeTransition?.kind === "junction" && activeTransition.fromClip && activeTransition.toClip) {
+      const partner = activeTransition.fromClip;
+      const toClip = activeTransition.toClip;
+      const progress = activeTransition.progress;
+      const outCtx = this.transitionCanvas("a", frameWidth, frameHeight);
+      const inCtx = this.transitionCanvas("b", frameWidth, frameHeight);
+      const partnerDrawn =
+        outCtx &&
+        this.drawTransitionPartner(
+          project,
+          outCtx,
+          frameWidth,
+          frameHeight,
+          partner,
+          activeTransition.duration,
+          activeTransition.elapsed,
+          track.muted,
+          activeTransition.fromSourceTime
+        );
+      if (partnerDrawn && inCtx) {
+        this.drawTransformed(
+          inCtx,
+          element,
+          sourceWidth,
+          sourceHeight,
+          frameWidth,
+          frameHeight,
+          transform,
+          effects,
+          1,
+          clip.chromaKey,
+          colorGrading,
+          clip.id,
+          clip.lutId,
+          clip.pixelEffect,
+          elapsed
+        );
+        compositeTransitionFrame(
+          context,
+          frameWidth,
+          frameHeight,
+          toClip.transitionIn?.type ?? "crossfade",
+          progress,
+          this.transitionCanvasA!,
+          this.transitionCanvasB!,
+          activeTransition.duration
+        );
+        return;
+      }
+    } else if (activeTransition?.kind === "solo-in") {
+      compositeSoloReveal(
+        context,
+        frameWidth,
+        frameHeight,
+        clip.transitionIn?.type ?? "crossfade",
+        activeTransition.progress,
+        (alphaMultiplier, targetContext) => {
+          this.drawTransformed(
+            targetContext ?? context,
+            element,
+            sourceWidth,
+            sourceHeight,
             frameWidth,
             frameHeight,
-            clip.transitionIn?.type ?? "crossfade",
-            progress,
-            this.transitionCanvasA!,
-            this.transitionCanvasB!,
-            transition.duration
+            transform,
+            effects,
+            alphaMultiplier,
+            clip.chromaKey,
+            colorGrading,
+            clip.id,
+            clip.lutId,
+            clip.pixelEffect,
+            elapsed
           );
-          return;
+        },
+        { windowElapsed: activeTransition.elapsed, windowDuration: activeTransition.duration, clipElapsed: elapsed, fadingOut: false }
+      );
+      return;
+    } else if (activeTransition?.kind === "solo-out") {
+      const reveal = 1 - activeTransition.progress;
+      compositeSoloReveal(
+        context,
+        frameWidth,
+        frameHeight,
+        clip.transitionOut?.type ?? "crossfade",
+        reveal,
+        (alphaMultiplier, targetContext) => {
+          this.drawTransformed(
+            targetContext ?? context,
+            element,
+            sourceWidth,
+            sourceHeight,
+            frameWidth,
+            frameHeight,
+            transform,
+            effects,
+            alphaMultiplier,
+            clip.chromaKey,
+            colorGrading,
+            clip.id,
+            clip.lutId,
+            clip.pixelEffect,
+            elapsed
+          );
+        },
+        {
+          windowElapsed: activeTransition.elapsed,
+          windowDuration: activeTransition.duration,
+          clipElapsed: elapsed,
+          fadingOut: true,
         }
-      } else {
-        compositeSoloReveal(
-          context,
-          frameWidth,
-          frameHeight,
-          clip.transitionIn?.type ?? "crossfade",
-          progress,
-          (alphaMultiplier, targetContext) => {
-            this.drawTransformed(targetContext ?? context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, alphaMultiplier, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
-          },
-          { windowElapsed: elapsed, windowDuration: transition.duration, clipElapsed: elapsed, fadingOut: false }
-        );
-        return;
-      }
-    }
-
-    // Fade-out: the mirror of the solo fade-in case above, at this clip's own TAIL instead of its
-    // head. `reveal` runs from 1 (fade-out window just started, fully visible) down to 0 (clip's own
-    // end, fully hidden) — the inverse direction from fade-in's `progress`, but the same
-    // `compositeSoloReveal` either way. `findTransitionOut` already resolves to `null` whenever a real
-    // successor exists (see its own doc comment), so this can never fire on a boundary the successor's
-    // own `transitionIn` is already handling.
-    const transitionOut = findTransitionOut(track, clip);
-    if (transitionOut) {
-      const remaining = clipEnd(clip) - time;
-      if (remaining < transitionOut.duration) {
-        const reveal = Math.min(1, Math.max(0, remaining / transitionOut.duration));
-        compositeSoloReveal(
-          context,
-          frameWidth,
-          frameHeight,
-          clip.transitionOut?.type ?? "crossfade",
-          reveal,
-          (alphaMultiplier, targetContext) => {
-            this.drawTransformed(targetContext ?? context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, alphaMultiplier, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
-          },
-          {
-            windowElapsed: transitionOut.duration - remaining,
-            windowDuration: transitionOut.duration,
-            clipElapsed: elapsed,
-            fadingOut: true,
-          }
-        );
-        return;
-      }
+      );
+      return;
     }
 
     this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
@@ -2063,14 +2115,13 @@ export class PlaybackEngine {
     partner: Clip,
     duration: number,
     elapsed: number,
-    trackMuted: boolean
+    trackMuted: boolean,
+    sourceTimeOverride?: number
   ): boolean {
     const asset = project.assets.find((a) => a.id === partner.assetId);
-    // Carries on past the partner's own out-point — see `transitionPartnerSourceTime` for why this is
-    // no longer a replay of its last `duration` seconds.
-    // Let the transport use the loaded element's actual duration to detect EOF. Asset metadata can
-    // differ by a frame; clamping here could leave the requested time forever short of the real end.
-    const sourceTime = transitionPartnerSourceTime(partner, elapsed);
+    // In the centered model, elapsed is measured from transition start (cut - duration/2).
+    // At the cut (elapsed = duration/2), elapsedPastCut is 0.
+    const sourceTime = sourceTimeOverride ?? transitionPartnerSourceTime(partner, elapsed - duration / 2);
 
     let element: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement;
     let sourceWidth: number;
@@ -2119,7 +2170,7 @@ export class PlaybackEngine {
     // The partner's OWN clip-window-relative elapsed time — past the end of its window during a blend,
     // which keyframe resolution clamps to the last keyframe's value. No live-drag override here: the
     // partner isn't "current" for editing purposes.
-    const partnerElapsed = clipDuration(partner) + elapsed;
+    const partnerElapsed = clipDuration(partner) - duration / 2 + elapsed;
     const transform = resolveClipTransform(partner, partnerElapsed);
     const effects = resolveClipEffects(partner, partnerElapsed);
     const colorGrading = resolveClipColorGrading(partner, partnerElapsed);
@@ -2417,12 +2468,17 @@ export class PlaybackEngine {
       if (!track.visible) continue;
 
       if (track.kind === "video") {
-        const clip = clipAtTime(track, time);
-        if (!clip) continue;
-        activeClipIds.add(clip.id);
-        const blend = findTransitionPartner(track, clip);
-        if (blend?.partner && time - clip.timelineStart < blend.duration) activeClipIds.add(blend.partner.id);
-        this.drawVideoClip(project, context, frameWidth, frameHeight, track, clip, time);
+        const activeTransition = findActiveTransitionAtTime(track, time);
+        if (activeTransition?.kind === "junction" && activeTransition.fromClip && activeTransition.toClip) {
+          activeClipIds.add(activeTransition.fromClip.id);
+          activeClipIds.add(activeTransition.toClip.id);
+          this.drawVideoClip(project, context, frameWidth, frameHeight, track, activeTransition.toClip, time, activeTransition);
+        } else {
+          const clip = clipAtTime(track, time);
+          if (!clip) continue;
+          activeClipIds.add(clip.id);
+          this.drawVideoClip(project, context, frameWidth, frameHeight, track, clip, time, activeTransition);
+        }
       } else if (track.kind === "text") {
         this.drawSingleTextTrack(project, context, frameWidth, frameHeight, track, time);
       }
@@ -2440,7 +2496,8 @@ export class PlaybackEngine {
     time: number
   ): void {
     if (track.kind !== "text" || !track.visible) return;
-    const clip = clipAtTime(track, time);
+    const activeTransition = findActiveTransitionAtTime(track, time);
+    const clip = activeTransition?.kind === "junction" && activeTransition.toClip ? activeTransition.toClip : clipAtTime(track, time);
     if (!clip) return;
     const asset = project.assets.find((a) => a.id === clip.assetId);
     if (!asset || asset.kind !== "text" || !asset.textStyle) return;
@@ -2469,62 +2526,54 @@ export class PlaybackEngine {
       if (cropRect) context.restore();
     }
 
-    const transition = findTransitionPartner(track, clip);
-    if (transition && elapsed < transition.duration) {
-      const partner = transition.partner;
-      const progress = elapsed / transition.duration;
-      if (partner) {
-        const partnerAsset = project.assets.find((a) => a.id === partner.assetId);
-        if (partnerAsset?.kind === "text" && partnerAsset.textStyle) {
-          const outCtx = this.transitionCanvas("a", frameWidth, frameHeight);
-          const inCtx = this.transitionCanvas("b", frameWidth, frameHeight);
-          if (outCtx && inCtx) {
-            this.drawText(outCtx, frameWidth, frameHeight, partnerAsset.textContent ?? "", partnerAsset.textStyle, undefined, project.customFonts);
-            this.drawText(inCtx, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
-            withCrop(() => {
-              compositeTransitionFrame(context, frameWidth, frameHeight, "crossfade", progress, outCtx.canvas, inCtx.canvas, transition.duration);
-            });
-            return;
-          }
+    if (activeTransition?.kind === "junction" && activeTransition.fromClip && activeTransition.toClip) {
+      const partner = activeTransition.fromClip;
+      const partnerAsset = project.assets.find((a) => a.id === partner.assetId);
+      if (partnerAsset?.kind === "text" && partnerAsset.textStyle) {
+        const outCtx = this.transitionCanvas("a", frameWidth, frameHeight);
+        const inCtx = this.transitionCanvas("b", frameWidth, frameHeight);
+        if (outCtx && inCtx) {
+          const partnerElapsed = partner.timelineStart + clipDuration(partner) - activeTransition.cut! + (time - activeTransition.cut!);
+          const fromStyle = overrides.find((o) => o.clipId === partner.id)?.textStyle ?? resolveTextStyle(partner, partnerElapsed, partnerAsset.textStyle);
+          this.drawText(outCtx, frameWidth, frameHeight, partnerAsset.textContent ?? "", fromStyle, undefined, project.customFonts);
+          this.drawText(inCtx, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
+          withCrop(() => {
+            compositeTransitionFrame(context, frameWidth, frameHeight, activeTransition.type, activeTransition.progress, outCtx.canvas, inCtx.canvas, activeTransition.duration);
+          });
+          return;
         }
-      } else {
-        withCrop(() => {
-          compositeSoloReveal(
-            context,
-            frameWidth,
-            frameHeight,
-            "crossfade",
-            progress,
-            () => {
-              this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
-            },
-            { windowElapsed: elapsed, windowDuration: transition.duration, clipElapsed: elapsed, fadingOut: false }
-          );
-        });
-        return;
       }
-    }
-
-    const transitionOut = findTransitionOut(track, clip);
-    if (transitionOut) {
-      const remaining = clipEnd(clip) - time;
-      if (remaining < transitionOut.duration) {
-        const reveal = Math.min(1, Math.max(0, remaining / transitionOut.duration));
-        withCrop(() => {
-          compositeSoloReveal(
-            context,
-            frameWidth,
-            frameHeight,
-            "crossfade",
-            reveal,
-            () => {
-              this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
-            },
-            { windowElapsed: transitionOut.duration - remaining, windowDuration: transitionOut.duration, clipElapsed: elapsed, fadingOut: true }
-          );
-        });
-        return;
-      }
+    } else if (activeTransition?.kind === "solo-in") {
+      withCrop(() => {
+        compositeSoloReveal(
+          context,
+          frameWidth,
+          frameHeight,
+          activeTransition.type,
+          activeTransition.progress,
+          () => {
+            this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
+          },
+          { windowElapsed: activeTransition.elapsed, windowDuration: activeTransition.duration, clipElapsed: elapsed, fadingOut: false }
+        );
+      });
+      return;
+    } else if (activeTransition?.kind === "solo-out") {
+      const reveal = 1 - activeTransition.progress;
+      withCrop(() => {
+        compositeSoloReveal(
+          context,
+          frameWidth,
+          frameHeight,
+          activeTransition.type,
+          reveal,
+          () => {
+            this.drawText(context, frameWidth, frameHeight, asset.textContent ?? "", style, undefined, project.customFonts);
+          },
+          { windowElapsed: activeTransition.elapsed, windowDuration: activeTransition.duration, clipElapsed: elapsed, fadingOut: true }
+        );
+      });
+      return;
     }
 
     withCrop(() => {
