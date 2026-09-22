@@ -44,7 +44,27 @@ const HANDLE_SIZE = 24;
 // cursor still has the full 24px to land on, but the dot itself reads as a precise resize/rotate
 // affordance rather than a chunky one.
 const HANDLE_DOT_SIZE = 10;
-const ROTATE_HANDLE_OFFSET = 28;
+
+function CropRotateIcon({ size = 15, className }: { size?: number; className?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M6.5 2v13.5a2 2 0 0 0 2 2H22" />
+      <path d="M17.5 22V8.5a2 2 0 0 0-2-2H2" />
+      <path d="M20 7a7 7 0 0 0-7-5" />
+      <polyline points="20 3 20 7 16 7" />
+    </svg>
+  );
+}
 
 type DragMode = "move" | "scale" | "rotate";
 
@@ -565,22 +585,18 @@ export function TransformHandles({
     const truePoint = rotatedPoint(cssCenterX, cssCenterY, (x - 0.5) * cssWidth, (y - 0.5) * cssHeight, transform.rotationDeg);
     return { x, y, cursor: resizeCursorForAngle(angle + transform.rotationDeg), label, point: clampPointToRect(truePoint, stageRect, HANDLE_SIZE / 2) };
   });
-  const rotateTruePoint = rotatedPoint(cssCenterX, cssCenterY, 0, -cssHeight / 2 - ROTATE_HANDLE_OFFSET, transform.rotationDeg);
-  const rotatePoint = clampPointToRect(rotateTruePoint, stageRect, HANDLE_SIZE / 2);
-  // Whether clamping actually moved the rotate handle from its true position — drives the connecting
-  // line below (see its own comment for why a clamped handle hides it rather than trying to draw a
-  // correct line to it).
-  const rotateHandleClamped = rotatePoint.x !== rotateTruePoint.x || rotatePoint.y !== rotateTruePoint.y;
   const stageWidth = stageRect.right - stageRect.left;
-  const dockWidth = Math.min(cropMode ? 272 : 76, Math.max(56, stageWidth - 16));
-  const rightGap = stageRect.right - canvasRect.right;
-  const leftGap = canvasRect.left - stageRect.left;
+  const dockWidth = cropMode ? Math.min(276, Math.max(56, stageWidth - 16)) : 62;
   const dockHalf = dockWidth / 2;
-  const dockPoint = rightGap >= dockWidth + 12
-    ? { x: canvasRect.right + dockHalf + 8, y: Math.min(canvasRect.bottom - 22, stageRect.bottom - 22) }
-    : leftGap >= dockWidth + 12
-      ? { x: canvasRect.left - dockHalf - 8, y: Math.min(canvasRect.bottom - 22, stageRect.bottom - 22) }
-      : { x: Math.max(stageRect.left + dockHalf + 8, Math.min(stageRect.right - dockHalf - 8, canvasRect.right - dockHalf - 8)), y: Math.min(canvasRect.bottom - 22, stageRect.bottom - 22) };
+  const canvasCenterX = (canvasRect.left + canvasRect.right) / 2;
+  const dockX = Math.max(stageRect.left + dockHalf + 12, Math.min(stageRect.right - dockHalf - 12, canvasCenterX));
+  const dockY = cropMode
+    ? Math.min(canvasRect.bottom - 46, stageRect.bottom - 46)
+    : Math.min(canvasRect.bottom - 24, stageRect.bottom - 24);
+  const dockPoint = {
+    x: dockX,
+    y: Math.max(stageRect.top + 24, dockY),
+  };
   const rulerBaseDegree = Math.floor(transform.rotationDeg);
   const rulerTicks = Array.from({ length: 25 }, (_, index) => {
     const degree = rulerBaseDegree + index - 12;
@@ -615,7 +631,7 @@ export function TransformHandles({
       {!isGroupSelection && (
         <div
           style={{ position: "fixed", left: Math.round(dockPoint.x), top: Math.round(dockPoint.y), width: dockWidth, zIndex: 42 }}
-          className="pointer-events-auto flex -translate-x-1/2 -translate-y-1/2 items-center justify-end gap-1 rounded-lg border border-white/15 bg-[#11151d]/95 p-1 text-[11px] text-white shadow-xl backdrop-blur"
+          className="pointer-events-auto flex -translate-x-1/2 -translate-y-1/2 items-center justify-center gap-1 rounded-lg border border-white/15 bg-[#11151d]/95 p-1 text-[11px] text-white shadow-xl backdrop-blur"
         >
           <button
             type="button"
@@ -667,10 +683,10 @@ export function TransformHandles({
               <button
                 type="button"
                 onClick={() => {
-                  const next = { ...transform, crop: { top: 0, right: 0, bottom: 0, left: 0 } };
+                  const next = { ...transform, crop: { top: 0, right: 0, bottom: 0, left: 0 }, rotationDeg: 0 };
                   commitSingleTransform(resolved, next, project, playhead, run);
                 }}
-                disabled={Object.values(transform.crop).every((value) => value === 0)}
+                disabled={Object.values(transform.crop).every((value) => value === 0) && transform.rotationDeg === 0}
                 className="rounded px-2 py-1 text-white/65 hover:bg-white/10 hover:text-white disabled:opacity-30"
               >
                 {t("Reset")}
@@ -680,8 +696,14 @@ export function TransformHandles({
               </button>
             </>
           ) : (
-            <button type="button" onClick={() => setCropMode(true)} className="rounded px-2 py-1 font-medium text-white/80 hover:bg-white/10 hover:text-white">
-              {t("Crop")}
+            <button
+              type="button"
+              onClick={() => setCropMode(true)}
+              title={t("Crop & Rotate")}
+              aria-label={t("Crop & Rotate")}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-white/70 hover:bg-white/10 hover:text-white transition"
+            >
+              <CropRotateIcon size={14} />
             </button>
           )}
         </div>
@@ -740,20 +762,7 @@ export function TransformHandles({
         </>
       )}
 
-      {/* Connecting line stays nested in the ROTATED box above (unlike the corner/rotate dots below,
-          which render as independent fixed-position siblings so they can be clamped) — its own CSS
-          rotation already draws it correctly from the box's top edge up to the rotate handle's TRUE
-          (unclamped) position, so this is only ever shown when that position needs no clamping in the
-          first place; see the rotate handle's own comment for what happens otherwise. Purely visual —
-          decorative, so it's excluded from the accessibility tree rather than announced as an
-          unlabeled element. */}
-      {!isGroupSelection && !cropMode && !rotateHandleClamped && (
-        <div
-          aria-hidden
-          style={{ left: "50%", top: -ROTATE_HANDLE_OFFSET, height: ROTATE_HANDLE_OFFSET }}
-          className="pointer-events-none absolute w-px -translate-x-1/2 bg-white/50"
-        />
-      )}
+
       </div>
       </div>
 
@@ -834,25 +843,6 @@ export function TransformHandles({
               <div style={{ width: HANDLE_DOT_SIZE, height: HANDLE_DOT_SIZE }} className="rounded-full border border-white bg-sky-400 shadow" />
             </div>
           ))}
-          <div
-            role="button"
-            tabIndex={0}
-            aria-label={t("Rotate clip")}
-            onMouseDown={(e) => beginDrag(e, "rotate")}
-            onTouchStart={(e) => beginDrag(e, "rotate")}
-            // Same reasoning as the corner handles above.
-            style={{
-              position: "fixed",
-              left: Math.round(rotatePoint.x) - HANDLE_SIZE / 2,
-              top: Math.round(rotatePoint.y) - HANDLE_SIZE / 2,
-              width: HANDLE_SIZE,
-              height: HANDLE_SIZE,
-              zIndex: 40,
-            }}
-            className="pointer-events-auto flex touch-none cursor-grab items-center justify-center"
-          >
-            <div style={{ width: HANDLE_DOT_SIZE, height: HANDLE_DOT_SIZE }} className="rounded-full border border-white bg-emerald-400 shadow" />
-          </div>
         </>
       )}
     </>

@@ -310,11 +310,15 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
       const availW = box.clientWidth;
       const availH = box.clientHeight;
       if (availW <= 0 || availH <= 0) return;
-      // `previewZoom` under-fills the SAME stable `box` rather than shrinking it — `box` itself never
-      // changes size, so the slack this opens up between the (now smaller) canvas and `box`'s own
-      // edges is exactly what `TransformHandles`/`TextTransformHandles` clamp their handles into via
-      // the `stageEl` prop below. At the default `previewZoom = 1` this is identical to before.
-      const scale = Math.min(availW / seqW, availH / seqH) * previewZoom;
+      // Reserve clearance around the canvas at Fit zoom (previewZoom = 1) so that on-canvas
+      // affordances (rotate handle at -28px, corner resize handles at 12px radius, selection box outline,
+      // and drop shadow) always have breathing room and never collide with the stage boundary or clamp
+      // inward over the video content. In fullscreen mode, letterbox edge-to-edge without padding.
+      const fitPadX = fullscreen ? 0 : Math.min(32, Math.max(0, Math.floor((availW - 100) / 2)));
+      const fitPadY = fullscreen ? 0 : Math.min(48, Math.max(0, Math.floor((availH - 100) / 2)));
+      const fitW = Math.max(1, availW - fitPadX * 2);
+      const fitH = Math.max(1, availH - fitPadY * 2);
+      const scale = Math.min(fitW / seqW, fitH / seqH) * previewZoom;
       const width = Math.max(1, Math.round(seqW * scale));
       const height = Math.max(1, Math.round(seqH * scale));
       setDisplaySizeState({ width, height });
@@ -324,7 +328,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
     observer.observe(box);
     recompute();
     return () => observer.disconnect();
-  }, [project?.sequence.width, project?.sequence.height, previewZoom]);
+  }, [project?.sequence.width, project?.sequence.height, previewZoom, fullscreen]);
 
   const total = project ? sequenceDuration(project) : 0;
   const empty = total <= 0;

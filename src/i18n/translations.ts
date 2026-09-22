@@ -359,6 +359,7 @@ export const KM_TRANSLATIONS: Record<string, string> = {
   "Reset rotation to 0°": "កំណត់ការបង្វិលត្រឡប់ទៅ 0°",
   "Rotate 90° clockwise": "បង្វិល 90° តាមទ្រនិចនាឡិកា",
   Crop: "កាត់ទំហំ",
+  "Crop & Rotate": "កាត់ទំហំ និងបង្វិល",
   Top: "លើ",
   Bottom: "ក្រោម",
   "Reset transform": "កំណត់ការបំប្លែងត្រឡប់មកវិញ",

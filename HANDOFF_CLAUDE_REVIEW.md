@@ -2,7 +2,30 @@
 
 Updated: 2026-09-23 (Asia/Bangkok).
 
-## Latest release: Centered Transition Timing & Production "Remove Object" Fix — 2026-09-23
+## Latest release: Canvas Controls UX & Fit Zoom Alignment — 2026-09-23
+
+### 1. Floating Canvas Controls & Rotation Clean-Up (`src/ui/TransformHandles.tsx`, `src/i18n/translations.ts`)
+- **Reset Button Resets Rotation**: In crop mode, the Reset button now resets both crop fractions and rotation (`rotationDeg: 0`), and disables only when both crop is all zeros and `rotationDeg === 0`.
+- **Crop & Rotate Icon Button**: Replaced the text "Crop" button in the collapsed floating pill with a dedicated `CropRotateIcon` (representing crop brackets with rotation arrow), matching the Keyframe icon button size (`w-6 h-6`) and aesthetics.
+- **Removed Green Rotation Handler**: Removed the green rotation dot button and stem line from the canvas overlay. Rotation is now cleanly and smoothly controlled via the straighten ruler dial inside the Crop & Rotate floating menu, preventing canvas visual clutter.
+- **User-Friendly Bottom-Center Positioning**:
+  - Previously, the toolbar checked `rightGap >= dockWidth + 12` and was pushed into the empty margin far to the right of the canvas, or collapsed right on top of the bottom-right resize handle.
+  - Re-anchored the floating toolbar horizontally to the canvas center (`canvasCenterX = (canvasRect.left + canvasRect.right) / 2`), clamped within the stage.
+  - Re-anchored vertically to the bottom of the canvas (`canvasRect.bottom - 24` when collapsed, `canvasRect.bottom - 46` in crop mode), providing clean clearance for bottom crop handles while keeping controls comfortably accessible directly above the timeline.
+- **Khmer Localization**: Added `"Crop & Rotate": "កាត់ទំហំ និងបង្វិល"` to `KM_TRANSLATIONS`.
+
+### 2. Handle Alignment & Stage Breathing Room at Fit Zoom (`src/ui/Preview.tsx`)
+- **Problem**: In the editor preview, transform handles looked correct at 80% zoom, but at "Fit" zoom (`previewZoom = 1`), the handles looked broken: the top green rotate handle was clamped 40px downward directly inside the top edge of the clip, the connecting stem line was hidden, and the 4 corner resize handles were forced 12px inward away from the clip's corners while the blue bounding box shot 12px past them.
+- **Root Cause**:
+  - `Preview.tsx`'s `recompute()` letterboxed the canvas against raw `box.clientWidth` and `box.clientHeight` with zero padding at `previewZoom = 1`. For a 9:16 portrait video in a standard studio layout, the canvas filled 100% of `box.clientHeight`, touching the top and bottom edges of `previewBoxRef` with 0px slack.
+  - `previewBoxRef.current` was passed as `stageEl` to `TransformHandles` and `TextTransformHandles`, which clamped handles into `stageRect` inset by `margin = HANDLE_SIZE / 2 = 12px`.
+  - Because `canvasRect.top === stageRect.top`, the true rotate point at `canvasRect.top - 28px` and top corner handles at `canvasRect.top` were pushed downward to `stageRect.top + 12px` (inside the video), while bottom corner handles were pushed upward to `stageRect.bottom - 12px`.
+  - At 80% zoom, the 20% slack (~45px top/bottom) kept all handles unclamped, which is why 80% looked correct.
+- **Solution**:
+  - In `Preview.tsx`, updated `recompute()` to reserve fit clearance (`fitPadX = 32px`, `fitPadY = 48px`) when computing `scale` for normal preview mode, while retaining edge-to-edge letterboxing in fullscreen mode (`fitPadX = 0`, `fitPadY = 0`).
+  - The corner resize handles sit precisely on the 4 corners of the clip and bounding box.
+
+## Previous release: Centered Transition Timing & Production "Remove Object" Fix — 2026-09-23
 
 ### 1. Transition Timing Alignment (`[cut - D/2, cut + D/2]`)
 - **Problem**: Previously, transitions between adjacent clips rendered exclusively on the incoming clip starting at the cut point (`[cut, cut + D]`), while the timeline UI displayed transitions centered symmetrically across the junction spanning `[cut - D/2, cut + D/2]`. This caused a severe visual and audio mismatch between the editor timeline and the rendered export/playback.
