@@ -7,8 +7,8 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { buildExportPlan } from "../src/export/buildExportPlan.ts";
 import { IDENTITY_TRANSFORM } from "../src/project/types.ts";
-import { addClip, setClipTransform, trimClip } from "../src/timeline/operations.ts";
-import { clipsOf, colorAsset, emptyProject, videoTrackId } from "./fixture.ts";
+import { addClip, setClipTransform, setClipTransformKeyframes, trimClip } from "../src/timeline/operations.ts";
+import { clipsOf, colorAsset, emptyProject, videoAsset, videoTrackId } from "./fixture.ts";
 
 /** Resolves the same bundled FFmpeg the vcut server uses; `null` skips the test — same pattern
  *  `stickers.test.ts`'s own `bundledFfmpeg` uses for its real-render regression test. */
@@ -62,6 +62,54 @@ describe("color-matte export render (real FFmpeg)", () => {
       assert.ok(croppedSide.every((channel) => channel < 25), `cropped side should be black, got ${croppedSide}`);
       assert.ok(retainedLeft[0] > 200 && retainedLeft[1] < 40 && retainedLeft[2] < 40, `retained area should be red, got ${retainedLeft}`);
       assert.ok(retainedRight[0] > 200 && retainedRight[1] < 40 && retainedRight[2] < 40, `opposite edge moved, got ${retainedRight}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("renders rotation-only keyframes continuously without a static-slice staircase", { skip: !ffmpeg && "bundled FFmpeg not found" }, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vcut-smooth-rotation-"));
+    try {
+      const size = 120;
+      const sourcePath = path.join(dir, "source.mp4");
+      execFileSync(ffmpeg!, [
+        "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", `color=c=black:s=${size}x${size}:r=30`,
+        "-vf", "drawbox=x=12:y=18:w=34:h=20:color=white:t=fill", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", sourcePath,
+      ]);
+
+      let project = emptyProject([{ ...videoAsset("spin", 1), hasAudio: false }]);
+      project.sequence.width = size;
+      project.sequence.height = size;
+      project.exportSettings = { ...project.exportSettings, width: size, height: size, fps: 30 };
+      const base = videoTrackId(project);
+      project = addClip(project, base, "spin", 0);
+      const clip = clipsOf(project, base)[0];
+      project = setClipTransformKeyframes(project, clip.id, [
+        { id: "start", time: 0, value: IDENTITY_TRANSFORM },
+        { id: "end", time: 1, value: { ...IDENTITY_TRANSFORM, rotationDeg: 90 } },
+      ]);
+
+      const outputPath = path.join(dir, "rotation.mp4");
+      const { args } = buildExportPlan(project, {
+        inputPathFor: () => sourcePath,
+        outputPath,
+        fontPathFor: (f) => f,
+        textFilePathFor: (c) => path.join(dir, `${c.id}.txt`),
+      });
+      execFileSync(ffmpeg!, args, { stdio: "pipe" });
+      const raw = execFileSync(ffmpeg!, ["-hide_banner", "-loglevel", "error", "-i", outputPath, "-f", "rawvideo", "-pix_fmt", "gray", "-"], {
+        maxBuffer: 1 << 26,
+      });
+      const frameBytes = size * size;
+      const frameCount = raw.length / frameBytes;
+      assert.ok(frameCount >= 29, `expected 30 frames, got ${frameCount}`);
+      const signatures = Array.from({ length: Math.floor(frameCount) }, (_, frame) => {
+        const start = frame * frameBytes;
+        let weighted = 0;
+        for (let i = 0; i < frameBytes; i += 17) weighted = (weighted + raw[start + i] * (i + 1)) >>> 0;
+        return weighted;
+      });
+      assert.ok(new Set(signatures).size >= 20, "most output frames should have a distinct rotation, not repeat a held angle");
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

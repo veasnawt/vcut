@@ -509,6 +509,23 @@ describe("buildExportPlan with keyframed transform/effects", () => {
     assert.equal((graph.match(/overlay=x=/g) ?? []).length, 4);
   });
 
+  it("renders rotation-only transform keyframes as one continuous per-frame expression", () => {
+    const base = emptyProject([videoAsset("asset1", 2)]);
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    project = setClipTransformKeyframes(project, clip.id, [
+      { id: "a", time: 0, value: IDENTITY_TRANSFORM },
+      { id: "b", time: 2, value: { ...IDENTITY_TRANSFORM, rotationDeg: 180 } },
+    ]);
+
+    const graph = filterGraph(plan(project).args);
+
+    assert.ok(!graph.includes("_kfsrcsplit"), "smooth rotation must not be held in static slices");
+    assert.ok(!graph.includes("concat=n=14:v=1:a=0"), "smooth rotation needs no inner video concat");
+    assert.match(graph, /rotate=a='\(if\(lt\(t\\,2\.000000\).*180\.000000\*clip.*\)\*PI\/180':ow='hypot\(iw,ih\)'/);
+    assert.equal((graph.match(/overlay=x=/g) ?? []).length, 1);
+  });
+
   it("slices a keyframed Effects clip the same way", () => {
     const base = emptyProject([videoAsset("asset1", 0.5)]);
     let project = addClip(base, videoTrackId(base), "asset1", 0);

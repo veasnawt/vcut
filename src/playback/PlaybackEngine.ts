@@ -24,8 +24,6 @@ import { audibleClips, clipAtTime, visibleVideoClips } from "../timeline/queries
 import {
   type ActiveTransitionInfo,
   findActiveTransitionAtTime,
-  findTransitionOut,
-  findTransitionPartner,
   resolveAudioTransitionGain,
   transitionPartnerSourceTime,
   transitionTailExtension,

@@ -362,6 +362,41 @@ function n(value: number): string {
   return value.toFixed(6);
 }
 
+function hasRotationOnlyTransformKeyframes(clip: Clip): boolean {
+  const keyframes = clip.transformKeyframes ?? [];
+  if (keyframes.length < 2 || hasEffectsKeyframes(clip) || hasColorGradingKeyframes(clip)) return false;
+  const first = keyframes[0].value;
+  const sameGeometry = keyframes.every(({ value }) =>
+    value.offsetX === first.offsetX &&
+    value.offsetY === first.offsetY &&
+    value.scale === first.scale &&
+    value.crop.top === first.crop.top &&
+    value.crop.right === first.crop.right &&
+    value.crop.bottom === first.crop.bottom &&
+    value.crop.left === first.crop.left
+  );
+  return sameGeometry && keyframes.some(({ value }) => value.rotationDeg !== first.rotationDeg);
+}
+
+/** A continuous, piecewise-linear FFmpeg expression for rotation keyframes. `t` is local to the
+ *  segment's zeroed source, so `elapsedAtSegmentStart` maps it back into clip-relative keyframe time.
+ *  Commas are escaped for the filter-graph parser while remaining expression separators. */
+function rotationKeyframeExpression(clip: Clip, elapsedAtSegmentStart: number): string {
+  const keyframes = [...(clip.transformKeyframes ?? [])].sort((a, b) => a.time - b.time);
+  if (keyframes.length === 0) return n(clip.transform?.rotationDeg ?? 0);
+  const elapsed = elapsedAtSegmentStart === 0 ? "t" : `(t+${n(elapsedAtSegmentStart)})`;
+  let expression = n(keyframes[keyframes.length - 1].value.rotationDeg);
+  for (let index = keyframes.length - 2; index >= 0; index--) {
+    const from = keyframes[index];
+    const to = keyframes[index + 1];
+    const duration = Math.max(1e-9, to.time - from.time);
+    const delta = to.value.rotationDeg - from.value.rotationDeg;
+    const interpolated = `${n(from.value.rotationDeg)}+${n(delta)}*clip((${elapsed}-${n(from.time)})/${n(duration)},0,1)`;
+    expression = `if(lt(${elapsed},${n(to.time)}),${interpolated},${expression})`;
+  }
+  return expression.replaceAll(",", "\\,");
+}
+
 /** Filter chain for a clip with a REAL transform and/or REAL effects (see `isIdentityTransform`/
  *  `isIdentityEffects` — the plain scale+pad chain below handles the fully-untouched case and is
  *  untouched by this). Empirically verified against the actual bundled FFmpeg binary before being
@@ -396,12 +431,14 @@ function buildTransformFilters(params: {
    *  clip has no `lutId` or the resolver itself wasn't supplied — either way, no `lut3d=` stage. */
   lutPath?: string;
   pixelEffect?: { type: PixelEffectType; speed?: number };
+  /** Continuous degrees expression in this filter's local `t`; used for rotation-only keyframes. */
+  rotationExpressionDegrees?: string;
 }): string[] {
-  const { source, bg, outputLabel, transform, effects, width, height, fps, chromaKey, colorGrading, lutPath, pixelEffect } = params;
+  const { source, bg, outputLabel, transform, effects, width, height, fps, chromaKey, colorGrading, lutPath, pixelEffect, rotationExpressionDegrees } = params;
   const { crop } = transform;
   const clipLabel = `${outputLabel}_src`;
   const bgLabel = `${outputLabel}_bg`;
-  const angle = `${n(transform.rotationDeg)}*PI/180`;
+  const angle = rotationExpressionDegrees ? `(${rotationExpressionDegrees})*PI/180` : `${n(transform.rotationDeg)}*PI/180`;
   // Applied FIRST, on the raw un-cropped/un-scaled source — keying is a per-pixel color operation that
   // commutes with crop/scale/rotate, so where in the chain it runs doesn't change the RESULT, only
   // performance (fewer pixels to key before a downsize) and needing `format=rgba` right after it rather
@@ -433,7 +470,12 @@ function buildTransformFilters(params: {
     ? `,format=rgba,pad=w='iw/${n(remainingX)}':h='ih/${n(remainingY)}'` +
       `:x='iw*${n(crop.left)}/${n(remainingX)}':y='ih*${n(crop.top)}/${n(remainingY)}':color=black@0`
     : "";
-  const rotateFilter = `rotate=a=${angle}:ow=rotw(${angle}):oh=roth(${angle}):c=black@0`;
+  // A dynamic angle cannot also drive `rotw(a)`/`roth(a)`: FFmpeg evaluates output dimensions once
+  // while `t` is unavailable. A fixed diagonal square safely contains every angle and lets one filter
+  // interpolate every output frame, avoiding the visible 150–300ms staircase of the old slice path.
+  const rotateFilter = rotationExpressionDegrees
+    ? `rotate=a='${angle}':ow='hypot(iw,ih)':oh='hypot(iw,ih)':c=black@0`
+    : `rotate=a=${angle}:ow=rotw(${angle}):oh=roth(${angle}):c=black@0`;
   // eq's own defaults (brightness=0, contrast=1, saturation=1) are genuine no-ops, so — unlike
   // gblur/colorchannelmixer below — it's always safe to include unconditionally, no identity check
   // needed for this one fragment.
@@ -1972,6 +2014,43 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     fadeOut?: number
   ): void {
     const label = fadeIn || fadeOut ? `${outputLabel}_prefade` : outputLabel;
+    if (hasRotationOnlyTransformKeyframes(clip)) {
+      const sourceIndex = inputIndex++;
+      if (isImage) {
+        pushImageInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex);
+      } else {
+        pushVideoSourceInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex);
+      }
+      const bgIndex = inputIndex++;
+      const bgColor = transparent ? "black@0" : "black";
+      inputs.push(
+        "-f",
+        "lavfi",
+        "-t",
+        t(sliceDuration),
+        "-i",
+        `color=c=${bgColor}:s=${width}x${height}:r=${fps}${transparent ? ",format=rgba" : ""}`
+      );
+      filters.push(
+        ...buildTransformFilters({
+          source: videoRef(sourceIndex),
+          bg: `${bgIndex}:v`,
+          outputLabel: label,
+          transform: resolveClipTransform(clip, elapsedAtSegmentStart),
+          effects: clip.effects ?? IDENTITY_EFFECTS,
+          width,
+          height,
+          fps,
+          chromaKey: clip.chromaKey,
+          colorGrading: clip.colorGrading,
+          lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId) : undefined,
+          pixelEffect: clip.pixelEffect,
+          rotationExpressionDegrees: rotationKeyframeExpression(clip, elapsedAtSegmentStart),
+        })
+      );
+      if (fadeIn || fadeOut) pushSoloTransitionStages(label, outputLabel, clip, sliceDuration, transparent, fadeIn, fadeOut);
+      return;
+    }
     const slices = computeKeyframeSlices(clip, elapsedAtSegmentStart, sliceDuration, fps, options.keyframeSliceTuning);
     const bgColor = transparent ? "black@0" : "black";
 

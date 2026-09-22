@@ -104,6 +104,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   const engineRef = useRef<PlaybackEngine | null>(null);
   const previewBoxRef = useRef<HTMLDivElement | null>(null);
+  const canvasViewportRef = useRef<HTMLDivElement | null>(null);
   // The whole Preview panel (canvas + transport bar), not just the canvas — fullscreen should keep the
   // play/pause/skip controls and timecode reachable, the same way a real player's fullscreen mode
   // still shows its own chrome rather than becoming a bare, controls-less video.
@@ -164,16 +165,14 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
   // window grew back. Computing the exact letterbox-fit size fresh from the STABLE outer panel's own
   // box (which the canvas's size can never feed back into) sidesteps that feedback loop entirely.
   const [displaySize, setDisplaySizeState] = useState<{ width: number; height: number } | null>(null);
-  // How far the canvas is deliberately under-filling `previewBoxRef`, `1` = "Fit" (today's default,
-  // unchanged behavior). Zoom-OUT only (never above 1) — the point is opening up reachable space
-  // around an oversized (large Transform scale/fontSize) clip's own on-canvas handles, which shrinking
-  // the canvas alone can't do (see `TransformHandles`' own `stageEl` prop comment for why): the canvas
-  // shrinks but `previewBoxRef` stays the same size, so the slack between them is what a clamped
-  // corner/rotate handle actually has room to move into. Local state, not the Zustand store — same
+  // View-only canvas zoom. `1` is Fit; values above it intentionally crop the enlarged canvas against
+  // the stage so users can inspect fine details, while values below it open more working room. Local
+  // state, not the Zustand store — same
   // "ephemeral view state" precedent `displaySize` above already sets; nothing outside this component
   // needs the NUMBER, only `previewBoxRef`'s own (already-DOM) rect, threaded to the handle components
   // below as `stageEl`.
   const [previewZoom, setPreviewZoom] = useState(1);
+  const [transformToolsActive, setTransformToolsActive] = useState(false);
   const t = useTranslation();
   const setStatus = useEditorStore((s) => s.setStatus);
 
@@ -302,7 +301,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
   // pixels) and `PlaybackEngine.setDisplaySize` (which caps the backing-store RESOLUTION to match, for
   // the GPU/compositing win this whole mechanism exists for — see its own comment).
   useEffect(() => {
-    const box = previewBoxRef.current;
+    const box = canvasViewportRef.current;
     if (!box) return;
     const seqW = project?.sequence.width ?? 1080;
     const seqH = project?.sequence.height ?? 1920;
@@ -310,14 +309,8 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
       const availW = box.clientWidth;
       const availH = box.clientHeight;
       if (availW <= 0 || availH <= 0) return;
-      // Reserve clearance around the canvas at Fit zoom (previewZoom = 1) so that on-canvas
-      // affordances (rotate handle at -28px, corner resize handles at 12px radius, selection box outline,
-      // and drop shadow) always have breathing room and never collide with the stage boundary or clamp
-      // inward over the video content. In fullscreen mode, letterbox edge-to-edge without padding.
-      const fitPadX = fullscreen ? 0 : Math.min(32, Math.max(0, Math.floor((availW - 100) / 2)));
-      const fitPadY = fullscreen ? 0 : Math.min(48, Math.max(0, Math.floor((availH - 100) / 2)));
-      const fitW = Math.max(1, availW - fitPadX * 2);
-      const fitH = Math.max(1, availH - fitPadY * 2);
+      const fitW = availW;
+      const fitH = availH;
       const scale = Math.min(fitW / seqW, fitH / seqH) * previewZoom;
       const width = Math.max(1, Math.round(seqW * scale));
       const height = Math.max(1, Math.round(seqH * scale));
@@ -328,7 +321,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
     observer.observe(box);
     recompute();
     return () => observer.disconnect();
-  }, [project?.sequence.width, project?.sequence.height, previewZoom, fullscreen]);
+  }, [project?.sequence.width, project?.sequence.height, previewZoom, fullscreen, transformToolsActive]);
 
   const total = project ? sequenceDuration(project) : 0;
   const empty = total <= 0;
@@ -421,8 +414,15 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
             // double-fire alongside `handleCanvasClick`'s own selection logic.
             if (e.target === e.currentTarget && !(e.ctrlKey || e.metaKey)) select([]);
           }}
-          className="relative flex h-full w-full items-center justify-center"
+          className="relative flex h-full min-h-0 w-full flex-col"
         >
+          <div
+            ref={canvasViewportRef}
+            onClick={(e) => {
+              if (e.target === e.currentTarget && !(e.ctrlKey || e.metaKey)) select([]);
+            }}
+            className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden"
+          >
           {/* Explicit pixel width/height, computed in JS from the STABLE outer box above (see the
               effect) — not CSS `aspect-ratio` + `max-h-full`/`max-w-full` against the canvas's OWN
               attribute. That combination let the canvas's backing-store attribute (now shrunk for
@@ -442,22 +442,24 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
             className="bg-black shadow-2xl ring-1 ring-white/15"
             style={{ width: `${displaySize?.width ?? 1}px`, height: `${displaySize?.height ?? 1}px` }}
           />
+          {empty && (
+            <p className="pointer-events-none absolute text-xs text-white/35">
+              {t("Add a clip to the timeline to see it here")}
+            </p>
+          )}
+          </div>
           {/* Not rendered at all in fullscreen — see `fullscreen`'s own doc comment. A selected clip's
               handles would otherwise still be sitting there (drawn from `selectedClipIds`, which
               fullscreen doesn't touch), reachable and functional, even though `handleCanvasClick`
               itself already refuses to CHANGE the selection while fullscreen is active. */}
           {!fullscreen && (
             <>
-              <TransformHandles canvas={canvas} stageEl={previewBoxRef.current} />
+              <TransformHandles canvas={canvas} stageEl={previewBoxRef.current} onToolSpaceChange={setTransformToolsActive} />
               <TextTransformHandles canvas={canvas} stageEl={previewBoxRef.current} />
             </>
           )}
           <RemoveObjectOverlay canvas={canvas} />
-          {empty && (
-            <p className="pointer-events-none absolute text-xs text-white/35">
-              {t("Add a clip to the timeline to see it here")}
-            </p>
-          )}
+          {transformToolsActive && !fullscreen && <div aria-hidden className="h-12 w-full shrink-0" />}
         </div>
       </div>
 
@@ -541,7 +543,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
         </div>
 
         <div className="pointer-events-auto z-30 flex items-center justify-end gap-2 justify-self-end">
-          {/* Preview canvas zoom — OUT only (never past "Fit"), independent of any clip's own
+          {/* Preview canvas zoom, independent of any clip's own
               Transform scale/fontSize. Same button style/convention as Timeline's own zoom cluster
               (`Timeline.tsx`), including the "click the readout to reset" affordance — deliberately
               NOT the same Ctrl/Cmd +/- shortcut, which is already globally bound to Timeline zoom.
@@ -569,8 +571,8 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
               {previewZoom === 1 ? t("Fit") : `${Math.round(previewZoom * 100)}%`}
             </button>
             <button
-              onClick={() => setPreviewZoom((z) => Math.min(1, z * 1.25))}
-              disabled={previewZoom >= 1}
+              onClick={() => setPreviewZoom((z) => Math.min(4, z * 1.25))}
+              disabled={previewZoom >= 4}
               aria-label={t("Zoom preview in")}
               title={t("Zoom preview in")}
               className="flex min-h-[26px] min-w-[26px] items-center justify-center rounded text-white/60 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-30"

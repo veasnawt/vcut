@@ -128,6 +128,7 @@ function commitSingleTransform(
 export function TransformHandles({
   canvas,
   stageEl,
+  onToolSpaceChange,
 }: {
   canvas: HTMLCanvasElement | null;
   /** The Preview panel's own stable stage element (`Preview.tsx`'s `previewBoxRef`) — larger than, and
@@ -137,6 +138,8 @@ export function TransformHandles({
    *  the same proportion, which would net to nothing. Optional — degrades to clamping against the
    *  canvas's own rect when omitted/not yet mounted. */
   stageEl?: HTMLDivElement | null;
+  /** Lets Preview reserve a slim strip outside the canvas while transform controls are visible. */
+  onToolSpaceChange?: (active: boolean) => void;
 }) {
   const project = useEditorStore((s) => s.project);
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds);
@@ -254,6 +257,12 @@ export function TransformHandles({
     window.addEventListener("vcut:open-crop-preview", openCrop);
     return () => window.removeEventListener("vcut:open-crop-preview", openCrop);
   }, []);
+
+  useEffect(() => {
+    onToolSpaceChange?.(!!resolved);
+  }, [onToolSpaceChange, resolved?.clipId]);
+
+  useEffect(() => () => onToolSpaceChange?.(false), [onToolSpaceChange]);
 
   // Two-finger pinch scales the currently selected clip directly on the canvas — the gesture every
   // mobile video editor uses for "make this bigger/smaller", alongside (not replacing) the
@@ -590,12 +599,12 @@ export function TransformHandles({
   const dockHalf = dockWidth / 2;
   const canvasCenterX = (canvasRect.left + canvasRect.right) / 2;
   const dockX = Math.max(stageRect.left + dockHalf + 12, Math.min(stageRect.right - dockHalf - 12, canvasCenterX));
-  const dockY = cropMode
-    ? Math.min(canvasRect.bottom - 46, stageRect.bottom - 46)
-    : Math.min(canvasRect.bottom - 24, stageRect.bottom - 24);
   const dockPoint = {
     x: dockX,
-    y: Math.max(stageRect.top + 24, dockY),
+    // Preview reserves a 48px tool strip at the bottom whenever these controls exist. Pinning the
+    // dock to that strip keeps it outside the crop frame even when preview zoom exceeds 100% and the
+    // underlying canvas is intentionally larger than (and clipped by) its viewport.
+    y: Math.max(stageRect.top + 24, stageRect.bottom - 24),
   };
   const rulerBaseDegree = Math.floor(transform.rotationDeg);
   const rulerTicks = Array.from({ length: 25 }, (_, index) => {

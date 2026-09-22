@@ -59,6 +59,10 @@ function TrackActionsMenu({ track, anchorRef, onClose }: { track: Track; anchorR
 
   useEffect(() => {
     function onPointerDown(e: PointerEvent) {
+      // ConfirmDialog is portaled beside this menu, not inside `menuRef`. While it is open, treating
+      // its button press as an outside click unmounts the dialog on pointerdown before its onClick can
+      // run, which made both Remove and Cancel appear broken.
+      if (confirmOpen) return;
       const target = e.target as Node;
       if (menuRef.current?.contains(target)) return;
       if (anchorRef.current?.contains(target)) return;
@@ -73,7 +77,7 @@ function TrackActionsMenu({ track, anchorRef, onClose }: { track: Track; anchorR
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [anchorRef, onClose]);
+  }, [anchorRef, confirmOpen, onClose]);
 
   const anchor = anchorRef.current?.getBoundingClientRect();
   if (!anchor) return null;
