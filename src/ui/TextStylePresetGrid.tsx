@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { fontById, preloadFont } from "../project/fonts.ts";
+import { fontById, preloadAllFonts, preloadFont } from "../project/fonts.ts";
 import {
   isPresetDark,
   PRESET_CATEGORIES,
@@ -58,37 +58,34 @@ function saveRecentToStorage(presetId: string): void {
   }
 }
 
-function buildPresetThumbnailStyle(preset: TextStylePreset): React.CSSProperties {
+function PresetThumbnail({
+  preset,
+  needsContrastBg,
+}: {
+  preset: TextStylePreset;
+  needsContrastBg: boolean;
+}) {
   const font = preset.fontFamily ? fontById(preset.fontFamily) : null;
-  const style: React.CSSProperties = {
-    fontFamily: font ? `"${font.cssFamily}", sans-serif` : "inherit",
+  const isAllCapFont = Boolean(
+    preset.fontFamily && ["anton", "bebasneue", "bungee", "bangers"].includes(preset.fontFamily)
+  );
+  const sampleText =
+    preset.textTransform === "uppercase" || isAllCapFont
+      ? "AA"
+      : preset.textTransform === "lowercase"
+        ? "aa"
+        : "Aa";
+
+  const baseTypography: React.CSSProperties = {
+    fontFamily: font ? `"${font.cssFamily}", sans-serif` : "sans-serif",
     fontWeight: preset.bold ? 700 : 400,
     fontStyle: preset.italic ? "italic" : "normal",
+    letterSpacing: preset.letterSpacing ? `${Math.min(3, Math.round(preset.letterSpacing * 0.35))}px` : undefined,
     textTransform: preset.textTransform ?? "none",
+    textDecoration: preset.textDecoration ?? "none",
+    fontSize: "15px",
+    lineHeight: 1,
   };
-
-  if (preset.letterSpacing) {
-    style.letterSpacing = `${Math.min(3, Math.round(preset.letterSpacing * 0.35))}px`;
-  }
-
-  // Gradient or solid fill
-  if (preset.gradient && preset.gradient.stops && preset.gradient.stops.length >= 2) {
-    const angle = preset.gradient.angleDeg ?? 180;
-    const stopsStr = preset.gradient.stops
-      .map((s) => `${s.color} ${Math.round(s.offset * 100)}%`)
-      .join(", ");
-    style.backgroundImage = `linear-gradient(${angle}deg, ${stopsStr})`;
-    style.WebkitBackgroundClip = "text";
-    style.WebkitTextFillColor = "transparent";
-  } else {
-    style.color = preset.color;
-  }
-
-  // Stroke
-  if (preset.strokeColor) {
-    const width = Math.min(1.5, Math.max(0.75, (preset.strokeWidth ?? 2) * 0.35));
-    style.WebkitTextStroke = `${width}px ${preset.strokeColor}`;
-  }
 
   // Shadows & Glow
   const shadows: string[] = [];
@@ -110,18 +107,103 @@ function buildPresetThumbnailStyle(preset: TextStylePreset): React.CSSProperties
       shadows.push(`${ox}px ${oy}px ${blur}px ${sh.color}`);
     }
   }
-  if (shadows.length > 0) {
-    style.textShadow = shadows.join(", ");
-  }
+  const textShadowStyle = shadows.length > 0 ? shadows.join(", ") : undefined;
 
-  // Text decoration
-  if (preset.textDecoration === "underline") {
-    style.textDecoration = "underline";
-  } else if (preset.textDecoration === "line-through") {
-    style.textDecoration = "line-through";
-  }
+  // Strokes geometry
+  const hasStroke = Boolean(preset.strokeColor);
+  const primaryStrokeWidth = hasStroke
+    ? Math.max(1.2, Math.min(3.6, (preset.strokeWidth ?? 2) * 0.7))
+    : 0;
 
-  return style;
+  const hasStroke2 = Boolean(preset.strokeColor2 && preset.strokeWidth2);
+  const secondaryStrokeWidth = hasStroke2
+    ? Math.max(2.4, Math.min(5.4, ((preset.strokeWidth ?? 2) + (preset.strokeWidth2 ?? 2)) * 0.7))
+    : 0;
+
+  // Gradient or solid fill
+  const hasGradient = Boolean(preset.gradient && preset.gradient.stops && preset.gradient.stops.length >= 2);
+  const stopsStr = hasGradient
+    ? preset.gradient!.stops.map((s) => `${s.color} ${Math.round(s.offset * 100)}%`).join(", ")
+    : "";
+
+  return (
+    <div
+      className={`relative flex h-[46px] w-full items-center justify-center overflow-hidden rounded-md border transition ${
+        needsContrastBg
+          ? "border-neutral-300/40 bg-gradient-to-b from-neutral-100 to-neutral-200 shadow-inner"
+          : "border-white/10 bg-black/40"
+      }`}
+    >
+      <div
+        className="relative inline-flex items-center justify-center pointer-events-none"
+        style={
+          preset.backgroundColor
+            ? {
+                backgroundColor: preset.backgroundColor,
+                opacity: preset.backgroundOpacity ?? 1,
+                padding: `${Math.max(2, Math.round((preset.backgroundPadding ?? 8) * 0.25))}px ${Math.max(
+                  6,
+                  Math.round((preset.backgroundPadding ?? 8) * 0.5)
+                )}px`,
+                borderRadius: `${Math.min(6, Math.max(2, Math.round((preset.backgroundCornerRadius ?? 4) * 0.75)))}px`,
+              }
+            : undefined
+        }
+      >
+        {/* Layer 0: Secondary outer stroke (layered outlines) */}
+        {hasStroke2 && (
+          <span
+            aria-hidden="true"
+            className="absolute inset-0 flex items-center justify-center select-none pointer-events-none"
+            style={{
+              ...baseTypography,
+              WebkitTextStroke: `${secondaryStrokeWidth}px ${preset.strokeColor2}`,
+              color: "transparent",
+            }}
+          >
+            {sampleText}
+          </span>
+        )}
+
+        {/* Layer 1: Primary stroke (and glow/shadow) */}
+        {hasStroke && (
+          <span
+            aria-hidden="true"
+            className="absolute inset-0 flex items-center justify-center select-none pointer-events-none"
+            style={{
+              ...baseTypography,
+              WebkitTextStroke: `${primaryStrokeWidth}px ${preset.strokeColor}`,
+              color: "transparent",
+              textShadow: textShadowStyle,
+            }}
+          >
+            {sampleText}
+          </span>
+        )}
+
+        {/* Layer 2: Main text fill (solid or gradient) on top */}
+        <span
+          className="relative z-10 flex items-center justify-center select-none"
+          style={{
+            ...baseTypography,
+            ...(hasGradient
+              ? {
+                  backgroundImage: `linear-gradient(${preset.gradient!.angleDeg ?? 180}deg, ${stopsStr})`,
+                  WebkitBackgroundClip: "text",
+                  WebkitTextFillColor: "transparent",
+                }
+              : {
+                  color: preset.color,
+                }),
+            textShadow: hasStroke ? undefined : textShadowStyle,
+            opacity: preset.opacity ?? 1,
+          }}
+        >
+          {sampleText}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 export function TextStylePresetGrid({
@@ -143,9 +225,17 @@ export function TextStylePresetGrid({
   const [favorites, setFavorites] = useState<Set<string>>(() => loadFavoritesFromStorage());
   const [recentIds, setRecentIds] = useState<string[]>(() => loadRecentsFromStorage());
 
+  const [, setFontTick] = useState(0);
+
   useEffect(() => {
     setFavorites(loadFavoritesFromStorage());
     setRecentIds(loadRecentsFromStorage());
+    preloadAllFonts();
+    if (typeof document !== "undefined" && document.fonts) {
+      document.fonts.ready.then(() => {
+        setFontTick((t) => t + 1);
+      });
+    }
   }, []);
 
   const toggleFavorite = (id: string, e: React.MouseEvent) => {
@@ -346,30 +436,7 @@ export function TextStylePresetGrid({
                 </button>
 
                 {/* Preview Box */}
-                <div
-                  className={`relative flex h-[46px] w-full items-center justify-center overflow-hidden rounded-md border transition ${
-                    needsContrastBg
-                      ? "border-neutral-300/40 bg-gradient-to-b from-neutral-100 to-neutral-200 shadow-inner"
-                      : "border-white/10 bg-black/40"
-                  }`}
-                >
-                  {preset.backgroundColor && (
-                    <div
-                      className="absolute inset-x-2 inset-y-2 pointer-events-none"
-                      style={{
-                        backgroundColor: preset.backgroundColor,
-                        opacity: preset.backgroundOpacity ?? 1,
-                        borderRadius: `${Math.min(6, preset.backgroundCornerRadius ?? 4)}px`,
-                      }}
-                    />
-                  )}
-                  <span
-                    className="relative z-10 select-none text-[15px] leading-none"
-                    style={buildPresetThumbnailStyle(preset)}
-                  >
-                    {preset.textTransform === "uppercase" ? "AA" : "Aa"}
-                  </span>
-                </div>
+                <PresetThumbnail preset={preset} needsContrastBg={needsContrastBg} />
 
                 {/* Preset Title */}
                 <span className="w-full truncate text-center text-[10px] text-white/70 group-hover:text-white">

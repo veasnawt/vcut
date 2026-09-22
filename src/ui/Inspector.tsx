@@ -1481,7 +1481,25 @@ export function Inspector() {
                 open={!collapsed.has("Styles")}
                 onToggle={() => toggleSection("Styles")}
               >
-                <TextStylePresetGrid onPick={applyTextStylePresetToSelection} />
+                <TextStylePresetGrid
+                  onPick={applyTextStylePresetToSelection}
+                  onPreview={(preset) => {
+                    if (selectedTextClipIds.length > 0) {
+                      setLivePreviewOverrides(
+                        selectedTextClipIds.map((clipId) => {
+                          const found = project ? findClip(project, clipId) : null;
+                          const asset = found && project ? findAsset(project, found.clip.assetId) : null;
+                          const baseStyle = asset?.kind === "text" && asset.textStyle ? asset.textStyle : DEFAULT_TEXT_STYLE;
+                          return {
+                            clipId,
+                            textStyle: applyTextStylePreset(baseStyle, preset),
+                          };
+                        })
+                      );
+                    }
+                  }}
+                  onPreviewEnd={clearPreview}
+                />
               </CollapsibleSection>
               <CollapsibleSection
                 title={t("Animation")}
