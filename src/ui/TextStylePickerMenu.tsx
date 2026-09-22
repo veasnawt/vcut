@@ -7,7 +7,7 @@ import { DEFAULT_TEXT_STYLE, type TextStyle } from "../project/types.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { TextStylePresetGrid } from "./TextStylePresetGrid.tsx";
 
-const MENU_WIDTH = 220;
+const MENU_WIDTH = 320;
 
 /** Same "opens above its anchor" reasoning as `PixelEffectPickerMenu`/`ColorPickerMenu` — this button
  *  lives in the same bottom toolbar. */

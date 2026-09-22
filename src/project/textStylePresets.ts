@@ -1554,7 +1554,7 @@ export function applyTextStylePreset(
 
   if (preset.strokeColor) {
     next.strokeColor = preset.strokeColor;
-    next.strokeWidth = preset.strokeWidth ?? next.strokeWidth;
+    next.strokeWidth = preset.strokeWidth ?? next.strokeWidth ?? 2;
   } else {
     delete next.strokeColor;
   }
@@ -1569,8 +1569,8 @@ export function applyTextStylePreset(
 
   if (preset.shadowColor) {
     next.shadowColor = preset.shadowColor;
-    next.shadowOffsetX = preset.shadowOffsetX ?? next.shadowOffsetX;
-    next.shadowOffsetY = preset.shadowOffsetY ?? next.shadowOffsetY;
+    next.shadowOffsetX = preset.shadowOffsetX ?? next.shadowOffsetX ?? 2;
+    next.shadowOffsetY = preset.shadowOffsetY ?? next.shadowOffsetY ?? 2;
     if (preset.shadowBlur !== undefined) next.shadowBlur = preset.shadowBlur;
     else delete next.shadowBlur;
   } else {

@@ -34,7 +34,7 @@ import type { Asset, Clip, Project, TextStyle } from "../project/types.ts";
 import { IDENTITY_TRANSFORM } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
 import { defaultClipDuration, EditError, trackKindForAsset } from "../timeline/operations.ts";
-import { nonOverlappingPointStart, nonOverlappingStart } from "../timeline/queries.ts";
+import { clipAtTime, nonOverlappingPointStart, nonOverlappingStart } from "../timeline/queries.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { UndoStack } from "../undo/UndoStack.ts";
 
@@ -1845,9 +1845,23 @@ export const useEditorStore = create<EditorState>((set, get) => {
     applyTextStylePresetToSelection(preset) {
       const { project, selectedClipIds, language } = get();
       if (!project) return;
-      const command = buildTextStylePresetCommand(project, selectedClipIds, preset);
+      let targetClipIds = selectedClipIds;
+      if (targetClipIds.length === 0) {
+        const playhead = get().playhead;
+        for (const track of project.sequence.tracks) {
+          const clip = clipAtTime(track, playhead);
+          if (clip && findAsset(project, clip.assetId)?.kind === "text") {
+            targetClipIds = [clip.id];
+            set({ selectedClipIds: [clip.id] });
+            break;
+          }
+        }
+      }
+      if (targetClipIds.length === 0) return;
+      const command = buildTextStylePresetCommand(project, targetClipIds, preset);
       if (!command) return;
       get().run(command);
+      get().setLivePreviewOverrides([]);
       get().setStatus(translateText(language, "Applied style"));
     },
 
@@ -1863,9 +1877,23 @@ export const useEditorStore = create<EditorState>((set, get) => {
     patchTextStyleForSelection(patch) {
       const { project, selectedClipIds } = get();
       if (!project) return;
-      const command = buildTextStylePatchCommand(project, selectedClipIds, patch);
+      let targetClipIds = selectedClipIds;
+      if (targetClipIds.length === 0) {
+        const playhead = get().playhead;
+        for (const track of project.sequence.tracks) {
+          const clip = clipAtTime(track, playhead);
+          if (clip && findAsset(project, clip.assetId)?.kind === "text") {
+            targetClipIds = [clip.id];
+            set({ selectedClipIds: [clip.id] });
+            break;
+          }
+        }
+      }
+      if (targetClipIds.length === 0) return;
+      const command = buildTextStylePatchCommand(project, targetClipIds, patch);
       if (!command) return;
       get().run(command);
+      get().setLivePreviewOverrides([]);
     },
 
     beginRecordingIndicator(trackId, start) {

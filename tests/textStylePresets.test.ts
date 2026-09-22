@@ -11,6 +11,9 @@ import {
 } from "../src/project/textStylePresets.ts";
 import { applyTextTransform } from "../src/playback/textLayout.ts";
 import { deserializeProject, serializeProject } from "../src/project/serialize.ts";
+import { createTrack } from "../src/project/createProject.ts";
+import { buildTextStylePatchCommand, buildTextStylePresetCommand } from "../src/commands/index.ts";
+import { setTextAsset } from "../src/timeline/operations.ts";
 import { emptyProject } from "./fixture.ts";
 
 describe("TextStylePreset Library & Schema", () => {
@@ -310,5 +313,114 @@ describe("Serialization & Project Roundtrip with Advanced Text Styles", () => {
     assert.equal(asset.textStyle.gradient, undefined);
     assert.equal(asset.textStyle.shadows, undefined);
     assert.equal(asset.textStyle.backgroundColor, undefined);
+  });
+
+  it("buildTextStylePresetCommand updates both asset textStyle and clip textStyleKeyframes", () => {
+    const project = emptyProject();
+    project.assets.push({
+      id: "txt-asset",
+      kind: "text",
+      name: "Title",
+      relPath: "txt-1",
+      duration: 5,
+      hasAudio: false,
+      textContent: "Keyframed Text",
+      textStyle: { ...DEFAULT_TEXT_STYLE, color: "#111111" },
+      sizeBytes: 100,
+      importedAt: 0,
+    });
+    const track = createTrack("text", "Text Track");
+    track.id = "txt-track";
+    track.clips.push({
+      id: "clip-txt-1",
+      assetId: "txt-asset",
+      sourceIn: 0,
+      sourceOut: 5,
+      timelineStart: 0,
+      textStyleKeyframes: [
+        { id: "kf-1", time: 0, value: { ...DEFAULT_TEXT_STYLE, color: "#111111" } },
+        { id: "kf-2", time: 2, value: { ...DEFAULT_TEXT_STYLE, color: "#222222" } },
+      ],
+    });
+    project.sequence.tracks.push(track);
+
+    const preset = TEXT_STYLE_PRESETS[0];
+    const cmd = buildTextStylePresetCommand(project, ["clip-txt-1"], preset);
+    assert.ok(cmd);
+    const nextProject = cmd.apply(project);
+    const asset = nextProject.assets.find((a) => a.id === "txt-asset")!;
+    assert.equal(asset.textStyle?.color, preset.color);
+    const foundTrack = nextProject.sequence.tracks.find((t) => t.id === "txt-track")!;
+    const clip = foundTrack.clips.find((c) => c.id === "clip-txt-1")!;
+    assert.ok(clip.textStyleKeyframes);
+    assert.equal(clip.textStyleKeyframes.length, 2);
+    assert.equal(clip.textStyleKeyframes[0].value.color, preset.color);
+    assert.equal(clip.textStyleKeyframes[1].value.color, preset.color);
+  });
+
+  it("buildTextStylePatchCommand patches fontFamily onto both asset and keyframes", () => {
+    const project = emptyProject();
+    project.assets.push({
+      id: "txt-asset-2",
+      kind: "text",
+      name: "Font Test",
+      relPath: "txt-2",
+      duration: 5,
+      hasAudio: false,
+      textContent: "Font Clip",
+      textStyle: { ...DEFAULT_TEXT_STYLE, fontFamily: "roboto" },
+      sizeBytes: 100,
+      importedAt: 0,
+    });
+    const track2 = createTrack("text", "Text Track");
+    track2.id = "txt-track-2";
+    track2.clips.push({
+      id: "clip-txt-2",
+      assetId: "txt-asset-2",
+      sourceIn: 0,
+      sourceOut: 5,
+      timelineStart: 0,
+      textStyleKeyframes: [
+        { id: "kf-3", time: 0, value: { ...DEFAULT_TEXT_STYLE, fontFamily: "roboto" } },
+      ],
+    });
+    project.sequence.tracks.push(track2);
+
+    const cmd = buildTextStylePatchCommand(project, ["clip-txt-2"], { fontFamily: "cinzel" });
+    assert.ok(cmd);
+    const nextProject = cmd.apply(project);
+    const asset = nextProject.assets.find((a) => a.id === "txt-asset-2")!;
+    assert.equal(asset.textStyle?.fontFamily, "cinzel");
+    const foundTrack2 = nextProject.sequence.tracks.find((t) => t.id === "txt-track-2")!;
+    const clip = foundTrack2.clips.find((c) => c.id === "clip-txt-2")!;
+    assert.equal(clip.textStyleKeyframes?.[0].value.fontFamily, "cinzel");
+  });
+
+  it("setTextAsset sanitizes non-finite numbers without NaN corrupting styles", () => {
+    const project = emptyProject();
+    project.assets.push({
+      id: "nan-asset",
+      kind: "text",
+      name: "NaN Test",
+      relPath: "nan",
+      duration: 5,
+      hasAudio: false,
+      textContent: "Hello",
+      textStyle: DEFAULT_TEXT_STYLE,
+      sizeBytes: 100,
+      importedAt: 0,
+    });
+
+    const dirtyStyle: TextStyle = {
+      ...DEFAULT_TEXT_STYLE,
+      fontSize: NaN,
+      strokeWidth: Infinity,
+      lineHeightMultiplier: -Infinity,
+    };
+    const nextProject = setTextAsset(project, "nan-asset", "Hello", dirtyStyle);
+    const asset = nextProject.assets.find((a) => a.id === "nan-asset")!;
+    assert.ok(Number.isFinite(asset.textStyle?.fontSize));
+    assert.ok(Number.isFinite(asset.textStyle?.strokeWidth));
+    assert.ok(Number.isFinite(asset.textStyle?.lineHeightMultiplier));
   });
 });

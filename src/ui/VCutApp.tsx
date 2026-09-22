@@ -41,8 +41,10 @@ import { BatchCommand, DeleteClipsCommand, SetClipTransitionCommand, SetClipTran
 import { translateText } from "../i18n/translations.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { findAsset, findClip } from "../project/createProject.ts";
-import { preloadAllFonts } from "../project/fonts.ts";
+import { DEFAULT_FONT_ID, preloadAllFonts, preloadFont, resolveFont } from "../project/fonts.ts";
 import { templateSlots } from "../project/template.ts";
+import { applyTextStylePreset } from "../project/textStylePresets.ts";
+import { DEFAULT_TEXT_STYLE, type Clip, type Track } from "../project/types.ts";
 import { flushPendingSave, useEditorStore } from "../store/editorStore.ts";
 import { clipAtTime } from "../timeline/queries.ts";
 import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCandidate } from "../timeline/transitions.ts";
@@ -55,6 +57,7 @@ import { EditableProjectTitle } from "./EditableProjectTitle.tsx";
 import { EffectsPickerMenu } from "./EffectsPickerMenu.tsx";
 import { ErrorBoundary } from "./ErrorBoundary.tsx";
 import { ExportDialog } from "./ExportDialog.tsx";
+import { FontPickerMenu } from "./FontPickerMenu.tsx";
 import { TextToClipsDialog } from "./TextToClipsDialog.tsx";
 import { Inspector } from "./Inspector.tsx";
 import { MediaPanel } from "./MediaPanel.tsx";
@@ -273,6 +276,8 @@ function StatusBar({
   const extractAudioFromClip = useEditorStore((s) => s.extractAudioFromClip);
   const applyTextAnimationToSelection = useEditorStore((s) => s.applyTextAnimationToSelection);
   const applyTextStylePresetToSelection = useEditorStore((s) => s.applyTextStylePresetToSelection);
+  const patchTextStyleForSelection = useEditorStore((s) => s.patchTextStyleForSelection);
+  const setLivePreviewOverrides = useEditorStore((s) => s.setLivePreviewOverrides);
   const armRemoveObject = useEditorStore((s) => s.armRemoveObject);
   const removeClipBackground = useEditorStore((s) => s.removeClipBackground);
   const createTextBehindSubject = useEditorStore((s) => s.createTextBehindSubject);
@@ -301,12 +306,14 @@ function StatusBar({
   const [showTextStyleMenu, setShowTextStyleMenu] = useState(false);
   const [showAnimationMenu, setShowAnimationMenu] = useState(false);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
+  const [showFontMenu, setShowFontMenu] = useState(false);
   const transitionButtonRef = useRef<HTMLButtonElement>(null);
   const colorButtonRef = useRef<HTMLButtonElement>(null);
   const effectsButtonRef = useRef<HTMLButtonElement>(null);
   const pixelEffectButtonRef = useRef<HTMLButtonElement>(null);
   const aiToolsButtonRef = useRef<HTMLButtonElement>(null);
   const textButtonRef = useRef<HTMLButtonElement>(null);
+  const fontButtonRef = useRef<HTMLButtonElement>(null);
   const animationButtonRef = useRef<HTMLButtonElement>(null);
   const styleButtonRef = useRef<HTMLButtonElement>(null);
   // Whether the scrollable tool row (below) is scrolled away from its own left edge — drives the
@@ -396,7 +403,11 @@ function StatusBar({
   // clip is selected — for a real multi-select, which tile (if any) should read "active" is ambiguous
   // whenever the selected clips don't all already share one animation, so nothing highlights instead
   // of guessing.
-  const selectedTextClips = project ? selectedClipIds.map((id) => findClip(project, id)).filter((f) => f?.track.kind === "text") : [];
+  const selectedTextClips: { clip: Clip; track: Track }[] = project
+    ? selectedClipIds
+        .map((id) => findClip(project, id))
+        .filter((f): f is { clip: Clip; track: Track } => Boolean(f && f.track.kind === "text"))
+    : [];
   const animationDisabled = selectedTextClips.length === 0;
   const animationCurrent = selectedTextClips.length === 1 ? selectedTextClips[0]!.clip.textAnimation : undefined;
   // Styles tool — same gating and same bulk/quick-apply role as Animation just above, for
@@ -405,6 +416,11 @@ function StatusBar({
   // own Styles section already uses. No "current" highlight (unlike Animation's `animationCurrent`):
   // a preset only ever SETS fields, it never reads back as "this clip currently matches preset X".
   const stylesDisabled = animationDisabled;
+  const fontDisabled = stylesDisabled;
+
+  const firstSelectedTextClip = selectedTextClips[0];
+  const firstSelectedAsset = firstSelectedTextClip && project ? findAsset(project, firstSelectedTextClip.clip.assetId) : null;
+  const firstSelectedTextStyle = firstSelectedAsset?.kind === "text" && firstSelectedAsset.textStyle ? firstSelectedAsset.textStyle : DEFAULT_TEXT_STYLE;
 
   // Right-click context menu (desktop only — `TimelineClip`'s own `onContextMenu` never fires from
   // touch) — see `ClipContextMenu.tsx`'s own doc comment for why it's a plain, ungated action list
@@ -443,6 +459,19 @@ function StatusBar({
                 onClick: () => {
                   setPickerAnchorSource("contextMenu");
                   setShowStyleMenu(true);
+                },
+              },
+            ]
+          : []),
+        ...(!fontDisabled
+          ? [
+              {
+                key: "font",
+                label: t("Font"),
+                icon: <Text size={15} />,
+                onClick: () => {
+                  setPickerAnchorSource("contextMenu");
+                  setShowFontMenu(true);
                 },
               },
             ]
@@ -674,7 +703,27 @@ function StatusBar({
             {showTextStyleMenu && (
               <TextStylePickerMenu
                 anchorRef={textButtonRef}
-                onPick={(style) => setComposeText({ style })}
+                onPick={(style) => {
+                  const playhead = useEditorStore.getState().playhead;
+                  let targetClipId: string | null = null;
+                  if (project) {
+                    for (const track of project.sequence.tracks) {
+                      if (track.kind === "text") {
+                        const match = clipAtTime(track, playhead);
+                        if (match && findAsset(project, match.assetId)?.kind === "text") {
+                          targetClipId = match.id;
+                          break;
+                        }
+                      }
+                    }
+                  }
+                  if (targetClipId) {
+                    select([targetClipId]);
+                    patchTextStyleForSelection(style);
+                  } else {
+                    setComposeText({ style });
+                  }
+                }}
                 onClose={() => setShowTextStyleMenu(false)}
               />
             )}
@@ -755,7 +804,73 @@ function StatusBar({
               <StylePickerMenu
                 anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : styleButtonRef}
                 onPick={applyTextStylePresetToSelection}
-                onClose={() => setShowStyleMenu(false)}
+                onPreview={(preset) => {
+                  if (selectedTextClips.length > 0) {
+                    setLivePreviewOverrides(
+                      selectedTextClips.map((f) => {
+                        const asset = project ? findAsset(project, f.clip.assetId) : null;
+                        const baseStyle = asset?.kind === "text" && asset.textStyle ? asset.textStyle : DEFAULT_TEXT_STYLE;
+                        return {
+                          clipId: f.clip.id,
+                          textStyle: applyTextStylePreset(baseStyle, preset),
+                        };
+                      })
+                    );
+                  }
+                }}
+                onPreviewEnd={() => setLivePreviewOverrides([])}
+                onClose={() => {
+                  setLivePreviewOverrides([]);
+                  setShowStyleMenu(false);
+                }}
+              />
+            )}
+          </>
+        )}
+        {!fontDisabled && (
+          <>
+            <ToolbarButton
+              ref={fontButtonRef}
+              title={t("Font")}
+              label={t("Font")}
+              active={showFontMenu}
+              onClick={() => {
+                setPickerAnchorSource("button");
+                setShowFontMenu((v) => !v);
+              }}
+            >
+              <Text size={18} />
+            </ToolbarButton>
+            {showFontMenu && (
+              <FontPickerMenu
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : fontButtonRef}
+                selectedId={firstSelectedTextStyle.fontFamily}
+                customFonts={project?.customFonts ?? []}
+                onPick={(fontId) => {
+                  patchTextStyleForSelection({ fontFamily: fontId });
+                  setShowFontMenu(false);
+                }}
+                onHover={(fontId) => {
+                  if (fontId && selectedTextClips.length > 0) {
+                    preloadFont(resolveFont(fontId, project?.customFonts ?? []));
+                    setLivePreviewOverrides(
+                      selectedTextClips.map((f) => {
+                        const asset = project ? findAsset(project, f.clip.assetId) : null;
+                        const baseStyle = asset?.kind === "text" && asset.textStyle ? asset.textStyle : DEFAULT_TEXT_STYLE;
+                        return {
+                          clipId: f.clip.id,
+                          textStyle: { ...baseStyle, fontFamily: fontId },
+                        };
+                      })
+                    );
+                  } else {
+                    setLivePreviewOverrides([]);
+                  }
+                }}
+                onClose={() => {
+                  setLivePreviewOverrides([]);
+                  setShowFontMenu(false);
+                }}
               />
             )}
           </>

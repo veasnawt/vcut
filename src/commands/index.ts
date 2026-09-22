@@ -39,6 +39,7 @@ import {
   trimClip,
 } from "../timeline/operations.ts";
 import { snapToFrame } from "../timeline/time.ts";
+import { hasTextStyleKeyframes } from "../timeline/keyframes.ts";
 import type { Command } from "./types.ts";
 
 export type { Command } from "./types.ts";
@@ -1546,6 +1547,13 @@ export function buildTextStylePresetCommand(project: Project, clipIds: string[],
     if (!asset || asset.kind !== "text") continue;
     const style = asset.textStyle ?? DEFAULT_TEXT_STYLE;
     commands.push(new SetTextCommand(asset.id, asset.textContent ?? "", applyTextStylePreset(style, preset)));
+    if (hasTextStyleKeyframes(found.clip)) {
+      const updatedKfs = (found.clip.textStyleKeyframes ?? []).map((k) => ({
+        ...k,
+        value: applyTextStylePreset(k.value, preset),
+      }));
+      commands.push(new SetClipTextStyleKeyframesCommand(found.clip.id, updatedKfs));
+    }
   }
   if (commands.length === 0) return null;
   return commands.length > 1 ? new BatchCommand("Apply Text Style", commands) : commands[0];
@@ -1567,6 +1575,13 @@ export function buildTextStylePatchCommand(project: Project, clipIds: string[], 
     if (!asset || asset.kind !== "text") continue;
     const style = asset.textStyle ?? DEFAULT_TEXT_STYLE;
     commands.push(new SetTextCommand(asset.id, asset.textContent ?? "", { ...style, ...patch }));
+    if (hasTextStyleKeyframes(found.clip)) {
+      const updatedKfs = (found.clip.textStyleKeyframes ?? []).map((k) => ({
+        ...k,
+        value: { ...k.value, ...patch },
+      }));
+      commands.push(new SetClipTextStyleKeyframesCommand(found.clip.id, updatedKfs));
+    }
   }
   if (commands.length === 0) return null;
   return commands.length > 1 ? new BatchCommand("Edit Text", commands) : commands[0];

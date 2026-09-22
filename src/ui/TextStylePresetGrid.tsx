@@ -149,6 +149,7 @@ export function TextStylePresetGrid({
 
   const toggleFavorite = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault();
     setFavorites((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -159,6 +160,9 @@ export function TextStylePresetGrid({
   };
 
   const handlePick = (preset: TextStylePreset) => {
+    if (preset.fontFamily) {
+      preloadFont(fontById(preset.fontFamily));
+    }
     saveRecentToStorage(preset.id);
     setRecentIds(loadRecentsFromStorage());
     onPick(preset);
@@ -302,7 +306,8 @@ export function TextStylePresetGrid({
             const isSelected = selectedId === preset.id;
 
             return (
-              <div
+              <button
+                type="button"
                 key={preset.id}
                 onClick={() => handlePick(preset)}
                 onMouseEnter={() => {
@@ -312,7 +317,7 @@ export function TextStylePresetGrid({
                   onPreview?.(preset);
                 }}
                 onMouseLeave={onPreviewEnd}
-                className={`group relative flex flex-col items-center gap-1 rounded-lg border p-1 transition cursor-pointer ${
+                className={`group relative flex w-full flex-col items-center gap-1 rounded-lg border p-1 text-center transition cursor-pointer ${
                   isSelected
                     ? "border-sky-400 bg-sky-500/15 ring-1 ring-sky-400/50 shadow-sm"
                     : "border-white/5 bg-zinc-900/60 hover:border-white/20 hover:bg-zinc-800/80"
@@ -323,6 +328,7 @@ export function TextStylePresetGrid({
                 <button
                   type="button"
                   onClick={(e) => toggleFavorite(preset.id, e)}
+                  onPointerDown={(e) => e.stopPropagation()}
                   className={`absolute right-1.5 top-1.5 z-20 rounded p-0.5 transition ${
                     isFav
                       ? "text-amber-400 opacity-100"
@@ -359,7 +365,7 @@ export function TextStylePresetGrid({
                 <span className="w-full truncate text-center text-[10px] text-white/70 group-hover:text-white">
                   {t(preset.label)}
                 </span>
-              </div>
+              </button>
             );
           })}
         </div>

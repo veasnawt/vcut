@@ -1145,11 +1145,15 @@ export function setTextAsset(project: Project, assetId: string, content: string,
     // rotationDeg and the shadow offsets are deliberately left unclamped — same "any degree, multi-turn
     // drags exceed 360" reasoning as `ClipTransform.rotationDeg` (see `clampTransform`'s own comment);
     // a shadow offset has no natural bound the way size/stroke/line-height do.
+    const fallback = DEFAULT_TEXT_STYLE;
     asset.textStyle = {
       ...style,
-      fontSize: Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, style.fontSize)),
-      strokeWidth: Math.min(MAX_STROKE_WIDTH, Math.max(MIN_STROKE_WIDTH, style.strokeWidth)),
-      lineHeightMultiplier: Math.min(MAX_LINE_HEIGHT_MULTIPLIER, Math.max(MIN_LINE_HEIGHT_MULTIPLIER, style.lineHeightMultiplier)),
+      fontSize: Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, Number.isFinite(style.fontSize) ? style.fontSize : fallback.fontSize)),
+      strokeWidth: Math.min(MAX_STROKE_WIDTH, Math.max(MIN_STROKE_WIDTH, Number.isFinite(style.strokeWidth) ? style.strokeWidth : fallback.strokeWidth)),
+      lineHeightMultiplier: Math.min(
+        MAX_LINE_HEIGHT_MULTIPLIER,
+        Math.max(MIN_LINE_HEIGHT_MULTIPLIER, Number.isFinite(style.lineHeightMultiplier) ? style.lineHeightMultiplier : fallback.lineHeightMultiplier)
+      ),
     };
     // Keeps the media library's own listing in sync — it shows `asset.name`, which was seeded from
     // the content at creation and would otherwise go stale forever the moment the text changes.

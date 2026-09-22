@@ -24,6 +24,7 @@ import {
 import type { CaptionsProgress, InpaintKeyStatus, InpaintProgress, InpaintProvider, LocalSetupProgress } from "../api/client.ts";
 import { CAPTIONS_CREDITS_PER_MINUTE, REMOVE_OBJECT_CREDITS_PER_SECOND, startCheckout } from "../api/billing.ts";
 import {
+  BatchCommand,
   SetClipChromaKeyCommand,
   SetClipColorGradingCommand,
   SetClipColorGradingKeyframesCommand,
@@ -1371,7 +1372,21 @@ export function Inspector() {
    *  still had — that's exactly what merging means), leaving a stale background/outline/shadow from
    *  whatever style was active before. These two apply/preview a full style directly, no merge. */
   function applyFullTextStyle(assetId: string, content: string, fullStyle: TextStyle) {
-    run(new SetTextCommand(assetId, content, fullStyle));
+    const clip = found?.clip;
+    if (clip && hasTextStyleKeyframes(clip)) {
+      const updatedKfs = (clip.textStyleKeyframes ?? []).map((k) => ({
+        ...k,
+        value: { ...k.value, ...fullStyle },
+      }));
+      run(
+        new BatchCommand("Apply Text Style", [
+          new SetTextCommand(assetId, content, fullStyle),
+          new SetClipTextStyleKeyframesCommand(clip.id, updatedKfs),
+        ])
+      );
+    } else {
+      run(new SetTextCommand(assetId, content, fullStyle));
+    }
     clearPreview();
   }
 
