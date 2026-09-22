@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Ai, Backspace, ChevronDown, Delete, Text, Upload, User } from "@veasnawt/vicons";
+import { Ai, ChevronDown, Delete, Text, Upload, User } from "@veasnawt/vicons";
 import {
   cancelCaptions,
   cancelInpaint,
@@ -2240,6 +2240,14 @@ export function Inspector() {
                               />
                             </div>
                           </div>
+                          {Object.values(transform.crop).some((value) => value > 0) && (
+                            <button
+                              onClick={() => patchCrop(clip.id, { top: 0, right: 0, bottom: 0, left: 0 })}
+                              className="mt-1.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/60 transition hover:bg-white/10 hover:text-white"
+                            >
+                              {t("Reset crop")}
+                            </button>
+                          )}
                           {clip.transform && (
                             <button
                               onClick={() => run(new SetClipTransformCommand(clip.id, IDENTITY_TRANSFORM))}

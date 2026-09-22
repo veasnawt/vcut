@@ -60,6 +60,34 @@ export interface ScreenPoint {
   y: number;
 }
 
+export type CropEdge = "top" | "right" | "bottom" | "left";
+
+/** Converts a screen-space drag on one crop edge into source-relative crop fractions.
+ * The pointer delta is first unrotated into the clip's local axes, so crop handles keep feeling
+ * horizontal/vertical relative to the CONTENT even when the clip itself is rotated. `fullWidth` and
+ * `fullHeight` are the rendered size the uncropped source would occupy at the current fit/scale.
+ * Keeping this DOM-free lets the preview interaction and its regression tests share the exact math. */
+export function cropAfterEdgeDrag(
+  transform: ClipTransform,
+  edge: CropEdge,
+  screenDx: number,
+  screenDy: number,
+  fullWidth: number,
+  fullHeight: number
+): ClipTransform["crop"] {
+  const theta = (transform.rotationDeg * Math.PI) / 180;
+  const localDx = screenDx * Math.cos(theta) + screenDy * Math.sin(theta);
+  const localDy = -screenDx * Math.sin(theta) + screenDy * Math.cos(theta);
+  const crop = { ...transform.crop };
+  const cap = 0.98; // Matches operations.ts's 2% minimum visible fraction.
+
+  if (edge === "left" && fullWidth > 0) crop.left = Math.min(cap - crop.right, Math.max(0, crop.left + localDx / fullWidth));
+  if (edge === "right" && fullWidth > 0) crop.right = Math.min(cap - crop.left, Math.max(0, crop.right - localDx / fullWidth));
+  if (edge === "top" && fullHeight > 0) crop.top = Math.min(cap - crop.bottom, Math.max(0, crop.top + localDy / fullHeight));
+  if (edge === "bottom" && fullHeight > 0) crop.bottom = Math.min(cap - crop.top, Math.max(0, crop.bottom - localDy / fullHeight));
+  return crop;
+}
+
 /** Screen position of a point `localX`/`localY` CSS px from `pivotX`/`pivotY` (before rotation),
  *  rotated by `rotationDeg` around that pivot. Extracted from `TransformHandles`'/`TextTransformHandles`'
  *  own scale-anchor and corner/rotate-handle math so drag math and render-position math share one

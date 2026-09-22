@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { IDENTITY_TRANSFORM } from "../src/project/types.ts";
-import { clampPointToRect, computeTransformedBox, rotatedPoint } from "../src/playback/transformGeometry.ts";
+import { clampPointToRect, computeTransformedBox, cropAfterEdgeDrag, rotatedPoint } from "../src/playback/transformGeometry.ts";
 import { closeTo } from "./fixture.ts";
 
 describe("computeTransformedBox", () => {
@@ -147,5 +147,27 @@ describe("clampPointToRect", () => {
     // rather than crossing over each other.
     assert.ok(closeTo(p.x, 5));
     assert.ok(closeTo(p.y, 2));
+  });
+});
+
+describe("cropAfterEdgeDrag", () => {
+  const base = { ...IDENTITY_TRANSFORM, crop: { top: 0.1, right: 0.1, bottom: 0.1, left: 0.1 } };
+
+  it("moves each edge in the expected local direction", () => {
+    assert.ok(closeTo(cropAfterEdgeDrag(base, "left", 20, 0, 200, 100).left, 0.2));
+    assert.ok(closeTo(cropAfterEdgeDrag(base, "right", -20, 0, 200, 100).right, 0.2));
+    assert.ok(closeTo(cropAfterEdgeDrag(base, "top", 0, 10, 200, 100).top, 0.2));
+    assert.ok(closeTo(cropAfterEdgeDrag(base, "bottom", 0, -10, 200, 100).bottom, 0.2));
+  });
+
+  it("unrotates the pointer delta into clip-local axes", () => {
+    const rotated = { ...base, rotationDeg: 90 };
+    assert.ok(closeTo(cropAfterEdgeDrag(rotated, "left", 0, 20, 200, 100).left, 0.2));
+    assert.ok(closeTo(cropAfterEdgeDrag(rotated, "top", -10, 0, 200, 100).top, 0.2));
+  });
+
+  it("never crosses the opposing edge or produces a negative crop", () => {
+    assert.equal(cropAfterEdgeDrag(base, "left", -1000, 0, 200, 100).left, 0);
+    assert.ok(closeTo(cropAfterEdgeDrag(base, "left", 1000, 0, 200, 100).left, 0.88));
   });
 });

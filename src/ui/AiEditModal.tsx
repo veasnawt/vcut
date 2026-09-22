@@ -6,7 +6,7 @@ import { Ai, Close, Refresh } from "@veasnawt/vicons";
 import { mediaUrl } from "../api/client.ts";
 import { SwapClipAssetCommand } from "../commands/index.ts";
 import { findAsset, findClip } from "../project/createProject.ts";
-import type { Asset, Clip } from "../project/types.ts";
+import type { Asset } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
@@ -287,4 +287,3 @@ export function AiEditModal({
     document.body
   );
 }
-

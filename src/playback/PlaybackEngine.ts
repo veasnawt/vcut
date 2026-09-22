@@ -1863,50 +1863,7 @@ export class PlaybackEngine {
     if (this.preciseScrub) this.holdLastCompleteFrame(context);
   }
 
-  /** The video/image half of a frame — unchanged from before text existed, just extracted into its
-   *  own method so `drawFrame` can guarantee the text pass below always runs regardless of what this
-   *  draws.
-   *
-   *  Composites EVERY visible video track, in array order — later tracks drawn ON TOP of earlier ones,
-   *  the identical stacking rule `drawTextLayer` below already uses for text tracks. This needs no
-   *  explicit alpha-blending logic of its own: `drawFrame` clears the canvas to opaque black exactly
-   *  ONCE per frame (not per track), and every `drawTransformed` call below only ever touches its own
-   *  destination rect via `drawImage` — so a track's own gaps and letterbox bars naturally show
-   *  whatever was drawn beneath them (a lower track's content, or the original black clear) simply by
-   *  never being painted over, and a clip's own `effects.opacity` blends against that same prior
-   *  content via `context.globalAlpha`. Real cross-track compositing, with zero new code here beyond
-   *  iterating more than one track — `buildExportPlan`'s FFmpeg graph is what has to work to earn this
-   *  same result, since it has no equivalent "just don't touch those pixels" primitive. */
-  private drawVideoLayer(
-    project: Project,
-    context: CanvasRenderingContext2D,
-    frameWidth: number,
-    frameHeight: number,
-    time: number,
-    activeAudioIds: string[]
-  ): void {
-    const activeClipIds = new Set<string>();
-
-    for (const track of project.sequence.tracks) {
-      if (track.kind !== "video" || !track.visible) continue;
-      const clip = clipAtTime(track, time);
-      if (!clip) continue;
-      // Marked active regardless of whether this frame actually manages to draw it (element still
-      // loading, video not yet decoded) — `pauseInactive` protecting it either way is what stops a
-      // still-buffering clip from being paused mid-load, matching this method's pre-multi-track
-      // behavior exactly.
-      activeClipIds.add(clip.id);
-      // The outgoing clip of a blend keeps PLAYING (on past its out-point — see
-      // `transitionPartnerSourceTime`), so it must not be paused out from under the blend either.
-      const blend = findTransitionPartner(track, clip);
-      if (blend?.partner && time - clip.timelineStart < blend.duration) activeClipIds.add(blend.partner.id);
-      this.drawVideoClip(project, context, frameWidth, frameHeight, track, clip, time);
-    }
-
-    this.pauseInactive(new Set([...activeClipIds, ...activeAudioIds]));
-  }
-
-  /** Draws ONE video track's own active clip — the entire per-clip body `drawVideoLayer` used to run
+  /** Draws ONE video track's own active clip — the entire per-clip body used to run
    *  once, extracted so it can run once per visible video track without duplicating the readiness/
    *  transition/transform logic. */
   private drawVideoClip(
@@ -2472,14 +2429,6 @@ export class PlaybackEngine {
     }
 
     this.pauseInactive(new Set([...activeClipIds, ...activeAudioIds]));
-  }
-
-  private drawTextLayer(project: Project, context: CanvasRenderingContext2D, frameWidth: number, frameHeight: number, time: number): void {
-    for (const track of project.sequence.tracks) {
-      if (track.kind === "text" && track.visible) {
-        this.drawSingleTextTrack(project, context, frameWidth, frameHeight, track, time);
-      }
-    }
   }
 
   private drawSingleTextTrack(

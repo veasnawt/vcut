@@ -8,7 +8,6 @@ import {
   Ai,
   ArrowLeft,
   Art,
-  Backspace,
   ChevronLeft,
   ClosedCaption,
   Copy,
@@ -28,7 +27,6 @@ import {
   Star,
   Text,
   Transition,
-  User,
   Video,
   Volume,
 } from "@veasnawt/vicons";
@@ -41,7 +39,7 @@ import { BatchCommand, DeleteClipsCommand, SetClipTransitionCommand, SetClipTran
 import { translateText } from "../i18n/translations.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { findAsset, findClip } from "../project/createProject.ts";
-import { DEFAULT_FONT_ID, preloadAllFonts, preloadFont, resolveFont } from "../project/fonts.ts";
+import { preloadAllFonts, preloadFont, resolveFont } from "../project/fonts.ts";
 import { templateSlots } from "../project/template.ts";
 import { applyTextStylePreset } from "../project/textStylePresets.ts";
 import { DEFAULT_TEXT_STYLE, type Clip, type Track } from "../project/types.ts";
@@ -278,9 +276,6 @@ function StatusBar({
   const applyTextStylePresetToSelection = useEditorStore((s) => s.applyTextStylePresetToSelection);
   const patchTextStyleForSelection = useEditorStore((s) => s.patchTextStyleForSelection);
   const setLivePreviewOverrides = useEditorStore((s) => s.setLivePreviewOverrides);
-  const armRemoveObject = useEditorStore((s) => s.armRemoveObject);
-  const removeClipBackground = useEditorStore((s) => s.removeClipBackground);
-  const createTextBehindSubject = useEditorStore((s) => s.createTextBehindSubject);
   const aiEditModalClipId = useEditorStore((s) => s.aiEditModalClipId);
   const openAiEdit = useEditorStore((s) => s.openAiEdit);
   const previewMuted = useEditorStore((s) => s.previewMuted);
@@ -302,7 +297,6 @@ function StatusBar({
   const [showStickers, setShowStickers] = useState(false);
   const [showVoiceRecord, setShowVoiceRecord] = useState(false);
   const [aiEditClipId, setAiEditClipId] = useState<string | null>(null);
-  const [removingBgClipId, setRemovingBgClipId] = useState<string | null>(null);
   const [showTextStyleMenu, setShowTextStyleMenu] = useState(false);
   const [showAnimationMenu, setShowAnimationMenu] = useState(false);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
@@ -1193,7 +1187,7 @@ function StatusBar({
             <ToolbarButton
               ref={aiToolsButtonRef}
               title={t("AI & Smart Tools (Remove Object, Cutout, Text Behind Subject, Generative Edit)")}
-              label={removingBgClipId ? t("Cutting...") : t("AI Tools")}
+              label={t("AI Tools")}
               pro={CREDITS_ENABLED}
               active={showAiToolsMenu}
               onClick={() => {

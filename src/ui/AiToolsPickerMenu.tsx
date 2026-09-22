@@ -20,7 +20,6 @@ function popupPosition(anchor: DOMRect): { bottom: number; left: number } {
 export function AiToolsPickerMenu({
   anchorRef,
   clip,
-  asset,
   onClose,
   onOpenAiEdit,
 }: {
@@ -134,4 +133,3 @@ export function AiToolsPickerMenu({
     document.body
   );
 }
-

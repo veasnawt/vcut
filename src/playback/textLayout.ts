@@ -298,7 +298,7 @@ export function drawTextFrame(
     context.save();
     context.strokeStyle = typeof fill === "string" ? fill : style.color;
     context.lineWidth = Math.max(2, Math.round(style.fontSize * 0.06));
-    block.lines.forEach((line, i) => {
+    block.lines.forEach((_line, i) => {
       const y = firstBaseline + block.lineHeight * i;
       const x = lineX(i);
       const w = block.lineWidths[i];

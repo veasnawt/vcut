@@ -7,7 +7,7 @@ import { findAsset, findClip } from "../project/createProject.ts";
 import type { ClipTransform } from "../project/types.ts";
 import type { AlignBox, AlignmentGuide } from "../playback/alignmentGuides.ts";
 import { computeAlignmentGuides } from "../playback/alignmentGuides.ts";
-import { clampPointToRect, computeTransformedBox, rotatedPoint } from "../playback/transformGeometry.ts";
+import { clampPointToRect, computeTransformedBox, cropAfterEdgeDrag, rotatedPoint, type CropEdge } from "../playback/transformGeometry.ts";
 import { computeVisibleClipBoxes } from "../playback/visibleClips.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
@@ -113,6 +113,7 @@ export function TransformHandles({
   const t = useTranslation();
 
   const [preview, setPreview] = useState<ClipTransform | null>(null);
+  const [cropMode, setCropMode] = useState(false);
   const previewRef = useRef<ClipTransform | null>(null);
   const dragRef = useRef<{
     mode: DragMode;
@@ -209,6 +210,10 @@ export function TransformHandles({
   resolvedRef.current = resolved;
 
   const isGroupSelection = selectedClipIds.length > 1;
+
+  useEffect(() => {
+    setCropMode(false);
+  }, [resolved?.clipId]);
 
   // Two-finger pinch scales the currently selected clip directly on the canvas — the gesture every
   // mobile video editor uses for "make this bigger/smaller", alongside (not replacing) the
@@ -408,7 +413,7 @@ export function TransformHandles({
         } else {
           updatePreview({ ...drag.origin, scale: newScale });
         }
-      } else {
+      } else if (drag.mode === "rotate") {
         setGuides([]);
         const angle = Math.atan2(point.y - drag.centerScreenY, point.x - drag.centerScreenX);
         updatePreview({ ...drag.origin, rotationDeg: ((angle - drag.startAngleOffset) * 180) / Math.PI });
@@ -469,6 +474,39 @@ export function TransformHandles({
     const removeListeners = addDragListeners(onMove, onUp);
   }
 
+  function beginCropDrag(startEvent: React.MouseEvent | React.TouchEvent, edge: CropEdge) {
+    startEvent.stopPropagation();
+    preventDefaultIfMouse(startEvent);
+    const origin = transform;
+    const start = clientPoint(startEvent);
+    const remainingX = Math.max(0.02, 1 - origin.crop.left - origin.crop.right);
+    const remainingY = Math.max(0.02, 1 - origin.crop.top - origin.crop.bottom);
+    const fullWidth = cssWidth / remainingX;
+    const fullHeight = cssHeight / remainingY;
+    let moved = false;
+
+    function onMove(moveEvent: MouseEvent | TouchEvent) {
+      const point = clientPoint(moveEvent);
+      const dx = point.x - start.x;
+      const dy = point.y - start.y;
+      if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+      moved = true;
+      setGuides([]);
+      updatePreview({ ...origin, crop: cropAfterEdgeDrag(origin, edge, dx, dy, fullWidth, fullHeight) });
+      if ("cancelable" in moveEvent && moveEvent.cancelable) moveEvent.preventDefault();
+    }
+
+    function onUp() {
+      removeListeners();
+      const final = previewRef.current;
+      updatePreview(null);
+      if (!moved || !final) return;
+      commitSingleTransform(resolved!, final, project, playhead, run);
+    }
+
+    const removeListeners = addDragListeners(onMove, onUp);
+  }
+
   // Corner/rotate handle SCREEN positions, computed independently of the (possibly huge, possibly
   // off-screen) rotated box below via the exact same rotation math `beginDrag`'s own anchor
   // computation uses, then clamped into `stageRect` — see `clampPointToRect`'s own doc comment for
@@ -486,10 +524,56 @@ export function TransformHandles({
   // line below (see its own comment for why a clamped handle hides it rather than trying to draw a
   // correct line to it).
   const rotateHandleClamped = rotatePoint.x !== rotateTruePoint.x || rotatePoint.y !== rotateTruePoint.y;
+  const toolbarTruePoint = rotatedPoint(cssCenterX, cssCenterY, 0, -cssHeight / 2 - 42, transform.rotationDeg);
+  const toolbarPoint = clampPointToRect(toolbarTruePoint, stageRect, 54);
+  const cropPercent = {
+    horizontal: Math.round((1 - transform.crop.left - transform.crop.right) * 100),
+    vertical: Math.round((1 - transform.crop.top - transform.crop.bottom) * 100),
+  };
+  const cropHandleDefinitions: { edge: CropEdge; cursor: string; bar: string; point: { x: number; y: number } }[] = [
+    { edge: "top", cursor: "cursor-ns-resize", bar: "h-1 w-12", point: rotatedPoint(cssCenterX, cssCenterY, 0, -cssHeight / 2, transform.rotationDeg) },
+    { edge: "bottom", cursor: "cursor-ns-resize", bar: "h-1 w-12", point: rotatedPoint(cssCenterX, cssCenterY, 0, cssHeight / 2, transform.rotationDeg) },
+    { edge: "left", cursor: "cursor-ew-resize", bar: "h-12 w-1", point: rotatedPoint(cssCenterX, cssCenterY, -cssWidth / 2, 0, transform.rotationDeg) },
+    { edge: "right", cursor: "cursor-ew-resize", bar: "h-12 w-1", point: rotatedPoint(cssCenterX, cssCenterY, cssWidth / 2, 0, transform.rotationDeg) },
+  ];
+  const cropHandles = cropHandleDefinitions.map((handle) => ({ ...handle, point: clampPointToRect(handle.point, stageRect, 16) }));
 
   return (
     <>
       <AlignmentGuideOverlay guides={guides} canvasRect={canvasRect} cssScale={cssScale} />
+      {!isGroupSelection && (
+        <div
+          style={{ position: "fixed", left: Math.round(toolbarPoint.x), top: Math.round(toolbarPoint.y), zIndex: 42 }}
+          className="pointer-events-auto flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-lg border border-white/15 bg-[#11151d]/95 p-1 text-[11px] text-white shadow-xl backdrop-blur"
+        >
+          {cropMode ? (
+            <>
+              <span className="px-1.5 tabular-nums text-white/60">{cropPercent.horizontal}% × {cropPercent.vertical}%</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = { ...transform, crop: { top: 0, right: 0, bottom: 0, left: 0 } };
+                  commitSingleTransform(resolved, next, project, playhead, run);
+                }}
+                disabled={Object.values(transform.crop).every((value) => value === 0)}
+                className="rounded px-2 py-1 text-white/65 hover:bg-white/10 hover:text-white disabled:opacity-30"
+              >
+                {t("Reset")}
+              </button>
+              <button type="button" onClick={() => setCropMode(false)} className="rounded bg-sky-500 px-2 py-1 font-medium text-white hover:bg-sky-400">
+                {t("Done")}
+              </button>
+            </>
+          ) : (
+            <>
+              <span className="px-1.5 tabular-nums text-white/60">{Math.round(transform.scale * 100)}%</span>
+              <button type="button" onClick={() => setCropMode(true)} className="rounded px-2 py-1 font-medium text-white/80 hover:bg-white/10 hover:text-white">
+                {t("Crop")}
+              </button>
+            </>
+          )}
+        </div>
+      )}
       <div
         style={{
           position: "fixed",
@@ -527,13 +611,22 @@ export function TransformHandles({
         }}
       >
       <div
-        role="button"
-        tabIndex={0}
+        role={cropMode ? undefined : "button"}
+        tabIndex={cropMode ? -1 : 0}
         aria-label={t("Move clip")}
-        onMouseDown={(e) => beginDrag(e, "move")}
-        onTouchStart={(e) => beginDrag(e, "move")}
-        className="pointer-events-auto absolute inset-0 touch-none cursor-move border-2 border-sky-400/80"
+        onMouseDown={cropMode ? undefined : (e) => beginDrag(e, "move")}
+        onTouchStart={cropMode ? undefined : (e) => beginDrag(e, "move")}
+        className={`absolute inset-0 touch-none border-2 ${cropMode ? "pointer-events-none border-white" : "pointer-events-auto cursor-move border-sky-400/80"}`}
       />
+
+      {cropMode && (
+        <>
+          <div aria-hidden className="pointer-events-none absolute inset-x-0 top-1/3 border-t border-white/45" />
+          <div aria-hidden className="pointer-events-none absolute inset-x-0 top-2/3 border-t border-white/45" />
+          <div aria-hidden className="pointer-events-none absolute inset-y-0 left-1/3 border-l border-white/45" />
+          <div aria-hidden className="pointer-events-none absolute inset-y-0 left-2/3 border-l border-white/45" />
+        </>
+      )}
 
       {/* Connecting line stays nested in the ROTATED box above (unlike the corner/rotate dots below,
           which render as independent fixed-position siblings so they can be clamped) — its own CSS
@@ -542,7 +635,7 @@ export function TransformHandles({
           first place; see the rotate handle's own comment for what happens otherwise. Purely visual —
           decorative, so it's excluded from the accessibility tree rather than announced as an
           unlabeled element. */}
-      {!isGroupSelection && !rotateHandleClamped && (
+      {!isGroupSelection && !cropMode && !rotateHandleClamped && (
         <div
           aria-hidden
           style={{ left: "50%", top: -ROTATE_HANDLE_OFFSET, height: ROTATE_HANDLE_OFFSET }}
@@ -552,13 +645,43 @@ export function TransformHandles({
       </div>
       </div>
 
+      {cropMode && cropHandles.map(({ edge, cursor, bar, point }) => (
+        <div
+          key={edge}
+          role="slider"
+          tabIndex={0}
+          aria-label={t("Crop {edge}", { edge: t(edge) })}
+          aria-valuemin={0}
+          aria-valuemax={98}
+          aria-valuenow={Math.round(transform.crop[edge] * 100)}
+          onKeyDown={(event) => {
+            const current = transform.crop[edge];
+            const opposing = edge === "left" ? transform.crop.right : edge === "right" ? transform.crop.left : edge === "top" ? transform.crop.bottom : transform.crop.top;
+            let nextValue: number | null = null;
+            if (event.key === "Home") nextValue = 0;
+            if (event.key === "End") nextValue = 0.98 - opposing;
+            if (event.key === "ArrowUp" || event.key === "ArrowRight") nextValue = Math.min(0.98 - opposing, current + 0.01);
+            if (event.key === "ArrowDown" || event.key === "ArrowLeft") nextValue = Math.max(0, current - 0.01);
+            if (nextValue === null) return;
+            event.preventDefault();
+            commitSingleTransform(resolved, { ...transform, crop: { ...transform.crop, [edge]: nextValue } }, project, playhead, run);
+          }}
+          onMouseDown={(e) => beginCropDrag(e, edge)}
+          onTouchStart={(e) => beginCropDrag(e, edge)}
+          style={{ position: "fixed", left: Math.round(point.x) - 16, top: Math.round(point.y) - 16, width: 32, height: 32, zIndex: 41 }}
+          className={`pointer-events-auto flex touch-none items-center justify-center rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${cursor}`}
+        >
+          <span className={`${bar} rounded-full bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.55)]`} />
+        </div>
+      ))}
+
       {/* Resize/rotate hidden for a multi-selection — see `isGroupSelection`'s own comment above:
           there's no well-defined group meaning for either yet, only move. Rendered as independent
           `position: fixed` siblings of the rotated box (not CSS-percentage children of it) precisely
           so each one's CLAMPED position can be expressed in plain screen coordinates — a rotated
           parent's `left: X%` can only ever place a point along ITS OWN (possibly off-screen) rotated
           axis, never clamped to the axis-aligned visible frame. */}
-      {!isGroupSelection && (
+      {!isGroupSelection && !cropMode && (
         <>
           {cornerHandles.map(({ x, y, cursor, label, point }) => (
             <div
@@ -566,6 +689,14 @@ export function TransformHandles({
               role="button"
               tabIndex={0}
               aria-label={t("Resize clip ({corner})", { corner: t(label) })}
+              onKeyDown={(event) => {
+                let factor = 0;
+                if (event.key === "ArrowUp" || event.key === "ArrowRight" || event.key === "+" || event.key === "=") factor = 1.02;
+                if (event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "-") factor = 1 / 1.02;
+                if (!factor) return;
+                event.preventDefault();
+                commitSingleTransform(resolved, { ...transform, scale: transform.scale * factor }, project, playhead, run);
+              }}
               onMouseDown={(e) => beginDrag(e, "scale", { x, y })}
               onTouchStart={(e) => beginDrag(e, "scale", { x, y })}
               // A fixed numeric offset (`point` rounded to a whole pixel, HANDLE_SIZE known and even),
@@ -585,7 +716,7 @@ export function TransformHandles({
                 height: HANDLE_SIZE,
                 zIndex: 40,
               }}
-              className={`pointer-events-auto flex touch-none items-center justify-center ${cursor}`}
+              className={`pointer-events-auto flex touch-none items-center justify-center rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${cursor}`}
             >
               <div style={{ width: HANDLE_DOT_SIZE, height: HANDLE_DOT_SIZE }} className="rounded-full border border-white bg-sky-400 shadow" />
             </div>
