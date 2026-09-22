@@ -2133,7 +2133,7 @@ export class PlaybackEngine {
    *  paths drifting apart.
    *
    *  Pipeline, matching `ClipTransform`'s own doc comment and `buildExportPlan`'s FFmpeg graph exactly:
-   *  crop the source rect → scale-to-fit the CROPPED dimensions → apply the user `scale` multiplier →
+   *  scale-to-fit the FULL source → crop the source rect without re-centering → apply the user `scale` multiplier →
    *  rotate around center → translate by offset. `drawImage`'s 8-argument form does the crop step
    *  itself (a source rect), so there's no need for an intermediate cropped canvas.
    *

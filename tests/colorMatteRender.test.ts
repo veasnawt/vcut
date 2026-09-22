@@ -25,6 +25,48 @@ function bundledFfmpeg(): string | null {
 describe("color-matte export render (real FFmpeg)", () => {
   const ffmpeg = bundledFfmpeg();
 
+  it("keeps the opposite edge fixed for a one-sided crop", { skip: !ffmpeg && "bundled FFmpeg not found" }, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vcut-one-edge-crop-"));
+    try {
+      const size = 120;
+      let project = emptyProject([colorAsset("crop", "#ff0000")]);
+      project.sequence.width = size;
+      project.sequence.height = size;
+      project.exportSettings = { ...project.exportSettings, width: size, height: size, fps: 30 };
+      const base = videoTrackId(project);
+      project = addClip(project, base, "crop", 0);
+      project = trimClip(project, clipsOf(project, base)[0].id, "out", 0.5);
+      project = setClipTransform(project, clipsOf(project, base)[0].id, {
+        ...IDENTITY_TRANSFORM,
+        crop: { top: 0, right: 0, bottom: 0, left: 0.25 },
+      });
+
+      const outputPath = path.join(dir, "crop.mp4");
+      const { args } = buildExportPlan(project, {
+        inputPathFor: () => dir,
+        outputPath,
+        fontPathFor: (f) => f,
+        textFilePathFor: (c) => path.join(dir, `${c.id}.txt`),
+      });
+      execFileSync(ffmpeg!, args, { stdio: "pipe" });
+      const raw = execFileSync(ffmpeg!, ["-hide_banner", "-loglevel", "error", "-i", outputPath, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], {
+        maxBuffer: 1 << 22,
+      });
+      const pixel = (x: number, y = size / 2) => {
+        const offset = (Math.floor(y) * size + x) * 3;
+        return [raw[offset], raw[offset + 1], raw[offset + 2]];
+      };
+      const croppedSide = pixel(10);
+      const retainedLeft = pixel(40);
+      const retainedRight = pixel(110);
+      assert.ok(croppedSide.every((channel) => channel < 25), `cropped side should be black, got ${croppedSide}`);
+      assert.ok(retainedLeft[0] > 200 && retainedLeft[1] < 40 && retainedLeft[2] < 40, `retained area should be red, got ${retainedLeft}`);
+      assert.ok(retainedRight[0] > 200 && retainedRight[1] < 40 && retainedRight[2] < 40, `opposite edge moved, got ${retainedRight}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   /** A real, reported production crash: a color-matte clip's `Asset.relPath` is always `""` (there's
    *  no real file behind it — see that field's own doc comment), and the server's own `inputPathFor`
    *  used to naively resolve that empty path straight through to the project's own media DIRECTORY.

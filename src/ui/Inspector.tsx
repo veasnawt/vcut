@@ -49,6 +49,7 @@ import type { Clip, ClipEffects, ClipTransform, ColorGrading, TextCrop, TextStyl
 import { DEFAULT_CHROMA_KEY, DEFAULT_TEXT_STYLE, IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../project/types.ts";
 import { applyTextStylePreset } from "../project/textStylePresets.ts";
 import type { TextStylePreset } from "../project/textStylePresets.ts";
+import type { CropEdge } from "../playback/transformGeometry.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { formatTimecode } from "../timeline/time.ts";
@@ -1189,6 +1190,7 @@ export function Inspector() {
    *  recomputed on every render, so it can never show a blank or wrong-for-this-clip tab even for one
    *  frame the way a `useEffect`-based reset could. */
   const [requestedTab, setRequestedTab] = useState("text");
+  const [cropEdge, setCropEdge] = useState<CropEdge>("top");
   const removeObjectArmedClipId = useEditorStore((s) => s.removeObjectArmedClipId);
 
   useEffect(() => {
@@ -2171,75 +2173,38 @@ export function Inspector() {
                           <p className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-wide text-white/30">
                             {t("Crop")}
                           </p>
-                          {/* Paired by axis (Top/Bottom, then Left/Right) — same "reads as one concept,
-                              not two unrelated rows" reasoning Position's X/Y pairing above already
-                              uses, and it halves how much this section adds to the scroll a phone-sized
-                              Properties sheet already has plenty of. Each field keeps its own slider
-                              (narrower now, but still a full drag target within its own half). */}
-                          <div className="flex gap-3">
-                            <div className="flex-1">
-                              <NumberField
-                                label={t("Top")}
-                                value={transform.crop.top}
-                                suffix="%"
-                                step={1}
-                                min={0}
-                                max={100}
-                                compact
-                                toDisplay={(v) => v * 100}
-                                fromDisplay={(v) => v / 100}
-                                onPreview={(v) => previewCrop(clip.id, { top: v })}
-                                onCommit={(v) => patchCrop(clip.id, { top: v })}
-                              />
-                            </div>
-                            <div className="flex-1">
-                              <NumberField
-                                label={t("Bottom")}
-                                value={transform.crop.bottom}
-                                suffix="%"
-                                step={1}
-                                min={0}
-                                max={100}
-                                compact
-                                toDisplay={(v) => v * 100}
-                                fromDisplay={(v) => v / 100}
-                                onPreview={(v) => previewCrop(clip.id, { bottom: v })}
-                                onCommit={(v) => patchCrop(clip.id, { bottom: v })}
-                              />
-                            </div>
+                          <div className="mb-2 grid grid-cols-4 gap-1 rounded bg-black/20 p-1">
+                            {(["top", "right", "bottom", "left"] as CropEdge[]).map((edge) => (
+                              <button
+                                key={edge}
+                                type="button"
+                                onClick={() => setCropEdge(edge)}
+                                aria-pressed={cropEdge === edge}
+                                className={`rounded px-1 py-1.5 text-[11px] transition ${cropEdge === edge ? "bg-sky-500 text-white" : "text-white/55 hover:bg-white/10 hover:text-white"}`}
+                              >
+                                {t(edge[0].toUpperCase() + edge.slice(1))}
+                              </button>
+                            ))}
                           </div>
-                          <div className="flex gap-3">
-                            <div className="flex-1">
-                              <NumberField
-                                label={t("Left")}
-                                value={transform.crop.left}
-                                suffix="%"
-                                step={1}
-                                min={0}
-                                max={100}
-                                compact
-                                toDisplay={(v) => v * 100}
-                                fromDisplay={(v) => v / 100}
-                                onPreview={(v) => previewCrop(clip.id, { left: v })}
-                                onCommit={(v) => patchCrop(clip.id, { left: v })}
-                              />
-                            </div>
-                            <div className="flex-1">
-                              <NumberField
-                                label={t("Right")}
-                                value={transform.crop.right}
-                                suffix="%"
-                                step={1}
-                                min={0}
-                                max={100}
-                                compact
-                                toDisplay={(v) => v * 100}
-                                fromDisplay={(v) => v / 100}
-                                onPreview={(v) => previewCrop(clip.id, { right: v })}
-                                onCommit={(v) => patchCrop(clip.id, { right: v })}
-                              />
-                            </div>
-                          </div>
+                          <NumberField
+                            label={t(cropEdge[0].toUpperCase() + cropEdge.slice(1))}
+                            value={transform.crop[cropEdge]}
+                            suffix="%"
+                            step={1}
+                            min={0}
+                            max={100}
+                            toDisplay={(v) => v * 100}
+                            fromDisplay={(v) => v / 100}
+                            onPreview={(v) => previewCrop(clip.id, { [cropEdge]: v })}
+                            onCommit={(v) => patchCrop(clip.id, { [cropEdge]: v })}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => window.dispatchEvent(new CustomEvent("vcut:open-crop-preview"))}
+                            className="mt-1.5 w-full rounded bg-sky-500/15 py-1.5 text-[12px] font-medium text-sky-300 transition hover:bg-sky-500/25 hover:text-white"
+                          >
+                            {t("Edit crop on preview")}
+                          </button>
                           {Object.values(transform.crop).some((value) => value > 0) && (
                             <button
                               onClick={() => patchCrop(clip.id, { top: 0, right: 0, bottom: 0, left: 0 })}

@@ -14,6 +14,7 @@ import type { ClipOverride } from "../timeline/groupMove.ts";
 import { computeGroupMoveOverrides } from "../timeline/groupMove.ts";
 import { hasTransformKeyframes, resolveClipTransform, upsertKeyframe } from "../timeline/keyframes.ts";
 import { clipAtTime } from "../timeline/queries.ts";
+import { frameDuration } from "../timeline/time.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { AlignmentGuideOverlay } from "./AlignmentGuideOverlay.tsx";
 import { usePinchToScale } from "./usePinchToScale.ts";
@@ -214,6 +215,14 @@ export function TransformHandles({
   useEffect(() => {
     setCropMode(false);
   }, [resolved?.clipId]);
+
+  useEffect(() => {
+    const openCrop = () => {
+      if (resolvedRef.current) setCropMode(true);
+    };
+    window.addEventListener("vcut:open-crop-preview", openCrop);
+    return () => window.removeEventListener("vcut:open-crop-preview", openCrop);
+  }, []);
 
   // Two-finger pinch scales the currently selected clip directly on the canvas — the gesture every
   // mobile video editor uses for "make this bigger/smaller", alongside (not replacing) the
@@ -537,6 +546,21 @@ export function TransformHandles({
     { edge: "right", cursor: "cursor-ew-resize", bar: "h-12 w-1", point: rotatedPoint(cssCenterX, cssCenterY, cssWidth / 2, 0, transform.rotationDeg) },
   ];
   const cropHandles = cropHandleDefinitions.map((handle) => ({ ...handle, point: clampPointToRect(handle.point, stageRect, 16) }));
+  const selectedClip = findClip(project!, resolved.clipId)?.clip;
+  const transformKeyframes = selectedClip?.transformKeyframes ?? [];
+  const keyframeElapsed = playhead - resolved.timelineStart;
+  const transformFps = resolved.sequence.fps;
+  const keyframeIndex = transformKeyframes.findIndex((keyframe) => Math.abs(keyframe.time - keyframeElapsed) <= frameDuration(transformFps) / 2);
+
+  function toggleTransformKeyframe() {
+    if (!selectedClip) return;
+    if (keyframeIndex >= 0) {
+      const next = transformKeyframes.filter((_, index) => index !== keyframeIndex);
+      run(new SetClipTransformKeyframesCommand(selectedClip.id, next.length > 0 ? next : null));
+      return;
+    }
+    run(new SetClipTransformKeyframesCommand(selectedClip.id, upsertKeyframe(transformKeyframes, keyframeElapsed, transform, transformFps)));
+  }
 
   return (
     <>
@@ -546,9 +570,19 @@ export function TransformHandles({
           style={{ position: "fixed", left: Math.round(toolbarPoint.x), top: Math.round(toolbarPoint.y), zIndex: 42 }}
           className="pointer-events-auto flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-lg border border-white/15 bg-[#11151d]/95 p-1 text-[11px] text-white shadow-xl backdrop-blur"
         >
+          <button
+            type="button"
+            onClick={toggleTransformKeyframe}
+            title={keyframeIndex >= 0 ? t("Remove keyframe at playhead") : t("Add keyframe at playhead")}
+            aria-label={keyframeIndex >= 0 ? t("Remove keyframe at playhead") : t("Add keyframe at playhead")}
+            aria-pressed={keyframeIndex >= 0}
+            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition ${keyframeIndex >= 0 ? "bg-amber-400/20 text-amber-300" : "text-white/55 hover:bg-white/10 hover:text-white"}`}
+          >
+            <span aria-hidden className={`h-2.5 w-2.5 rotate-45 border ${keyframeIndex >= 0 ? "border-amber-200 bg-amber-300" : "border-white/70"}`} />
+          </button>
           {cropMode ? (
             <>
-              <span className="px-1.5 tabular-nums text-white/60">{cropPercent.horizontal}% × {cropPercent.vertical}%</span>
+              <span className="whitespace-nowrap px-1.5 tabular-nums text-white/60">{cropPercent.horizontal}% × {cropPercent.vertical}%</span>
               <button
                 type="button"
                 onClick={() => {

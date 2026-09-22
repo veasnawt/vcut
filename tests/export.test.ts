@@ -435,7 +435,8 @@ describe("buildExportPlan with a real transform", () => {
 
     assert.match(graph, /crop=w=iw\*\(1-0\.150000-0\.050000\):h=ih\*\(1-0\.100000-0\.200000\):x=iw\*0\.150000:y=ih\*0\.100000/);
     assert.match(graph, /format=rgba/);
-    assert.match(graph, /scale=w='iw\*min\(1080\/iw,1920\/ih\)\*1\.500000'/);
+    assert.match(graph, /scale=w='iw\*min\(1080\*0\.800000\/iw,1920\*0\.700000\/ih\)\*1\.500000'/);
+    assert.match(graph, /pad=w='iw\/0\.800000':h='ih\/0\.700000':x='iw\*0\.150000\/0\.800000':y='ih\*0\.100000\/0\.700000':color=black@0/);
     assert.match(graph, /rotate=a=42\.000000\*PI\/180:ow=rotw\(42\.000000\*PI\/180\):oh=roth\(42\.000000\*PI\/180\):c=black@0/);
     assert.match(graph, /overlay=x='\(W-w\)\/2\+25\.000000':y='\(H-h\)\/2\+-15\.000000':format=auto/);
   });

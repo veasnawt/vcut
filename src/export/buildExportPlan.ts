@@ -396,12 +396,22 @@ function buildTransformFilters(params: {
   const cropFilter =
     `crop=w=iw*(1-${n(crop.left)}-${n(crop.right)}):h=ih*(1-${n(crop.top)}-${n(crop.bottom)})` +
     `:x=iw*${n(crop.left)}:y=ih*${n(crop.top)}`;
-  // min(iw,ih) here is the CROPPED source's own dimensions — crop runs first in this chain, so
-  // every filter after it sees the already-cropped size as its "iw"/"ih", exactly like the plain
-  // scale+pad chain below sees the FULL source's iw/ih (there is no crop to have already applied).
-  const scaleFilter =
-    `scale=w='iw*min(${width}/iw,${height}/ih)*${n(transform.scale)}'` +
-    `:h='ih*min(${width}/iw,${height}/ih)*${n(transform.scale)}'`;
+  const remainingX = 1 - crop.left - crop.right;
+  const remainingY = 1 - crop.top - crop.bottom;
+  const hasCrop = crop.top > 0 || crop.right > 0 || crop.bottom > 0 || crop.left > 0;
+  // `iw`/`ih` are already cropped here. Multiplying the target dimensions by the remaining fractions
+  // reconstructs the fit scale of the FULL source, so cropping one edge does not re-fit/zoom the image.
+  const scaleFilter = hasCrop
+    ? `scale=w='iw*min(${width}*${n(remainingX)}/iw,${height}*${n(remainingY)}/ih)*${n(transform.scale)}'` +
+      `:h='ih*min(${width}*${n(remainingX)}/iw,${height}*${n(remainingY)}/ih)*${n(transform.scale)}'`
+    : `scale=w='iw*min(${width}/iw,${height}/ih)*${n(transform.scale)}'` +
+      `:h='ih*min(${width}/iw,${height}/ih)*${n(transform.scale)}'`;
+  // Restore the cropped pixels' position inside a transparent full-source-sized canvas before
+  // rotating. This keeps the untouched opposite edge fixed and matches computeTransformedBox.
+  const padFilter = hasCrop
+    ? `,format=rgba,pad=w='iw/${n(remainingX)}':h='ih/${n(remainingY)}'` +
+      `:x='iw*${n(crop.left)}/${n(remainingX)}':y='ih*${n(crop.top)}/${n(remainingY)}':color=black@0`
+    : "";
   const rotateFilter = `rotate=a=${angle}:ow=rotw(${angle}):oh=roth(${angle}):c=black@0`;
   // eq's own defaults (brightness=0, contrast=1, saturation=1) are genuine no-ops, so — unlike
   // gblur/colorchannelmixer below — it's always safe to include unconditionally, no identity check
@@ -473,7 +483,7 @@ function buildTransformFilters(params: {
   const opacityFilter = effects.opacity < 1 ? `,colorchannelmixer=aa=${n(effects.opacity)}` : "";
 
   return [
-    `[${source}]${chromaKeyFilter}${cropFilter},format=rgba,${eqFilter}${curvesFilter ? `,${curvesFilter}` : ""}${lutFilter}${pixelEffectFilter},${scaleFilter}${blurFilter},${rotateFilter}${opacityFilter},` +
+    `[${source}]${chromaKeyFilter}${cropFilter},format=rgba,${eqFilter}${curvesFilter ? `,${curvesFilter}` : ""}${lutFilter}${pixelEffectFilter},${scaleFilter}${blurFilter}${padFilter},${rotateFilter}${opacityFilter},` +
       `setsar=1,fps=${fps},setpts=PTS-STARTPTS[${clipLabel}]`,
     // The background is its own lavfi input (pushed alongside this), not an inline `color=` source
     // filter — matching the pattern gap segments already use elsewhere in this function, so there's

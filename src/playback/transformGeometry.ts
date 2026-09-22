@@ -16,7 +16,7 @@ export interface TransformedBox {
   cropHeight: number;
 }
 
-/** The one place the crop → fit-scale → user-scale → position pipeline is computed, shared by
+/** The one place the fit-scale → crop → user-scale → position pipeline is computed, shared by
  *  `PlaybackEngine` (which draws this box, and needs the crop rect for `drawImage`'s source args) and
  *  `TransformHandles` (which needs the resulting box's screen position to draw on-canvas handles at
  *  the right place). Two independent implementations of this math would be exactly the kind of
@@ -40,12 +40,20 @@ export function computeTransformedBox(
   const cropHeight = sourceHeight * (1 - crop.top - crop.bottom);
   if (cropWidth <= 0 || cropHeight <= 0) return null;
 
-  const fitScale = Math.min(canvasWidth / cropWidth, canvasHeight / cropHeight);
+  // Fit the FULL source once, then remove pixels from the requested edge. Re-fitting the cropped
+  // rectangle made a left-edge drag zoom and recenter the image, so both sides appeared to move.
+  // Keeping the original fit stable gives crop its conventional one-edge-at-a-time behavior.
+  const fitScale = Math.min(canvasWidth / sourceWidth, canvasHeight / sourceHeight);
   const finalScale = fitScale * transform.scale;
+  const localShiftX = ((crop.left - crop.right) * sourceWidth * finalScale) / 2;
+  const localShiftY = ((crop.top - crop.bottom) * sourceHeight * finalScale) / 2;
+  const theta = (transform.rotationDeg * Math.PI) / 180;
+  const screenShiftX = localShiftX * Math.cos(theta) - localShiftY * Math.sin(theta);
+  const screenShiftY = localShiftX * Math.sin(theta) + localShiftY * Math.cos(theta);
 
   return {
-    centerX: canvasWidth / 2 + transform.offsetX,
-    centerY: canvasHeight / 2 + transform.offsetY,
+    centerX: canvasWidth / 2 + transform.offsetX + screenShiftX,
+    centerY: canvasHeight / 2 + transform.offsetY + screenShiftY,
     width: cropWidth * finalScale,
     height: cropHeight * finalScale,
     cropX,
