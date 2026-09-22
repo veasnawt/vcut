@@ -1,6 +1,70 @@
 # VCut handoff: Claude review after Codex
 
-Updated: 2026-09-21 (Asia/Bangkok).
+Updated: 2026-09-22 (Asia/Bangkok).
+
+## Text Style Presets System, Toolbar Font/Style Tools & Preview Fidelity Overhaul — 2026-09-22
+
+### Overview & Architecture
+Delivered a production-ready, extensible Text Style Presets system giving VCut users a polished, CapCut/Canva-like library of instantly applicable text styles while keeping all text fully vector/text-based and editable.
+
+1. **Reusable TextStylePreset Schema & Curated Library (`src/project/textStylePresets.ts`, `src/project/types.ts`):**
+   - Strongly typed `TextStylePreset` schema representing combinations of: font family, font size, font weight, font style, letter spacing, line height, text alignment, text transform (`uppercase`, `lowercase`, `capitalize`, `none`), solid fill color, multi-stop linear/radial gradients (`TextGradientFill`), dual-stroke outlines (primary `strokeColor`/`strokeWidth` + secondary outer `strokeColor2`/`strokeWidth2`), multiple shadows & glows (`glowSpread`, `color`, `blur`, `offsetX`, `offsetY`), snug background badge highlights (`backgroundColor`, `backgroundOpacity`, `backgroundPadding`, `backgroundCornerRadius`), opacity, blur, blend modes, and text decoration.
+   - 86 curated, distinct presets across 18 categories: *Trending*, *Minimal*, *Bold*, *Cinematic*, *Social*, *Subtitle*, *Neon*, *Glow*, *Retro*, *Y2K*, *Chrome*, *Gaming*, *Comic*, *Luxury*, *Cute*, *Gradient*, *Meme*, and *Editorial*.
+   - Validation & sanitization helpers: `validateTextStylePreset`, `sanitizeTextStylePreset`, `isPresetDark`, `parseColorLuminance`.
+2. **Multi-Pass Canvas2D Rendering Pipeline (`src/playback/textLayout.ts`, `drawTextFrame`):**
+   - Render passes:
+     1. Rounded background badge pill (using measured layout bounds, padding, and corner radius).
+     2. Outer secondary stroke (`strokeColor2`, `strokeWidth2 + strokeWidth`).
+     3. Primary stroke (`strokeColor`, `strokeWidth`) with glow/shadow.
+     4. Inner fill (solid or linear/radial gradient) rendered cleanly over strokes to eliminate anti-aliased edge bleeding.
+   - Dynamic text transformation (`applyTextTransform`) and letter spacing via canvas context with character fallback.
+3. **Command Pipeline & Timeline State (`src/commands/index.ts`, `src/store/editorStore.ts`):**
+   - `buildTextStylePresetCommand` & `buildTextStylePatchCommand`:
+     - Applies preset properties directly to asset style while preserving existing clip timing, duration, position (`transform.x`, `transform.y`), scale, and user text content.
+     - Synchronizes `textStyleKeyframes` via `SetClipTextStyleKeyframesCommand` so that keyframed text clips remain synchronized.
+     - Supports batch application to multiple selected text clips simultaneously.
+     - Auto-targeting: when no clip is selected, automatically targets the text clip intersecting the current playhead.
+     - Live hover preview: `setLivePreviewOverrides({ [clipId]: { style: previewStyle } })` enables instantaneous canvas updates on preset card hover, reverting smoothly on mouse leave.
+4. **Toolbar Font Tool & Style Picker Menus (`src/ui/FontPickerMenu.tsx`, `src/ui/StylePickerMenu.tsx`, `src/ui/VCutApp.tsx`):**
+   - Added dedicated **Font** tool button (`Type` icon) and **Styles** button (`Sparkles` icon) directly in the editor toolbar.
+   - `FontPickerMenu`: Dropdown menu with categorized typography (Sans, Serif, Display, Monospace, Handwriting, Khmer), font preview renderings, and live hover preview on canvas.
+   - `StylePickerMenu`: Dropdown floating popover with embedded `TextStylePresetGrid` providing quick one-click style access without navigating away to the Inspector panel.
+   - Bidirectional state synchronization between Toolbar menus and Inspector panel.
+5. **Adaptive Contrast for Dark Presets (`src/project/textStylePresets.ts`, `src/ui/TextStylePresetGrid.tsx`):**
+   - Solved dark text preset invisibility (*Minimal Black*, *Charcoal Clean*, *Stealth*) against dark editor theme backgrounds.
+   - Implemented `parseColorLuminance(color)` and `isPresetDark(preset)`. Preset cards dynamically evaluate visual luminance (accounting for fills, strokes, and backgrounds) and render an adaptive light-neutral checkerboard/card canvas (`bg-neutral-100 text-neutral-900`) for dark presets, while preserving dark backgrounds for bright/neon presets and bright highlight badges.
+6. **Preset Thumbnail Fidelity Overhaul (`src/ui/TextStylePresetGrid.tsx`):**
+   - Redesigned `PresetThumbnail` using a stacked layered structure:
+     - Outer secondary stroke layer.
+     - Inner primary stroke layer.
+     - Top fill layer (`z-10 relative`) with gradient clip (`background-clip: text`), completely preventing WebKit stroke-over-gradient clipping.
+     - Snug inline-block badge for presets with background highlights (`preset.style.backgroundColor`).
+   - Added automatic font preloading on mount: `preloadAllFonts()` + `document.fonts.ready` triggers a clean re-render once all web fonts are loaded.
+
+### Verification & Deployment
+- Package TypeScript (`packages/vcut`): 0 errors (`--noEmit --incremental false`).
+- Host TypeScript (`studios/vcut`): 0 errors (`--noEmit --incremental false`).
+- Full test suite: 1,097 passed, 0 failed across 181 test suites (including 27 dedicated tests in `textStylePresets.test.ts`).
+- Production Deployment: Railway service `vcut` deployment `219ab461-f907-48bd-876e-9144fdf25cc2` (SUCCESS). Live endpoint `https://vcut.io/edit` returning 200 OK.
+- Git Commits Pushed:
+  - `veasnawt/vcut`: `1865f78`, `903be7c`, `c6c0047`, `5e5d60c`
+  - `veasna-os`: `6d18404`, `b27395c`, `9668bea`, `b75b397`
+
+## Music Tool Audio Preview, Waveform Visualization & Duration Fixes — 2026-09-22
+
+### Root Cause & Investigation
+- Preview playback showed a static blue duration bar instead of an active waveform animation.
+- Running duration counter was missing during audio playback.
+- Adding music to the timeline used an artificially clamped/short duration or looped unexpectedly instead of accurately respecting the authentic 30s preview clip duration.
+
+### Changes Made
+1. `packages/vcut/src/ui/MusicPanel.tsx`: Added an animated dancing waveform bar visualizer during audio playback with real-time timestamp counter (`mm:ss / mm:ss`).
+2. Replaced artificial audio looping with authentic one-shot preview playback.
+3. Extracted accurate duration on import (`item.duration` passed to `api.downloadMusic`) and properly placed full-duration audio clips onto the timeline without premature truncation.
+
+### Verification & Deployment
+- Commits: `packages/vcut` `62e44cf`, `veasna-os` `2db8d71`.
+- Verified in browser preview with waveform animation, accurate 30s timeline placement, and 0 console errors.
 
 ## HTTP Security Headers & MDN Observatory Compliance — 2026-09-21
 
