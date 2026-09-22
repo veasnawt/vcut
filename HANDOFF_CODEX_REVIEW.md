@@ -4,6 +4,20 @@ Updated: 2026-09-22 (Asia/Bangkok).
 
 ## Current handoff (takes precedence over the historical review below)
 
+### Preview crop and resize UX — released (2026-09-22)
+
+- `src/ui/TransformHandles.tsx` now has an on-canvas Crop mode with draggable edge handles, a rule-of-thirds grid, live visible-area percentages, Reset/Done controls, and handles clamped inside the preview on narrow/mobile layouts.
+- Crop drags account for clip rotation, update the preview continuously, and commit as one undoable transform when the pointer is released. Corner resize handles also support keyboard arrows/plus/minus and the canvas toolbar shows the live scale percentage.
+- `src/ui/Inspector.tsx` adds a one-click Reset crop action.
+- Shared crop math lives in `src/playback/transformGeometry.ts`; unit coverage was added to `tests/transformGeometry.test.ts` and the responsive production-browser regression is `scripts/transform-check/check-crop.cjs`.
+- Removed stale unused declarations left by the visual-layer/AI toolbar refactors so the strict native wrapper TypeScript build is green again.
+- Verification: all 1,100 VCut tests pass; the Studios production build passes; `pnpm --filter vcut-mobile build` passes; the Playwright crop workflow passes at 1440px and 390px including drag, keyboard input, save persistence, and one-step undo.
+- Git: `341b057` (`feat(editor): improve preview crop and resize controls`) pushed to `veasnawt/vcut` `main`.
+- Production: Railway deployment `6f03935b-d439-4f25-824a-1dfd6e908be3` completed with `SUCCESS`; live `/` and `/edit` return HTTP 200.
+- Windows installer: `apps/vcut-desktop/release/VCut Setup 0.2.2-crop-preview-update.exe`, 232,503,929 bytes, SHA-256 `B22C3D5A2E54EE2500C7521FC1ADD54F6751EDD50189D5D2663864CD9D22EEF6`. NSIS archive integrity passed; unsigned as before.
+- Android APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.2-crop-preview-update.apk`, 200,743,851 bytes, SHA-256 `2727A87361EAC51FAD511221443B118292BAC3D7F7B28C4A6B592A56FEE93112`. Gradle `assembleDebug` passed and the existing Android debug certificate verified with APK Signature Scheme v2.
+- iOS: the same production mobile bundle was copied into `ios/App/App/public` by `cap sync ios`. CocoaPods and Xcode are unavailable on this Windows host, so final iOS compilation/signing still requires a Mac.
+
 The user authorized implementation, testing, and subsequent commit/push of the recent updates ("approved"). The Text Style Presets system (86 curated presets across 18 categories, multi-pass canvas renderer, secondary strokes, gradients, glows, background pills, casing, letter spacing), Toolbar Font & Style Picker tools, Adaptive Contrast for dark presets, Preset Thumbnail Preview Fidelity overhaul (layered rendering avoiding stroke occlusion, snug badge pills, font preloading), Music Tool audio waveform visualization and authentic duration fixes, and full test suite verification (1,097 tests passing across 181 suites) have been completed, verified, and deployed to production on `vcut.io`.
 
 ### Text Style Presets System, Toolbar Font/Style Tools & Preview Fidelity Overhaul — 2026-09-22

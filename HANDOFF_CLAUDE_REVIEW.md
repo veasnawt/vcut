@@ -2,6 +2,12 @@
 
 Updated: 2026-09-22 (Asia/Bangkok).
 
+## Latest release: preview crop and resize UX
+
+The selected clip now offers an on-canvas Crop mode with draggable, rotation-aware edge handles, a rule-of-thirds grid, live visible-area percentages, Reset/Done controls, mobile-safe handle placement, a live resize percentage, keyboard-accessible crop/resize, and one-step undo. The Inspector also has Reset crop. Relevant files are `src/ui/TransformHandles.tsx`, `src/playback/transformGeometry.ts`, `src/ui/Inspector.tsx`, `tests/transformGeometry.test.ts`, and `scripts/transform-check/check-crop.cjs`.
+
+Verification: 1,100 VCut tests pass; Studios production build and strict mobile wrapper build pass; Playwright crop workflows pass at 1440px and 390px. Commit `341b057` is pushed. Railway deployment `6f03935b-d439-4f25-824a-1dfd6e908be3` is live with `SUCCESS`. Fresh artifacts are `VCut Setup 0.2.2-crop-preview-update.exe` (SHA-256 `B22C3D5A2E54EE2500C7521FC1ADD54F6751EDD50189D5D2663864CD9D22EEF6`) and `VCut-0.2.2-crop-preview-update.apk` (SHA-256 `2727A87361EAC51FAD511221443B118292BAC3D7F7B28C4A6B592A56FEE93112`). The iOS assets are synced; compiling/signing them still requires macOS with CocoaPods/Xcode.
+
 ## Text Style Presets System, Toolbar Font/Style Tools & Preview Fidelity Overhaul — 2026-09-22
 
 ### Overview & Architecture
