@@ -1594,3 +1594,109 @@ export function applyTextStylePreset(
 
   return next;
 }
+
+/**
+ * Parses a CSS hex, rgb, rgba, or hsl color string and returns its perceived luminance from 0 to 1.
+ */
+export function parseColorLuminance(colorStr?: string): number {
+  if (!colorStr) return 1;
+  const c = colorStr.trim().toLowerCase();
+  if (c === "transparent") return 0;
+  if (c === "black") return 0;
+  if (c === "white") return 1;
+
+  // Hex: #rgb, #rgba, #rrggbb, #rrggbbaa
+  if (c.startsWith("#")) {
+    const hex = c.slice(1);
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    if (hex.length === 3 || hex.length === 4) {
+      r = parseInt(hex[0] + hex[0], 16);
+      g = parseInt(hex[1] + hex[1], 16);
+      b = parseInt(hex[2] + hex[2], 16);
+    } else if (hex.length >= 6) {
+      r = parseInt(hex.slice(0, 2), 16);
+      g = parseInt(hex.slice(2, 4), 16);
+      b = parseInt(hex.slice(4, 6), 16);
+    }
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  }
+
+  // rgb() or rgba()
+  const rgbMatch = c.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (rgbMatch) {
+    const r = parseInt(rgbMatch[1], 10);
+    const g = parseInt(rgbMatch[2], 10);
+    const b = parseInt(rgbMatch[3], 10);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  }
+
+  // hsl() or hsla()
+  const hslMatch = c.match(/hsla?\(\s*(\d+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%/);
+  if (hslMatch) {
+    const lightness = parseFloat(hslMatch[3]);
+    return lightness / 100;
+  }
+
+  return 0.5;
+}
+
+/**
+ * Determines whether a text style preset requires a contrasting light thumbnail background
+ * because the text is dark (e.g. black, charcoal) and lacks a prominent bright background box,
+ * bright glow, or heavy bright outline.
+ */
+export function isPresetDark(preset: TextStylePreset): boolean {
+  // 1. If the preset has its own bright background box with sufficient opacity,
+  // the text sits on top of that box, so no contrast background is needed.
+  if (preset.backgroundColor && (preset.backgroundOpacity ?? 1) >= 0.35) {
+    const bgLuminance = parseColorLuminance(preset.backgroundColor);
+    if (bgLuminance >= 0.45) {
+      return false;
+    }
+  }
+
+  // 2. If the preset has a bright glow, it illuminates the dark background.
+  if (preset.glowColor && (preset.glowBlur ?? 0) > 0) {
+    const glowLuminance = parseColorLuminance(preset.glowColor);
+    if (glowLuminance >= 0.45) {
+      return false;
+    }
+  }
+
+  // 3. Check effective text fill luminance
+  let textLuminance = 1;
+  const isTransparentFill = preset.color === "transparent" || (preset.opacity !== undefined && preset.opacity < 0.1);
+
+  if (isTransparentFill) {
+    // If fill is transparent, the visible outline determines brightness
+    if (preset.strokeColor) {
+      textLuminance = parseColorLuminance(preset.strokeColor);
+    } else {
+      return false;
+    }
+  } else if (preset.gradient && preset.gradient.stops && preset.gradient.stops.length > 0) {
+    const sum = preset.gradient.stops.reduce((acc, stop) => acc + parseColorLuminance(stop.color), 0);
+    textLuminance = sum / preset.gradient.stops.length;
+  } else {
+    textLuminance = parseColorLuminance(preset.color);
+  }
+
+  // 4. If the text itself is bright, dark thumbnail background is fine
+  if (textLuminance >= 0.38) {
+    return false;
+  }
+
+  // 5. If the text is dark, check if it has a thick bright stroke that provides enough contrast
+  if (
+    preset.strokeColor &&
+    parseColorLuminance(preset.strokeColor) >= 0.5 &&
+    (preset.strokeWidth ?? 0) >= 2.5
+  ) {
+    return false;
+  }
+
+  // The text is dark and lacks bright contrast on dark surfaces -> needs contrast bg
+  return true;
+}

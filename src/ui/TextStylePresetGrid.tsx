@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { fontById, preloadFont } from "../project/fonts.ts";
 import {
+  isPresetDark,
   PRESET_CATEGORIES,
   TEXT_STYLE_PRESETS,
   type PresetCategory,
@@ -304,6 +305,7 @@ export function TextStylePresetGrid({
           {filteredPresets.map((preset) => {
             const isFav = favorites.has(preset.id);
             const isSelected = selectedId === preset.id;
+            const needsContrastBg = isPresetDark(preset);
 
             return (
               <button
@@ -332,7 +334,9 @@ export function TextStylePresetGrid({
                   className={`absolute right-1.5 top-1.5 z-20 rounded p-0.5 transition ${
                     isFav
                       ? "text-amber-400 opacity-100"
-                      : "text-white/40 opacity-0 group-hover:opacity-100 hover:text-amber-300"
+                      : needsContrastBg
+                        ? "text-black/40 opacity-0 group-hover:opacity-100 hover:text-amber-500"
+                        : "text-white/40 opacity-0 group-hover:opacity-100 hover:text-amber-300"
                   }`}
                   title={isFav ? t("Remove from favorites") : t("Add to favorites")}
                 >
@@ -342,7 +346,13 @@ export function TextStylePresetGrid({
                 </button>
 
                 {/* Preview Box */}
-                <div className="relative flex h-[46px] w-full items-center justify-center overflow-hidden rounded-md border border-white/10 bg-black/40">
+                <div
+                  className={`relative flex h-[46px] w-full items-center justify-center overflow-hidden rounded-md border transition ${
+                    needsContrastBg
+                      ? "border-neutral-300/40 bg-gradient-to-b from-neutral-100 to-neutral-200 shadow-inner"
+                      : "border-white/10 bg-black/40"
+                  }`}
+                >
                   {preset.backgroundColor && (
                     <div
                       className="absolute inset-x-2 inset-y-2 pointer-events-none"

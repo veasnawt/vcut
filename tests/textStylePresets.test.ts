@@ -3,6 +3,8 @@ import { describe, it } from "node:test";
 import { DEFAULT_TEXT_STYLE, type TextStyle } from "../src/project/types.ts";
 import {
   applyTextStylePreset,
+  isPresetDark,
+  parseColorLuminance,
   PRESET_CATEGORIES,
   sanitizeTextStylePreset,
   TEXT_STYLE_PRESETS,
@@ -424,3 +426,55 @@ describe("Serialization & Project Roundtrip with Advanced Text Styles", () => {
     assert.ok(Number.isFinite(asset.textStyle?.lineHeightMultiplier));
   });
 });
+
+describe("Contrast and Dark Preset Thumbnail Visibility", () => {
+  it("parseColorLuminance calculates correct luminance values", () => {
+    assert.equal(parseColorLuminance("#000000"), 0);
+    assert.equal(parseColorLuminance("#ffffff"), 1);
+    assert.equal(parseColorLuminance("black"), 0);
+    assert.equal(parseColorLuminance("white"), 1);
+    assert.equal(parseColorLuminance("transparent"), 0);
+
+    const charcoal = parseColorLuminance("#1e293b");
+    assert.ok(charcoal > 0 && charcoal < 0.2, `Expected charcoal to be dark, got ${charcoal}`);
+
+    const yellow = parseColorLuminance("#ffe600");
+    assert.ok(yellow > 0.7, `Expected yellow to be bright, got ${yellow}`);
+  });
+
+  it("isPresetDark detects dark presets without bright background or stroke", () => {
+    const minimalBlack = TEXT_STYLE_PRESETS.find((p) => p.id === "minimal-black")!;
+    assert.equal(isPresetDark(minimalBlack), true, "Minimal Black must be detected as dark");
+
+    const minimalCharcoal = TEXT_STYLE_PRESETS.find((p) => p.id === "minimal-charcoal-clean")!;
+    assert.equal(isPresetDark(minimalCharcoal), true, "Minimal Charcoal Clean must be detected as dark");
+  });
+
+  it("isPresetDark returns false for bright presets", () => {
+    const cleanWhite = TEXT_STYLE_PRESETS.find((p) => p.id === "clean-white")!;
+    assert.equal(isPresetDark(cleanWhite), false, "Clean White does not need contrast bg");
+
+    const boldCaption = TEXT_STYLE_PRESETS.find((p) => p.id === "bold-caption")!;
+    assert.equal(isPresetDark(boldCaption), false, "Bold Caption does not need contrast bg");
+
+    const hyperGlow = TEXT_STYLE_PRESETS.find((p) => p.id === "trending-hyper-glow")!;
+    assert.equal(isPresetDark(hyperGlow), false, "Hyper Cyan Glow does not need contrast bg");
+  });
+
+  it("isPresetDark returns false for black text that already has a bright background box", () => {
+    const yellowHighlight = TEXT_STYLE_PRESETS.find((p) => p.id === "yellow-highlight")!;
+    assert.equal(isPresetDark(yellowHighlight), false, "Yellow Highlight has its own bright background box");
+
+    const comicSpeechBubble = TEXT_STYLE_PRESETS.find((p) => p.id === "comic-speech-bubble")!;
+    assert.equal(isPresetDark(comicSpeechBubble), false, "Comic Speech Bubble has its own white background box");
+
+    const memeBottomText = TEXT_STYLE_PRESETS.find((p) => p.id === "meme-bottom-text")!;
+    assert.equal(isPresetDark(memeBottomText), false, "Meme Bottom Text has its own yellow background box");
+  });
+
+  it("isPresetDark returns false for transparent text with bright outline", () => {
+    const outlineOnly = TEXT_STYLE_PRESETS.find((p) => p.id === "minimal-outline-only")!;
+    assert.equal(isPresetDark(outlineOnly), false, "Minimal Outline has a bright white outline on dark");
+  });
+});
+
