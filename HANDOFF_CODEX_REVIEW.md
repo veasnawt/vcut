@@ -4,6 +4,12 @@ Updated: 2026-09-23 (Asia/Bangkok).
 
 ## Current handoff (takes precedence over the historical review below)
 
+### Canvas rotation handle and toolbar clarity — 2026-09-23
+
+- Text rotation's green dot is now a circular arrow icon. Image/video clips have the same top-center rotation handle in normal transform mode; it reuses their existing live rotation drag and keyframe-aware undo/redo commit path. Both rotation handles support Left/Right arrows (1°, Shift for 5°) and Home to reset.
+- Toolbar and clip context menu use `Filter` for Filters and `Create` for Effects, leaving `Grid` for Styles and `Art` for the renamed Background tool. All four icons come from `@veasnawt/vicons`.
+- VCut TypeScript, all 1,138 tests, strict mobile build, Studios production build, and Android `assembleDebug` pass. Android debug APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.3-rotate-toolbar-update.apk` (200,422,221 bytes; SHA-256 `D9090D0D56BC16D355A30EB8F5C07C39AB6D0B18DB39B08EB14191450A4160D6`), verified with APK Signature Scheme v2. iOS assets/plugins synced; native compile still requires Xcode on macOS.
+
 ### Top resize handle alignment — 2026-09-23
 
 - `src/ui/TransformHandles.tsx` now clamps corner handle centers to the preview stage without the former 12px inset. On a tight portrait preview, the top clip edge can coincide with the stage edge; the inset had shifted the visible top dots below their actual corners. The 24px invisible touch targets and 10px visible dots remain unchanged.

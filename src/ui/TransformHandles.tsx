@@ -17,6 +17,7 @@ import { clipAtTime } from "../timeline/queries.ts";
 import { frameDuration } from "../timeline/time.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { AlignmentGuideOverlay } from "./AlignmentGuideOverlay.tsx";
+import { CanvasRotateHandleIcon } from "./CanvasRotateHandleIcon.tsx";
 import { usePinchToScale } from "./usePinchToScale.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 
@@ -44,6 +45,7 @@ const HANDLE_SIZE = 24;
 // cursor still has the full 24px to land on, but the dot itself reads as a precise resize/rotate
 // affordance rather than a chunky one.
 const HANDLE_DOT_SIZE = 10;
+const ROTATE_HANDLE_OFFSET = 28;
 
 function CropRotateIcon({ size = 15, className }: { size?: number; className?: string }) {
   return (
@@ -595,6 +597,9 @@ export function TransformHandles({
     const truePoint = rotatedPoint(cssCenterX, cssCenterY, (x - 0.5) * cssWidth, (y - 0.5) * cssHeight, transform.rotationDeg);
     return { x, y, cursor: resizeCursorForAngle(angle + transform.rotationDeg), label, point: clampPointToRect(truePoint, stageRect, 0) };
   });
+  const rotateTruePoint = rotatedPoint(cssCenterX, cssCenterY, 0, -cssHeight / 2 - ROTATE_HANDLE_OFFSET, transform.rotationDeg);
+  const rotatePoint = clampPointToRect(rotateTruePoint, stageRect, HANDLE_SIZE / 2);
+  const rotateHandleClamped = rotatePoint.x !== rotateTruePoint.x || rotatePoint.y !== rotateTruePoint.y;
   const stageWidth = stageRect.right - stageRect.left;
   const dockWidth = cropMode ? Math.min(276, Math.max(56, stageWidth - 16)) : 62;
   const dockHalf = dockWidth / 2;
@@ -772,6 +777,14 @@ export function TransformHandles({
         </>
       )}
 
+      {!cropMode && !isGroupSelection && !rotateHandleClamped && (
+        <div
+          aria-hidden
+          style={{ left: "50%", top: -ROTATE_HANDLE_OFFSET, height: ROTATE_HANDLE_OFFSET }}
+          className="pointer-events-none absolute w-px -translate-x-1/2 bg-white/50"
+        />
+      )}
+
 
       </div>
       </div>
@@ -853,6 +866,35 @@ export function TransformHandles({
               <div style={{ width: HANDLE_DOT_SIZE, height: HANDLE_DOT_SIZE }} className="rounded-full border border-white bg-sky-400 shadow" />
             </div>
           ))}
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label={t("Rotate clip")}
+            title={t("Rotate clip")}
+            onKeyDown={(event) => {
+              const step = event.shiftKey ? 5 : 1;
+              const rotationDeg = event.key === "ArrowLeft" ? transform.rotationDeg - step
+                : event.key === "ArrowRight" ? transform.rotationDeg + step
+                : event.key === "Home" ? 0 : null;
+              if (rotationDeg === null) return;
+              event.preventDefault();
+              event.stopPropagation();
+              commitSingleTransform(resolved, { ...transform, rotationDeg }, project, playhead, run);
+            }}
+            onMouseDown={(event) => beginDrag(event, "rotate")}
+            onTouchStart={(event) => beginDrag(event, "rotate")}
+            style={{
+              position: "fixed",
+              left: Math.round(rotatePoint.x) - HANDLE_SIZE / 2,
+              top: Math.round(rotatePoint.y) - HANDLE_SIZE / 2,
+              width: HANDLE_SIZE,
+              height: HANDLE_SIZE,
+              zIndex: 40,
+            }}
+            className="pointer-events-auto flex touch-none cursor-grab items-center justify-center rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+          >
+            <CanvasRotateHandleIcon />
+          </div>
         </>
       )}
     </>

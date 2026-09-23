@@ -20,6 +20,7 @@ import { hasTextStyleKeyframes, resolveTextStyle, upsertKeyframe } from "../time
 import { clipAtTime } from "../timeline/queries.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { AlignmentGuideOverlay } from "./AlignmentGuideOverlay.tsx";
+import { CanvasRotateHandleIcon } from "./CanvasRotateHandleIcon.tsx";
 import { usePinchToScale } from "./usePinchToScale.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 
@@ -770,6 +771,17 @@ export function TextTransformHandles({
             role="button"
             tabIndex={0}
             aria-label={t("Rotate text")}
+            title={t("Rotate text")}
+            onKeyDown={(event) => {
+              const step = event.shiftKey ? 5 : 1;
+              const rotationDeg = event.key === "ArrowLeft" ? style.rotationDeg - step
+                : event.key === "ArrowRight" ? style.rotationDeg + step
+                : event.key === "Home" ? 0 : null;
+              if (rotationDeg === null) return;
+              event.preventDefault();
+              event.stopPropagation();
+              run(commandForTextStyle(resolved!.clipId, resolved!.assetId, resolved!.content, { ...style, rotationDeg }, resolved!.timelineStart, resolved!.sequence.fps));
+            }}
             onMouseDown={(e) => beginDrag(e, "rotate")}
             onTouchStart={(e) => beginDrag(e, "rotate")}
             style={{
@@ -780,9 +792,9 @@ export function TextTransformHandles({
               height: HANDLE_SIZE,
               zIndex: 40,
             }}
-            className="pointer-events-auto flex touch-none cursor-grab items-center justify-center"
+            className="pointer-events-auto flex touch-none cursor-grab items-center justify-center rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
           >
-            <div style={{ width: HANDLE_DOT_SIZE, height: HANDLE_DOT_SIZE }} className="rounded-full border border-white bg-emerald-400 shadow" />
+            <CanvasRotateHandleIcon />
           </div>
           <button
             aria-label={t("Edit text")}

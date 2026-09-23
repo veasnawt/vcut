@@ -11,9 +11,11 @@ import {
   ChevronLeft,
   ClosedCaption,
   Copy,
+  Create,
   Delete,
   Document,
   Emoji,
+  Filter,
   Gauge,
   Grid,
   Headphone,
@@ -501,7 +503,7 @@ function StatusBar({
               {
                 key: "effects",
                 label: t("Filters"),
-                icon: <Art size={15} />,
+                icon: <Filter size={15} />,
                 onClick: () => {
                   setPickerAnchorSource("contextMenu");
                   setShowEffectsMenu(true);
@@ -510,7 +512,7 @@ function StatusBar({
               {
                 key: "pixelEffect",
                 label: t("Effects"),
-                icon: <Grid size={15} />,
+                icon: <Create size={15} />,
                 onClick: () => {
                   setPickerAnchorSource("contextMenu");
                   setShowPixelEffectMenu(true);
@@ -939,7 +941,7 @@ function StatusBar({
             <ToolbarButton
               ref={colorButtonRef}
               title={t("Add a color background")}
-              label={t("Color")}
+              label={t("Background")}
               active={showColorMenu}
               onClick={() => setShowColorMenu((v) => !v)}
             >
@@ -1145,7 +1147,7 @@ function StatusBar({
                 setShowEffectsMenu((v) => !v);
               }}
             >
-              <Art size={18} />
+              <Filter size={18} />
             </ToolbarButton>
             {showEffectsMenu && foundForVideoEffects && (
               <EffectsPickerMenu
@@ -1166,7 +1168,7 @@ function StatusBar({
                 setShowPixelEffectMenu((v) => !v);
               }}
             >
-              <Grid size={18} />
+              <Create size={18} />
             </ToolbarButton>
             {showPixelEffectMenu && foundForVideoEffects && (
               <PixelEffectPickerMenu
