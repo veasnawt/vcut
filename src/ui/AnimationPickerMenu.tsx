@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
 import type { Clip } from "../project/types.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { TextAnimationPickerGrid } from "./TextAnimationPickerGrid.tsx";
@@ -62,7 +63,7 @@ export function AnimationPickerMenu({
       ref={menuRef}
       role="menu"
       aria-label={t("Animation")}
-      style={{ position: "fixed", bottom, left, width: MENU_WIDTH }}
+      style={{ position: "fixed", bottom, left, width: MENU_WIDTH, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH, 300) }}
       className="z-50 rounded-lg border border-white/10 bg-[#181b22] p-2.5 shadow-2xl"
     >
       <TextAnimationPickerGrid

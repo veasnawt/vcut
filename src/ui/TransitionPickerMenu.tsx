@@ -7,6 +7,7 @@ import { useTranslation } from "../i18n/useTranslation.ts";
 import type { TransitionType } from "../project/types.ts";
 import { TRANSITION_TYPE_LABEL, TRANSITION_TYPE_OPTIONS } from "../timeline/transitions.ts";
 import { TransitionPreviewTile } from "./TransitionPreviewTile.tsx";
+import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
 
 const MENU_WIDTH = 320;
 
@@ -110,20 +111,24 @@ export function TransitionPickerMenu({
     const menu = menuRef.current;
     if (!menu) return;
     const place = () => {
-      const anchor = anchorRef.current?.getBoundingClientRect();
+      const anchorElement = anchorRef.current;
+      const anchor = anchorElement?.getBoundingClientRect();
       if (!anchor) return;
       const rect = menu.getBoundingClientRect();
-      const left = Math.max(8, Math.min(anchor.left, window.innerWidth - rect.width - 8));
-      const top = Math.max(8, Math.min(anchor.top - rect.height - 8, window.innerHeight - rect.height - 8));
+      const railPosition = verticalToolbarPopupStyle(anchorElement, MENU_WIDTH, rect.height);
+      const left = typeof railPosition.left === "number" ? railPosition.left : Math.max(8, Math.min(anchor.left, window.innerWidth - rect.width - 8));
+      const top = typeof railPosition.top === "number" ? railPosition.top : Math.max(8, Math.min(anchor.top - rect.height - 8, window.innerHeight - rect.height - 8));
       setPosition(previous => previous.left === left && previous.top === top ? previous : { left, top });
     };
     place();
     const observer = new ResizeObserver(place);
     observer.observe(menu);
     window.addEventListener("resize", place);
+    window.addEventListener("vcut:toolbar-position-change", place);
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", place);
+      window.removeEventListener("vcut:toolbar-position-change", place);
     };
   }, [anchorRef, initialMode]);
 

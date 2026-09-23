@@ -80,6 +80,8 @@ import { TextStylePickerMenu } from "./TextStylePickerMenu.tsx";
 import { TransitionPickerMenu } from "./TransitionPickerMenu.tsx";
 import { TransitionGlyph } from "./TransitionGlyph.tsx";
 import { UserMenu } from "./UserMenu.tsx";
+import { effectiveToolbarPosition, readToolbarPosition, TOOLBAR_POSITION_STORAGE_KEY, type ToolbarPosition } from "./toolbarPosition.ts";
+import "./editorToolbar.css";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 import { useIsMobile } from "./useIsMobile.ts";
 import { VoiceRecordModal } from "./VoiceRecordModal.tsx";
@@ -127,6 +129,7 @@ function clampTimelineHeight(height: number, viewportHeight: number): number {
  *  panel's current width) are currently competing for the same viewport. */
 const MIN_SIDE_PANEL_WIDTH = 180;
 const MIN_PREVIEW_WIDTH = 320;
+const TOOLBAR_RAIL_WIDTH = 56;
 
 function clampSideWidth(width: number, otherSideWidth: number, viewportWidth: number): number {
   const maxForPreview = viewportWidth - otherSideWidth - MIN_PREVIEW_WIDTH;
@@ -220,7 +223,7 @@ const ToolbarButton = React.forwardRef<
       title={pro ? `${title} (Pro)` : title}
       aria-label={pro ? `${title} (Pro)` : title}
       aria-pressed={active}
-      className={`relative flex h-10 min-w-11 shrink-0 flex-col items-center justify-center gap-0.5 rounded px-1 leading-none transition ${
+      className={`vcut-tool-button relative flex h-10 min-w-11 shrink-0 flex-col items-center justify-center gap-0.5 rounded px-1 leading-none transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${
         active ? "bg-sky-500/30 text-white hover:bg-sky-500/40" : "text-white/70 hover:bg-white/10 hover:text-white"
       } ${className}`}
     >
@@ -230,7 +233,7 @@ const ToolbarButton = React.forwardRef<
         </span>
       )}
       {children}
-      <span className="max-w-full truncate text-[9px] font-medium">{label}</span>
+      <span className="vcut-tool-button-label max-w-full truncate text-[9px] font-medium">{label}</span>
     </button>
   );
 });
@@ -238,6 +241,9 @@ const ToolbarButton = React.forwardRef<
 function StatusBar({
   mobileSheet,
   setMobileSheet,
+  toolbarPosition,
+  desktopMediaOpen,
+  onToggleDesktopMedia,
   bottomPanel,
   setBottomPanel,
   floatingPanel,
@@ -245,6 +251,9 @@ function StatusBar({
 }: {
   mobileSheet: "media" | "inspector" | null;
   setMobileSheet: (next: "media" | "inspector" | null) => void;
+  toolbarPosition: ToolbarPosition;
+  desktopMediaOpen: boolean;
+  onToggleDesktopMedia: () => void;
   bottomPanel: "timeline" | "mixer" | "scopes";
   setBottomPanel: (next: "timeline" | "mixer" | "scopes") => void;
   /** Which of Mixer/Scopes (if either) is currently popped out into its own floating window — see
@@ -284,6 +293,8 @@ function StatusBar({
   const project = useEditorStore((s) => s.project);
   const projectId = useEditorStore((s) => s.projectId);
   const t = useTranslation();
+  const isMobile = useIsMobile();
+  const desktopLeft = effectiveToolbarPosition(toolbarPosition, !isMobile) === "left";
   // `null` = closed; `{}` = open, whole-sequence; `{ clipIds }` = open, scoped to the selected clip(s)
   // (the toolbar's Captions button reaching a qualifying selection — see that button's own comment).
   const [captionsDialog, setCaptionsDialog] = useState<{ clipIds?: string[] } | null>(null);
@@ -551,7 +562,7 @@ function StatusBar({
     : [];
 
   return (
-    <footer className="flex shrink-0 items-center gap-1 border-t border-white/10 bg-[#0d0f14] px-2 py-1.5 text-[11px]">
+    <footer className="vcut-toolbar flex shrink-0 items-center gap-1 border-t border-white/10 bg-[#0d0f14] px-2 py-1.5 text-[11px]">
       {/* Icons only now — the status message and save-state text that used to share this row moved to
           a floating toast (`StatusToast`) and the header (`SaveStatus`) respectively. This row was
           already the tightest space in the whole editor (up to 11 icons, some already pushed into
@@ -591,7 +602,7 @@ function StatusBar({
           simply nothing left for `toolsScrolled` to collapse into while a clip is selected, so the
           mid-gesture width shift can't happen either way — without also taking Properties away. */}
       <div
-        className={`flex shrink-0 items-center gap-0.5 overflow-hidden border-r border-white/10 pr-1 transition-all duration-200 ease-out lg:hidden ${
+        className={`vcut-toolbar-panel-buttons flex shrink-0 items-center gap-0.5 overflow-hidden border-r border-white/10 pr-1 transition-all duration-200 ease-out ${
           toolsScrolled && mobileSheet === null && selectedClipIds.length === 0
             ? "max-w-0 border-r-0 pr-0 opacity-0"
             : "max-w-[120px] opacity-100"
@@ -600,8 +611,8 @@ function StatusBar({
         <ToolbarButton
           title={t("Media")}
           label={t("Media")}
-          active={mobileSheet === "media"}
-          onClick={() => setMobileSheet(mobileSheet === "media" ? null : "media")}
+          active={desktopLeft ? desktopMediaOpen : mobileSheet === "media"}
+          onClick={() => desktopLeft ? onToggleDesktopMedia() : setMobileSheet(mobileSheet === "media" ? null : "media")}
         >
           <Video size={18} />
         </ToolbarButton>
@@ -610,6 +621,7 @@ function StatusBar({
           label={t("Properties")}
           active={mobileSheet === "inspector"}
           onClick={() => setMobileSheet(mobileSheet === "inspector" ? null : "inspector")}
+          className="vcut-toolbar-properties-button"
         >
           <Settings size={18} />
         </ToolbarButton>
@@ -631,7 +643,7 @@ function StatusBar({
           // Filled rounded-square, no label, deliberately more prominent than a plain icon+label
           // `ToolbarButton` — the one control that gets you OUT of this narrowed view needs to read as
           // its own distinct kind of button at a glance, not just one more tool in the row.
-          className="flex h-10 w-11 shrink-0 items-center justify-center rounded-lg bg-white/10 text-white transition hover:bg-white/20"
+          className="vcut-toolbar-back flex h-10 w-11 shrink-0 items-center justify-center rounded-lg bg-white/10 text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
         >
           <span className="flex items-center">
             <ChevronLeft size={16} className="-mr-2.5" />
@@ -641,7 +653,7 @@ function StatusBar({
       )}
 
       <div
-        className="scrollbar-none flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
+        className="vcut-toolbar-tools scrollbar-none flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
         onScroll={(e) => {
           // See `toolsScrollSettleRef`'s own comment: deliberately NOT `setToolsScrolled` directly here.
           const left = e.currentTarget.scrollLeft;
@@ -976,7 +988,7 @@ function StatusBar({
             way as everything between them — with nothing visible on either side of the gap, an
             unconditional divider here would just show up as a stray, orphaned line the moment a clip
             IS selected (confirmed a real, reported visual bug, not hypothetical). */}
-        {selectedClipIds.length === 0 && <span className="mx-1 h-5 w-px shrink-0 bg-white/10" />}
+        {selectedClipIds.length === 0 && <span className="vcut-toolbar-divider mx-1 h-5 w-px shrink-0 bg-white/10" />}
 
         {/* Mobile-only stand-ins for Timeline.tsx's own "Set In"/"Set Out"/"× Range" header buttons —
             see the hooks above for why. Same amber accent as those, so the two read as the same
@@ -1016,7 +1028,7 @@ function StatusBar({
           </>
         )}
 
-        {selectedClipIds.length === 0 && <span className="mx-1 h-5 w-px shrink-0 bg-white/10 lg:hidden" />}
+        {selectedClipIds.length === 0 && <span className="vcut-toolbar-divider mx-1 h-5 w-px shrink-0 bg-white/10 lg:hidden" />}
 
         <ToolbarButton title={t("Split at playhead (S)")} label={t("Split")} onClick={splitAtPlayhead}>
           <Split size={18} />
@@ -1227,7 +1239,7 @@ function StatusBar({
           </ToolbarButton>
         )}
 
-        <span className="mx-1 h-5 w-px shrink-0 bg-white/10" />
+        <span className="vcut-toolbar-divider mx-1 h-5 w-px shrink-0 bg-white/10" />
 
         {/* Hidden, not disabled, with an empty selection — same reasoning as Duplicate above. */}
         {selectedClipIds.length > 0 && (
@@ -1269,6 +1281,7 @@ function StatusBar({
           normal render cycle without any visual cost. */}
       <div
         ref={contextMenuAnchorRef}
+        data-vcut-context-anchor
         style={{
           position: "fixed",
           left: transitionPickerRequest?.x ?? contextMenu?.x ?? 0,
@@ -1516,6 +1529,40 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   const mobileSheet = useEditorStore((s) => s.mobileSheet);
   const setMobileSheet = useEditorStore((s) => s.setMobileSheet);
   const isMobile = useIsMobile();
+  const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition>(readToolbarPosition);
+  const [desktopMediaOpen, setDesktopMediaOpen] = useState(false);
+  const desktopLeft = effectiveToolbarPosition(toolbarPosition, !isMobile) === "left";
+  const [showToolbarPositionMenu, setShowToolbarPositionMenu] = useState(false);
+  const toolbarPositionMenuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    document.documentElement.dataset.vcutToolbarPosition = toolbarPosition;
+    window.dispatchEvent(new Event("vcut:toolbar-position-change"));
+  }, [toolbarPosition]);
+  useEffect(() => {
+    if (!showToolbarPositionMenu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!toolbarPositionMenuRef.current?.contains(event.target as Node)) setShowToolbarPositionMenu(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setShowToolbarPositionMenu(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showToolbarPositionMenu]);
+  function chooseToolbarPosition(next: ToolbarPosition) {
+    if (toolbarPosition === "bottom" && next === "left") setDesktopMediaOpen(true);
+    setToolbarPosition(next);
+    try {
+      window.localStorage.setItem(TOOLBAR_POSITION_STORAGE_KEY, next);
+    } catch {
+      // The current session still switches when storage is unavailable.
+    }
+    setShowToolbarPositionMenu(false);
+  }
 
   // Media/Stock/AI is a pure pick-then-place flow (see `armedAssetId`'s own doc comment in
   // editorStore.ts) — nothing in it needs a live view of the current frame the way adjusting a filter
@@ -1642,16 +1689,22 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   mediaWidthRef.current = mediaWidth;
   const propertiesWidthRef = useRef(propertiesWidth);
   propertiesWidthRef.current = propertiesWidth;
+  const desktopLeftRef = useRef(desktopLeft);
+  desktopLeftRef.current = desktopLeft;
+  const desktopMediaOpenRef = useRef(desktopMediaOpen);
+  desktopMediaOpenRef.current = desktopMediaOpen;
 
   useLayoutEffect(() => {
-    setMediaWidth(clampSideWidth(240, 260, window.innerWidth));
-    setPropertiesWidth(clampSideWidth(260, 240, window.innerWidth));
-  }, []);
+    const width = window.innerWidth - (desktopLeft ? TOOLBAR_RAIL_WIDTH : 0);
+    setMediaWidth((w) => clampSideWidth(w, propertiesWidthRef.current, width));
+    setPropertiesWidth((w) => clampSideWidth(w, desktopLeft && !desktopMediaOpen ? 0 : mediaWidthRef.current, width));
+  }, [desktopLeft, desktopMediaOpen]);
 
   useEffect(() => {
     function onResize() {
-      setMediaWidth((w) => clampSideWidth(w, propertiesWidthRef.current, window.innerWidth));
-      setPropertiesWidth((w) => clampSideWidth(w, mediaWidthRef.current, window.innerWidth));
+      const width = window.innerWidth - (desktopLeftRef.current ? TOOLBAR_RAIL_WIDTH : 0);
+      setMediaWidth((w) => clampSideWidth(w, propertiesWidthRef.current, width));
+      setPropertiesWidth((w) => clampSideWidth(w, desktopLeftRef.current && !desktopMediaOpenRef.current ? 0 : mediaWidthRef.current, width));
     }
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -1666,7 +1719,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         const point = clientPoint(moveEvent);
         // Media is the LEFT column — dragging its right edge further right grows it.
         const dx = point.x - start.x;
-        setMediaWidth(clampSideWidth(startWidth + dx, propertiesWidthRef.current, window.innerWidth));
+        setMediaWidth(clampSideWidth(startWidth + dx, propertiesWidthRef.current, window.innerWidth - (desktopLeft ? TOOLBAR_RAIL_WIDTH : 0)));
       },
       () => removeListeners()
     );
@@ -1681,7 +1734,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         const point = clientPoint(moveEvent);
         // Properties is the RIGHT column — dragging its left edge further left grows it.
         const dx = start.x - point.x;
-        setPropertiesWidth(clampSideWidth(startWidth + dx, mediaWidthRef.current, window.innerWidth));
+        setPropertiesWidth(clampSideWidth(startWidth + dx, desktopLeft && !desktopMediaOpen ? 0 : mediaWidthRef.current, window.innerWidth - (desktopLeft ? TOOLBAR_RAIL_WIDTH : 0)));
       },
       () => removeListeners()
     );
@@ -2041,6 +2094,36 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
               {t("Sign in")}
             </button>
           )}
+          <div ref={toolbarPositionMenuRef} className="relative hidden lg:block">
+            <button
+              type="button"
+              onClick={() => setShowToolbarPositionMenu((open) => !open)}
+              title={t("Toolbar Position")}
+              aria-label={t("Toolbar Position")}
+              aria-expanded={showToolbarPositionMenu}
+              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-white/60 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+            >
+              <Settings size={15} />
+              {t("Layout")}
+            </button>
+            {showToolbarPositionMenu && (
+              <div role="group" aria-label={t("Toolbar Position")} className="absolute right-0 top-full z-50 mt-2 w-44 rounded-lg border border-white/15 bg-[#181b22] p-1.5 shadow-xl">
+                <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white/45">{t("Toolbar Position")}</p>
+                {(["left", "bottom"] as const).map((position) => (
+                  <button
+                    key={position}
+                    type="button"
+                    aria-pressed={toolbarPosition === position}
+                    onClick={() => chooseToolbarPosition(position)}
+                    className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${toolbarPosition === position ? "bg-sky-500/20 text-sky-200" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+                  >
+                    <span aria-hidden className={`h-3 w-3 rounded-full border ${toolbarPosition === position ? "border-sky-300 bg-sky-400" : "border-white/50"}`} />
+                    {t(position === "left" ? "Left" : "Bottom")}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <button
             onClick={() => setLanguage(language === "en" ? "km" : "en")}
             title={t("Switch language")}
@@ -2080,9 +2163,11 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         </div>
       </header>
       {showSaveAsTemplate && <SaveAsTemplateDialog onClose={() => setShowSaveAsTemplate(false)} />}
+      <div className="vcut-editor-body min-h-0 min-w-0 flex-1" data-vcut-media-open={desktopMediaOpen}>
 
-      {/* Three panes at `lg`+ (1024px): media on the left, preview + inspector in the middle,
-          timeline across the bottom — the original desktop layout, unchanged. Below `lg`, there's no
+      {/* Three panes at `lg`+ (1024px): an optional media panel, preview, and inspector,
+          with the timeline across the bottom. The toolbar sits beside this workspace in Left mode.
+          Below `lg`, there's no
           room for 240px + 260px of fixed side columns next to a preview that still needs to show a
           legible frame, so Media and Inspector aren't laid out at all there (both `hidden` below
           `lg`) — reached instead through the toolbar's Media/Properties buttons, which swap what
@@ -2099,7 +2184,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           are natively focusable) made the browser auto-scroll that hidden width into view, yanking
           the whole page sideways. That was the actual "still not functional" bug. */}
       <div
-        className="relative grid min-h-0 min-w-0 flex-1 grid-rows-[minmax(0,1fr)_224px] lg:grid-cols-[var(--vs-media-w)_minmax(0,1fr)_var(--vs-props-w)] lg:grid-rows-[minmax(0,1fr)_320px]"
+        className="vcut-workspace relative grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_224px] lg:grid-cols-[var(--vs-media-w)_minmax(0,1fr)_var(--vs-props-w)] lg:grid-rows-[minmax(0,1fr)_320px]"
         // The Tailwind row class above is the PRE-HYDRATION fallback only, matched almost exactly by
         // the `gridTemplateRows` inline style (which takes over the instant `timelineHeight` state
         // exists, i.e. immediately on the client) — one shared 2-row shape now, not a
@@ -2136,7 +2221,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
             TWICE simultaneously (one hidden instance here, one visible in the sheet) the whole time a
             phone-width session had the sheet open. Reached on mobile via the toolbar's Media/Properties
             buttons instead, which swap the Timeline row's content below. */}
-        <div className="hidden min-h-0 min-w-0 lg:col-start-1 lg:row-start-1 lg:block">
+        <div className="vcut-media-panel hidden min-h-0 min-w-0 lg:col-start-1 lg:row-start-1 lg:block">
           {!isMobile && <MediaPanel />}
         </div>
         <div className="hidden min-h-0 min-w-0 lg:col-start-3 lg:row-start-1 lg:block">
@@ -2197,7 +2282,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           role="separator"
           aria-orientation="vertical"
           aria-label={t("Resize media panel")}
-          className="absolute inset-y-0 z-20 hidden w-2.5 -translate-x-1/2 cursor-col-resize touch-none lg:block"
+          className="vcut-media-resizer absolute inset-y-0 z-20 hidden w-2.5 -translate-x-1/2 cursor-col-resize touch-none lg:block"
           style={{ left: mediaWidth }}
         />
         <div
@@ -2214,11 +2299,15 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
       <StatusBar
         mobileSheet={mobileSheet}
         setMobileSheet={setMobileSheet}
+        toolbarPosition={toolbarPosition}
+        desktopMediaOpen={desktopMediaOpen}
+        onToggleDesktopMedia={() => setDesktopMediaOpen((open) => !open)}
         bottomPanel={bottomPanel}
         setBottomPanel={setBottomPanel}
         floatingPanel={floatState?.panel ?? null}
         onDockFloating={dockPanel}
       />
+      </div>
       <StatusToast />
       {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
       {showMobileSignIn && <MobileSignInDialog onClose={() => setShowMobileSignIn(false)} />}

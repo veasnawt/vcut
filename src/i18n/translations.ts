@@ -10,6 +10,8 @@
  *  separate plural form the way the English source's `${n === 1 ? "" : "s"}` grammar does, so these
  *  collapse to one Khmer phrasing per message regardless of count. */
 export const KM_TRANSLATIONS: Record<string, string> = {
+  Layout: "ប្លង់",
+  "Toolbar Position": "ទីតាំងរបារឧបករណ៍",
   "Preview {name}": "មើលសាកល្បង {name}",
   // editorStore.ts — status/toast messages
   "Undid {label}": "បានមិនធ្វើវិញ {label}",

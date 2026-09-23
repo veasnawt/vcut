@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
+import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
 import { Ai, Backspace, Text, User } from "@veasnawt/vicons";
 import type { Asset, Clip } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
@@ -106,7 +107,7 @@ export function AiToolsPickerMenu({
   return createPortal(
     <div
       ref={menuRef}
-      style={{ bottom: `${pos.bottom}px`, left: `${pos.left}px`, width: `${MENU_WIDTH}px` }}
+      style={{ bottom: `${pos.bottom}px`, left: `${pos.left}px`, width: `${MENU_WIDTH}px`, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH, 360) }}
       className="fixed z-50 rounded-xl border border-white/10 bg-[#12151c] p-1.5 shadow-2xl backdrop-blur-xl"
     >
       <div className="px-2.5 py-1.5 border-b border-white/5 mb-1">

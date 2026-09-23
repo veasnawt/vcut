@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { BACKGROUND_COLOR_SWATCHES } from "../project/colorSwatches.ts";
 
@@ -67,7 +68,7 @@ export function ColorPickerMenu({
       ref={menuRef}
       role="menu"
       aria-label={t("Background color")}
-      style={{ position: "fixed", bottom, left, width: MENU_WIDTH }}
+      style={{ position: "fixed", bottom, left, width: MENU_WIDTH, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH, 230) }}
       className="z-50 rounded-lg border border-white/10 bg-[#181b22] p-2 shadow-2xl"
     >
       <div className="grid grid-cols-4 gap-1.5">

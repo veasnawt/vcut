@@ -1,0 +1,75 @@
+.vcut-editor-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.vcut-workspace { grid-column: 1; grid-row: 1; }
+.vcut-toolbar { grid-column: 1; grid-row: 2; }
+
+@media (min-width: 1024px) {
+  .vcut-toolbar-panel-buttons { display: none; }
+
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body {
+    grid-template-columns: 56px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-workspace {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-media-open="false"] .vcut-workspace {
+    grid-template-columns: 0px minmax(0, 1fr) var(--vs-props-w);
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-media-open="false"] .vcut-media-panel,
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-media-open="false"] .vcut-media-resizer {
+    display: none;
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-toolbar {
+    grid-column: 1;
+    grid-row: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 56px;
+    min-height: 0;
+    gap: 4px;
+    padding: 6px 4px;
+    border-top: 0;
+    border-right: 1px solid rgb(255 255 255 / 0.1);
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-toolbar-panel-buttons {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: none;
+    flex-shrink: 0;
+    padding: 0 0 5px;
+    border-right: 0;
+    border-bottom: 1px solid rgb(255 255 255 / 0.1);
+    opacity: 1;
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-toolbar-properties-button { display: none; }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-toolbar-back { width: 44px; min-height: 40px; }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-toolbar-tools {
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-tool-button {
+    width: 44px;
+    min-width: 44px;
+    height: 40px;
+    padding: 0;
+    gap: 0;
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-tool-button-label { display: none; }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-toolbar-divider {
+    width: 28px;
+    height: 1px;
+    margin: 4px 0;
+  }
+}
