@@ -9,6 +9,8 @@ Updated: 2026-09-23 (Asia/Bangkok).
 - Text rotation's green dot is now a circular arrow icon. Image/video clips have the same top-center rotation handle in normal transform mode; it reuses their existing live rotation drag and keyframe-aware undo/redo commit path. Both rotation handles support Left/Right arrows (1°, Shift for 5°) and Home to reset.
 - Toolbar and clip context menu use `Filter` for Filters and `Create` for Effects, leaving `Grid` for Styles and `Art` for the renamed Background tool. All four icons come from `@veasnawt/vicons`.
 - VCut TypeScript, all 1,138 tests, strict mobile build, Studios production build, and Android `assembleDebug` pass. Android debug APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.3-rotate-toolbar-update.apk` (200,422,221 bytes; SHA-256 `D9090D0D56BC16D355A30EB8F5C07C39AB6D0B18DB39B08EB14191450A4160D6`), verified with APK Signature Scheme v2. iOS assets/plugins synced; native compile still requires Xcode on macOS.
+- Windows installer: `apps/vcut-desktop/release/VCut Setup 0.2.3-rotate-toolbar-update.exe` (232,525,605 bytes; SHA-256 `1B65EBA6230FEB635709590B6F562B20E7B4FE9989BCD6FC4705CFBDB016A24B`); NSIS archive integrity passed. Installer remains unsigned.
+- Implementation commit `58a2ceb` is pushed. Railway production deployment `88ca51d2-b0b9-42ca-a61c-61d7dda445bc` completed with `SUCCESS`; `https://vcut.io/` and `/edit` both return HTTP 200.
 
 ### Top resize handle alignment — 2026-09-23
 
