@@ -1,11 +1,12 @@
 "use client";
 
 import React, { useRef, useState } from "react";
+import { clampFrameDuration, timelineSpanPixels } from "../timeline/interaction.ts";
 
 /** A junction control spans both neighbors. The centered strip represents the blend duration;
  *  it does not move either clip's cut or change the export's source-handle timing. */
 export function TransitionJunction({
-  cut,
+  cutSeconds,
   duration,
   maxDuration,
   pixelsPerSecond,
@@ -14,10 +15,11 @@ export function TransitionJunction({
   locked,
   label,
   durationLabel,
+  timeAtClientX,
   onOpen,
   onDurationChange,
 }: {
-  cut: number;
+  cutSeconds: number;
   duration: number | null;
   maxDuration: number;
   pixelsPerSecond: number;
@@ -26,16 +28,18 @@ export function TransitionJunction({
   locked: boolean;
   label: string;
   durationLabel: string;
+  timeAtClientX: (clientX: number) => number;
   onOpen: (rect: DOMRect) => void;
   onDurationChange: (duration: number) => void;
 }) {
   const [draft, setDraft] = useState<number | null>(null);
-  const drag = useRef<{ x: number; initial: number; value: number; side: number; pointer: number } | null>(null);
-  const minimum = Math.min(1 / fps, maxDuration);
-  const clamp = (value: number) => Math.min(maxDuration, Math.max(minimum, Math.round(value * fps) / fps));
-  const value = Math.min(draft ?? duration ?? 0, maxDuration);
+  const drag = useRef<{ time: number; initial: number; value: number; side: number; pointer: number } | null>(null);
+  const boundedMaximum = clampFrameDuration(maxDuration, maxDuration, fps);
+  const minimum = Math.min(1 / fps, boundedMaximum);
+  const clamp = (value: number) => clampFrameDuration(value, boundedMaximum, fps);
+  const value = Math.min(draft ?? duration ?? 0, boundedMaximum);
   const active = duration !== null;
-  const width = active ? Math.max(28, value * pixelsPerSecond) : 28;
+  const width = active ? timelineSpanPixels(value, pixelsPerSecond, 28) : 28;
   const size = mobile ? 30 : 26;
   const stop = (e: React.SyntheticEvent) => e.stopPropagation();
 
@@ -54,7 +58,7 @@ export function TransitionJunction({
       data-transition-junction
       style={{
         position: "absolute",
-        left: cut - width / 2,
+        left: cutSeconds * pixelsPerSecond - width / 2,
         width,
         height: size,
         top: `calc(50% - ${size / 2}px)`,
@@ -128,7 +132,7 @@ export function TransitionJunction({
             aria-label={durationLabel}
             aria-orientation="horizontal"
             aria-valuemin={minimum}
-            aria-valuemax={maxDuration}
+            aria-valuemax={boundedMaximum}
             aria-valuenow={value}
             aria-valuetext={`${value.toFixed(2)}s`}
             data-transition-handle={side < 0 ? "left" : "right"}
@@ -138,14 +142,14 @@ export function TransitionJunction({
               if (e.button !== 0) return;
               e.preventDefault();
               e.stopPropagation();
-              drag.current = { x: e.clientX, initial: value, value, side, pointer: e.pointerId };
+              drag.current = { time: timeAtClientX(e.clientX), initial: value, value, side, pointer: e.pointerId };
               e.currentTarget.setPointerCapture(e.pointerId);
             }}
             onPointerMove={(e) => {
               const current = drag.current;
               if (!current || current.pointer !== e.pointerId) return;
               e.stopPropagation();
-              current.value = clamp(current.initial + ((current.side * 2 * (e.clientX - current.x)) / pixelsPerSecond));
+              current.value = clamp(current.initial + current.side * 2 * (timeAtClientX(e.clientX) - current.time));
               setDraft(current.value);
             }}
             onPointerUp={(e) => finish(e, true)}
@@ -156,7 +160,7 @@ export function TransitionJunction({
               if (e.key === "ArrowRight" || e.key === "ArrowUp") next = value + ((e.shiftKey ? 10 : 1) / fps);
               else if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = value - ((e.shiftKey ? 10 : 1) / fps);
               else if (e.key === "Home") next = minimum;
-              else if (e.key === "End") next = maxDuration;
+              else if (e.key === "End") next = boundedMaximum;
               else return;
               e.preventDefault();
               e.stopPropagation();

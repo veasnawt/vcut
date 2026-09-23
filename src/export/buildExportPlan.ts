@@ -2,7 +2,7 @@ import { applyTextTransform, TEXT_BOX_PADDING, TEXT_MARGIN_PX } from "../playbac
 import { clipDuration, clipEnd, findAsset, sequenceDuration } from "../project/createProject.ts";
 import { fontById, fontFileFor, resolveFontVariant } from "../project/fonts.ts";
 import type { AssFontMetrics, FontDefinition } from "../project/fonts.ts";
-import type { ChromaKeySettings, Clip, ClipEffects, ClipTransform, ColorGrading, PixelEffectType, Project, TextCrop, TextStyle, TransitionType, Track } from "../project/types.ts";
+import type { ChromaKeySettings, Clip, ClipBlendMode, ClipEffects, ClipMask, ClipTransform, ColorGrading, PixelEffectType, Project, TextCrop, TextStyle, TransitionType, Track } from "../project/types.ts";
 import { IDENTITY_EFFECTS, IDENTITY_TRANSFORM, isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop, isIdentityTransform } from "../project/types.ts";
 import {
   BOUNCE_AMPLITUDE_PX,
@@ -18,6 +18,7 @@ import {
   wordBoundaries,
 } from "../timeline/textAnimation.ts";
 import { hasColorGradingKeyframes, hasEffectsKeyframes, hasTextCropKeyframes, hasTextStyleKeyframes, hasTransformKeyframes, resolveClipColorGrading, resolveClipEffects, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
+import { clipProgressAtElapsed, clipSourceTimeAtElapsed, sliceSpeedCurve } from "../timeline/clipTiming.ts";
 import {
   easeTransitionExpr,
   GLITCH_CUT_BAND_COUNT,
@@ -183,6 +184,7 @@ interface TransitionSide {
   isImage: boolean;
   path: string;
   sourceIn?: number;
+  elapsedStart?: number;
 }
 
 export type Segment =
@@ -194,6 +196,7 @@ export type Segment =
       path: string;
       sourceIn: number;
       duration: number;
+      elapsedStart: number;
       /** Set only for a SOLO transition-in — `findTransitionPartner` resolved `clip.transitionIn` but
        *  found no adjacent predecessor to blend from (see that function's own doc comment). `xfade`
        *  needs two real streams, which a solo fade doesn't have, so this renders as a plain `fade`/
@@ -296,6 +299,7 @@ export function buildSegments(
           isImage: partnerAsset.kind === "image" || partnerAsset.kind === "color",
           path: options.inputPathFor(partner.assetId),
           sourceIn: partner.sourceOut - halfD,
+          elapsedStart: clipDuration(partner) - halfD,
         },
         to: {
           clip,
@@ -303,6 +307,7 @@ export function buildSegments(
           isImage,
           path,
           sourceIn: clip.sourceIn - halfD,
+          elapsedStart: -halfD,
         },
       });
 
@@ -316,6 +321,7 @@ export function buildSegments(
           path,
           sourceIn: clip.sourceIn + tailD,
           duration: remaining,
+          elapsedStart: tailD,
           fadeOut,
         });
       }
@@ -333,11 +339,12 @@ export function buildSegments(
         path,
         sourceIn: clip.sourceIn,
         duration: fullDuration,
+        elapsedStart: 0,
         fadeIn: transition.duration,
         fadeOut,
       });
     } else {
-      segments.push({ kind: "clip", clip, hasAudio: asset.hasAudio, isImage, path, sourceIn: clip.sourceIn, duration: fullDuration, fadeOut });
+      segments.push({ kind: "clip", clip, hasAudio: asset.hasAudio, isImage, path, sourceIn: clip.sourceIn, duration: fullDuration, elapsedStart: 0, fadeOut });
     }
 
     cursor = clipEnd(clip);
@@ -360,6 +367,43 @@ function t(seconds: number): string {
  *  offsets) — not a time value, but the same "readable, frame/pixel-accurate precision" reasoning. */
 function n(value: number): string {
   return value.toFixed(6);
+}
+
+/** FFmpeg setpts expression for the selected clip-time range. Curve points are linear in SOURCE
+ *  progress, so integrating 1/speed gives the exact output time and matches clipTiming.ts. */
+function speedSetptsExpression(clip: Clip, elapsedStart: number, timelineDuration: number, sourceDuration: number): string | null {
+  if (elapsedStart < 0 || elapsedStart + timelineDuration > clipDuration(clip)) {
+    const effective = sourceDuration / Math.max(1e-9, timelineDuration);
+    return Math.abs(effective - 1) < 1e-6 ? null : `(PTS-STARTPTS)/${n(effective)}`;
+  }
+  const p0 = clipProgressAtElapsed(clip, elapsedStart);
+  const p1 = clipProgressAtElapsed(clip, elapsedStart + timelineDuration);
+  const curve = sliceSpeedCurve(clip.speedCurve, Math.min(p0, p1), Math.max(p0, p1));
+  if (!curve) {
+    const speed = clip.speed ?? 1;
+    return Math.abs(speed - 1) < 1e-6 ? null : `(PTS-STARTPTS)/${n(speed)}`;
+  }
+  const q = `((PTS-STARTPTS)*TB/${n(Math.max(1e-9, sourceDuration))})`;
+  let cumulative = 0;
+  const expressions: { end: number; value: string }[] = [];
+  for (let i = 0; i < curve.length - 1; i++) {
+    const a = curve[i];
+    const b = curve[i + 1];
+    const width = b.position - a.position;
+    const delta = b.speed - a.speed;
+    const local = Math.abs(delta) < 1e-8
+      ? `${n(sourceDuration / a.speed)}*(${q}-${n(a.position)})`
+      : `${n(sourceDuration * width / delta)}*log((${n(a.speed)}+${n(delta)}*((${q}-${n(a.position)})/${n(width)}))/${n(a.speed)})`;
+    expressions.push({ end: b.position, value: `${n(cumulative)}+${local}` });
+    cumulative += Math.abs(delta) < 1e-8
+      ? sourceDuration * width / a.speed
+      : sourceDuration * width / delta * Math.log(b.speed / a.speed);
+  }
+  let expression = expressions[expressions.length - 1].value;
+  for (let i = expressions.length - 2; i >= 0; i--) {
+    expression = `if(lte(${q}\,${n(expressions[i].end)})\,${expressions[i].value}\,${expression})`;
+  }
+  return `(${expression})/TB`;
 }
 
 function hasRotationOnlyTransformKeyframes(clip: Clip): boolean {
@@ -431,10 +475,12 @@ function buildTransformFilters(params: {
    *  clip has no `lutId` or the resolver itself wasn't supplied — either way, no `lut3d=` stage. */
   lutPath?: string;
   pixelEffect?: { type: PixelEffectType; speed?: number };
+  flipHorizontal?: boolean;
+  mask?: ClipMask;
   /** Continuous degrees expression in this filter's local `t`; used for rotation-only keyframes. */
   rotationExpressionDegrees?: string;
 }): string[] {
-  const { source, bg, outputLabel, transform, effects, width, height, fps, chromaKey, colorGrading, lutPath, pixelEffect, rotationExpressionDegrees } = params;
+  const { source, bg, outputLabel, transform, effects, width, height, fps, chromaKey, colorGrading, lutPath, pixelEffect, flipHorizontal, mask, rotationExpressionDegrees } = params;
   const { crop } = transform;
   const clipLabel = `${outputLabel}_src`;
   const bgLabel = `${outputLabel}_bg`;
@@ -534,6 +580,16 @@ function buildTransformFilters(params: {
     const shift = Math.round(GLITCH_SHIFT_PX * speed) || GLITCH_SHIFT_PX;
     return `,rgbashift=rh=${shift}:bv=${-shift},noise=alls=${n(GLITCH_NOISE_AMOUNT)}:allf=t`;
   })();
+  const flipFilter = flipHorizontal ? ",hflip" : "";
+  const maskFilter = (() => {
+    if (!mask) return "";
+    const signed = mask.shape === "ellipse"
+      ? `1-hypot((X/W-${n(mask.centerX)})/${n(mask.width / 2)},(Y/H-${n(mask.centerY)})/${n(mask.height / 2)})`
+      : `min(${n(mask.width / 2)}-abs(X/W-${n(mask.centerX)}),${n(mask.height / 2)}-abs(Y/H-${n(mask.centerY)}))`;
+    const amount = mask.feather > 0 ? `clip((${signed})/${n(mask.feather)}+0.5,0,1)` : `gte(${signed},0)`;
+    const alpha = mask.invert ? `1-(${amount})` : amount;
+    return `,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*(${alpha})'`;
+  })();
   // Applied AFTER scale, not before — so `blur`'s sigma corresponds to the clip's FINAL on-screen
   // pixel size, matching both the "pixels" unit the Inspector's slider promises and how Canvas2D's
   // own `context.filter` blurs the already-scaled draw, not the source's native resolution. Only
@@ -546,7 +602,7 @@ function buildTransformFilters(params: {
   const opacityFilter = effects.opacity < 1 ? `,colorchannelmixer=aa=${n(effects.opacity)}` : "";
 
   return [
-    `[${source}]${chromaKeyFilter}${cropFilter},format=rgba,${eqFilter}${curvesFilter ? `,${curvesFilter}` : ""}${lutFilter}${pixelEffectFilter},${scaleFilter}${blurFilter}${padFilter},${rotateFilter}${opacityFilter},` +
+    `[${source}]${chromaKeyFilter}${cropFilter},format=rgba${maskFilter},${eqFilter}${curvesFilter ? `,${curvesFilter}` : ""}${lutFilter}${pixelEffectFilter}${flipFilter},${scaleFilter}${blurFilter}${padFilter},${rotateFilter}${opacityFilter},` +
       `setsar=1,fps=${fps},setpts=PTS-STARTPTS[${clipLabel}]`,
     // The background is its own lavfi input (pushed alongside this), not an inline `color=` source
     // filter — matching the pattern gap segments already use elsewhere in this function, so there's
@@ -1739,6 +1795,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
   /** Filter-graph references for inputs that don't feed the graph as their raw `${index}:v` — an
    *  animated sticker's looped input goes through `pushImageInput`'s own trim stage first. */
   const videoInputRefs = new Map<number, string>();
+  const mediaRetime = new Map<number, { clip: Clip; elapsedStart: number; timelineDuration: number; sourceDuration: number }>();
   // A final-frame hold may seek slightly before its requested source time to decode a picture.
   // The shared input's audio must discard that preroll instead of replaying it under the blend.
   const audioInputPreroll = new Map<number, number>();
@@ -1811,15 +1868,41 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
    *  `transitionPartnerSourceTime`), a `tpad` that holds its final frame for the rest, so the stream
    *  is still exactly `duration` long. Registered through `videoInputRefs` like `pushImageInput`'s
    *  own loop stage, so every consumer picks it up via `videoRef`. */
-  function pushVideoSourceInput(clip: Clip, path: string, start: number, duration: number, index: number): void {
+  function pushVideoSourceInput(clip: Clip, path: string, start: number, duration: number, index: number, elapsedStart?: number): void {
     const asset = findAsset(project, clip.assetId);
     const sourceDuration = asset?.kind === "video" ? asset.duration : undefined;
     const hasSourceDuration = sourceDuration !== undefined && sourceDuration > 0;
+    const canRetime = elapsedStart !== undefined;
+    const sourceA = canRetime ? clipSourceTimeAtElapsed(clip, elapsedStart!) : start;
+    const sourceB = canRetime ? clipSourceTimeAtElapsed(clip, elapsedStart! + duration) : start + duration;
+    const readStart = Math.min(sourceA, sourceB);
+    const readDuration = Math.max(1e-6, Math.abs(sourceB - sourceA));
+    if (canRetime) mediaRetime.set(index, { clip, elapsedStart: elapsedStart!, timelineDuration: duration, sourceDuration: readDuration });
+    start = readStart;
+    duration = readDuration;
+    const finish = (baseRef: string) => {
+      let ref = baseRef;
+      if (clip.reverse) {
+        const label = `in${index}_reverse`;
+        filters.push(`[${ref}]reverse,setpts=PTS-STARTPTS[${label}]`);
+        ref = label;
+      }
+      if (canRetime) {
+        const expression = speedSetptsExpression(clip, elapsedStart!, mediaRetime.get(index)!.timelineDuration, readDuration);
+        if (expression) {
+          const label = `in${index}_speed`;
+          filters.push(`[${ref}]setpts='${expression}'[${label}]`);
+          ref = label;
+        }
+      }
+      if (ref !== `${index}:v`) videoInputRefs.set(index, ref);
+    };
     const headUnderflow = start < -1e-6 ? -start : 0;
     const tailOverflow = hasSourceDuration && (start + duration > sourceDuration + 1e-3);
 
     if (headUnderflow === 0 && !tailOverflow) {
       inputs.push("-ss", t(start), "-t", t(duration), "-i", path);
+      finish(`${index}:v`);
       return;
     }
 
@@ -1836,7 +1919,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         padParts.push(`stop_mode=clone:stop_duration=${t(duration)}`);
       }
       filters.push(`[${index}:v]setpts=PTS-STARTPTS,tpad=${padParts.join(":")},trim=duration=${t(duration)}[${label}]`);
-      videoInputRefs.set(index, label);
+      finish(label);
       return;
     }
 
@@ -1846,7 +1929,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     inputs.push("-ss", t(seek), "-t", t(duration), "-i", path);
     const label = `in${index}_hold`;
     filters.push(`[${index}:v]setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=${t(duration)},trim=duration=${t(duration)}[${label}]`);
-    videoInputRefs.set(index, label);
+    finish(label);
   }
 
   function pushImageInput(clip: Clip, path: string, sourceStart: number, duration: number, index: number): void {
@@ -1928,7 +2011,9 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       !clip.chromaKey &&
       (!clip.colorGrading || isIdentityColorGrading(clip.colorGrading)) &&
       !clip.lutId &&
-      !clip.pixelEffect;
+      !clip.pixelEffect &&
+      !clip.flipHorizontal &&
+      !clip.mask;
 
     if (isPlain) {
       filters.push(
@@ -1968,6 +2053,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           colorGrading: clip.colorGrading,
           lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId) : undefined,
           pixelEffect: clip.pixelEffect,
+          flipHorizontal: clip.flipHorizontal,
+          mask: clip.mask,
         })
       );
     }
@@ -2019,7 +2106,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       if (isImage) {
         pushImageInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex);
       } else {
-        pushVideoSourceInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex);
+        pushVideoSourceInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex, elapsedAtSegmentStart);
       }
       const bgIndex = inputIndex++;
       const bgColor = transparent ? "black@0" : "black";
@@ -2045,6 +2132,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           colorGrading: clip.colorGrading,
           lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId) : undefined,
           pixelEffect: clip.pixelEffect,
+          flipHorizontal: clip.flipHorizontal,
+          mask: clip.mask,
           rotationExpressionDegrees: rotationKeyframeExpression(clip, elapsedAtSegmentStart),
         })
       );
@@ -2060,7 +2149,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     if (isImage) {
       pushImageInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex);
     } else {
-      pushVideoSourceInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex);
+      pushVideoSourceInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex, elapsedAtSegmentStart);
     }
     // ONE background color input for the whole segment too — this was ALSO duplicated per slice
     // before, an independent contributor to the same command-line-length problem.
@@ -2126,6 +2215,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           colorGrading: slice.colorGrading,
           lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId) : undefined,
           pixelEffect: clip.pixelEffect,
+          flipHorizontal: clip.flipHorizontal,
+          mask: clip.mask,
         })
       );
       sliceLabels.push(`[${sliceLabel}]`);
@@ -2167,7 +2258,10 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     const needsAudioSource = hasAudio && !clip.mutedAudio;
     let audioSourceIndex = -1;
     if (needsAudioSource) {
-      const sourceStart = clip.sourceIn + elapsedAtSegmentStart;
+      const sourceA = clipSourceTimeAtElapsed(clip, Math.max(0, elapsedAtSegmentStart));
+      const sourceB = clipSourceTimeAtElapsed(clip, Math.min(clipDuration(clip), elapsedAtSegmentStart + sliceDuration));
+      const sourceStart = Math.min(sourceA, sourceB);
+      const sourceReadDuration = Math.max(1e-6, Math.abs(sourceB - sourceA));
       if (isImage) {
         inputs.push("-loop", "1", "-framerate", String(fps), "-t", t(sliceDuration), "-i", path);
       } else if (sourceStart < -1e-6) {
@@ -2176,11 +2270,14 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         inputs.push("-ss", "0", "-t", t(readDuration), "-i", path);
         audioInputDelay.set(inputIndex, underflow);
       } else {
-        inputs.push("-ss", t(sourceStart), "-t", t(sliceDuration), "-i", path);
+        inputs.push("-ss", t(sourceStart), "-t", t(sourceReadDuration), "-i", path);
       }
       audioSourceIndex = inputIndex++;
+      if (!isImage && elapsedAtSegmentStart >= -1e-6 && elapsedAtSegmentStart + sliceDuration <= clipDuration(clip) + 1e-6) {
+        mediaRetime.set(audioSourceIndex, { clip, elapsedStart: Math.max(0, elapsedAtSegmentStart), timelineDuration: sliceDuration, sourceDuration: sourceReadDuration });
+      }
     }
-    pushClipAudioFilters(needsAudioSource, audioSourceIndex, audioLabel, sliceDuration, clip.gain ?? 1, fadeIn, fadeOut, padToDuration);
+    pushClipAudioFilters(needsAudioSource, audioSourceIndex, audioLabel, sliceDuration, clip.gain ?? 1, fadeIn, fadeOut, padToDuration, clip);
   }
 
   // Pushes one source's own audio — resampled straight through (with an optional `volume=` stage —
@@ -2195,7 +2292,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     gain = 1,
     fadeIn?: number,
     fadeOut?: number,
-    padToDuration = false
+    padToDuration = false,
+    clip?: Clip
   ): void {
     // Silence has nothing to fade (an `afade` on a silent source is a pure no-op), so `fadeIn`/
     // `fadeOut` only ever matter on the `hasAudio` branch — same reasoning `gain`'s own "meaningless
@@ -2219,8 +2317,54 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       const delay = audioInputDelay.get(videoIndex);
       const delayMs = delay ? Math.round(delay * 1000) : 0;
       const delayStage = delayMs ? `adelay=${delayMs}|${delayMs},` : "";
+      const reverseStage = clip?.reverse ? "areverse," : "";
+      const retime = mediaRetime.get(videoIndex);
+      const atempoFilters = (initialRate: number) => {
+        const stages: string[] = [];
+        let rate = initialRate;
+        while (rate > 2 + 1e-6) { stages.push("atempo=2"); rate /= 2; }
+        while (rate < 0.5 - 1e-6) { stages.push("atempo=0.5"); rate /= 0.5; }
+        if (Math.abs(rate - 1) > 1e-6) stages.push(`atempo=${n(rate)}`);
+        return stages;
+      };
+      const p0 = retime ? clipProgressAtElapsed(retime.clip, retime.elapsedStart) : 0;
+      const p1 = retime ? clipProgressAtElapsed(retime.clip, retime.elapsedStart + retime.timelineDuration) : 1;
+      const localCurve = retime ? sliceSpeedCurve(retime.clip.speedCurve, Math.min(p0, p1), Math.max(p0, p1)) : undefined;
+      if (retime && localCurve && localCurve.length > 1) {
+        const base = `${outputLabel}_speedbase`;
+        filters.push(`[${videoIndex}:a]${trimStage}${delayStage}${reverseStage}aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS[${base}]`);
+        const pads = localCurve.slice(0, -1).map((_, i) => `${outputLabel}_speedpad${i}`);
+        if (pads.length > 1) filters.push(`[${base}]asplit=${pads.length}${pads.map((label) => `[${label}]`).join("")}`);
+        const pieces: string[] = [];
+        for (let i = 0; i < localCurve.length - 1; i++) {
+          const a = localCurve[i], b = localCurve[i + 1];
+          const width = b.position - a.position;
+          const delta = b.speed - a.speed;
+          const sourceSeconds = retime.sourceDuration * width;
+          const timelineSeconds = Math.abs(delta) < 1e-8
+            ? sourceSeconds / a.speed
+            : retime.sourceDuration * width / delta * Math.log(b.speed / a.speed);
+          const effectiveRate = sourceSeconds / Math.max(1e-9, timelineSeconds);
+          const piece = `${outputLabel}_speedpiece${i}`;
+          const sourceLabel = pads.length > 1 ? pads[i] : base;
+          const tempo = atempoFilters(effectiveRate);
+          filters.push(
+            `[${sourceLabel}]atrim=start=${t(a.position * retime.sourceDuration)}:end=${t(b.position * retime.sourceDuration)},` +
+              `asetpts=PTS-STARTPTS${tempo.length ? `,${tempo.join(",")}` : ""}[${piece}]`
+          );
+          pieces.push(`[${piece}]`);
+        }
+        const suffix = `${volumeStage}${fadeStage}${padStage}`;
+        filters.push(`${pieces.join("")}concat=n=${pieces.length}:v=0:a=1${suffix}[${outputLabel}]`);
+        return;
+      }
+      const atempoStages: string[] = [];
+      if (retime) {
+        atempoStages.push(...atempoFilters(retime.sourceDuration / Math.max(1e-9, retime.timelineDuration)));
+      }
+      const atempoStage = atempoStages.length ? `${atempoStages.join(",")},` : "";
       filters.push(
-        `[${videoIndex}:a]${trimStage}${delayStage}aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${volumeStage}${fadeStage}${padStage}[${outputLabel}]`
+        `[${videoIndex}:a]${trimStage}${delayStage}${reverseStage}${atempoStage}aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${volumeStage}${fadeStage}${padStage}[${outputLabel}]`
       );
     } else {
       pushSilentAudio(sliceDuration, outputLabel);
@@ -2845,7 +2989,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           // `sourceIn` (not `segment.clip.sourceIn`) already accounts for a transition-shortened head
           // — see `buildSegments`'s own comment for why — so converting it back to clip-window-
           // relative time (the space `Keyframe.time` itself uses) is a plain subtraction.
-          const elapsedAtSegmentStart = segment.sourceIn - segment.clip.sourceIn;
+          const elapsedAtSegmentStart = segment.elapsedStart;
           pushKeyframedClipVideoFilters(
             segment.clip,
             segment.path,
@@ -2868,7 +3012,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
             // -ss and -t BEFORE -i: seek-then-decode, so only the needed range is read. `sourceIn` (not
             // `segment.clip.sourceIn`) is what accounts for a transition-shortened clip starting partway
             // into its own footage — see `buildSegments`'s own comment for why.
-            inputs.push("-ss", t(segment.sourceIn), "-t", t(segment.duration), "-i", segment.path);
+            pushVideoSourceInput(segment.clip, segment.path, segment.sourceIn, segment.duration, inputIndex, segment.elapsedStart);
           }
           const videoIndex = inputIndex++;
           pushClipVideoFilters(segment.clip, videoIndex, videoLabel, segment.duration, transparent, segment.fadeIn, segment.fadeOut);
@@ -2879,7 +3023,9 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
             segment.duration,
             segment.clip.gain ?? 1,
             segment.fadeIn,
-            segment.fadeOut
+            segment.fadeOut,
+            false,
+            segment.clip
           );
         }
       } else if (segment.kind === "transition") {
@@ -2899,8 +3045,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         const fromSourceIn = segment.from.sourceIn ?? (segment.from.clip.sourceOut - halfD);
         const toSourceIn = segment.to.sourceIn ?? (segment.to.clip.sourceIn - halfD);
 
-        const fromElapsedAtSegmentStart = fromSourceIn - segment.from.clip.sourceIn;
-        const toElapsedAtSegmentStart = toSourceIn - segment.to.clip.sourceIn;
+        const fromElapsedAtSegmentStart = segment.from.elapsedStart ?? (fromSourceIn - segment.from.clip.sourceIn);
+        const toElapsedAtSegmentStart = segment.to.elapsedStart ?? (toSourceIn - segment.to.clip.sourceIn);
 
         // Each side of a transition is keyframe-aware independently. The OUTGOING clip carries on past
         // its own out-point holding its final frame if the file runs out first.
@@ -2911,7 +3057,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           if (segment.from.isImage) {
             pushImageInput(segment.from.clip, segment.from.path, fromSourceIn, D, inputIndex);
           } else {
-            pushVideoSourceInput(segment.from.clip, segment.from.path, fromSourceIn, D, inputIndex);
+            pushVideoSourceInput(segment.from.clip, segment.from.path, fromSourceIn, D, inputIndex, segment.from.elapsedStart);
           }
           const fromIndex = inputIndex++;
           pushClipVideoFilters(segment.from.clip, fromIndex, fromVideoLabel, D, transparent);
@@ -2923,7 +3069,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
             segment.from.clip.gain ?? 1,
             undefined,
             undefined,
-            true
+            true,
+            segment.from.clip
           );
         }
 
@@ -2934,11 +3081,11 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           if (segment.to.isImage) {
             pushImageInput(segment.to.clip, segment.to.path, toSourceIn, D, inputIndex);
           } else {
-            pushVideoSourceInput(segment.to.clip, segment.to.path, toSourceIn, D, inputIndex);
+            pushVideoSourceInput(segment.to.clip, segment.to.path, toSourceIn, D, inputIndex, segment.to.elapsedStart);
           }
           const toIndex = inputIndex++;
           pushClipVideoFilters(segment.to.clip, toIndex, toVideoLabel, D, transparent);
-          pushClipAudioFilters(segment.to.hasAudio && !segment.to.clip.mutedAudio && !track.muted, toIndex, toAudioLabel, D, segment.to.clip.gain ?? 1);
+          pushClipAudioFilters(segment.to.hasAudio && !segment.to.clip.mutedAudio && !track.muted, toIndex, toAudioLabel, D, segment.to.clip.gain ?? 1, undefined, undefined, false, segment.to.clip);
         }
 
         // `segment.to.clip` is the INCOMING side — `transitionIn` describes the blend FROM its partner
@@ -3012,7 +3159,9 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           segment.duration,
           (segment.clip.gain ?? 1) * (track.gain ?? 1),
           segment.fadeIn,
-          segment.fadeOut
+          segment.fadeOut,
+          false,
+          segment.clip
         );
       } else if (segment.kind === "transition") {
         const D = segment.duration;
@@ -3033,7 +3182,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           (segment.from.clip.gain ?? 1) * (track.gain ?? 1),
           undefined,
           undefined,
-          true
+          true,
+          segment.from.clip
         );
 
         const toIndex = inputIndex++;
@@ -3045,7 +3195,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         } else {
           inputs.push("-ss", t(toSourceIn), "-t", t(D), "-i", segment.to.path);
         }
-        pushClipAudioFilters(segment.to.hasAudio && !segment.to.clip.mutedAudio, toIndex, toAudioLabel, D, (segment.to.clip.gain ?? 1) * (track.gain ?? 1));
+        pushClipAudioFilters(segment.to.hasAudio && !segment.to.clip.mutedAudio, toIndex, toAudioLabel, D, (segment.to.clip.gain ?? 1) * (track.gain ?? 1), undefined, undefined, false, segment.to.clip);
 
         filters.push(`[${fromAudioLabel}][${toAudioLabel}]acrossfade=d=${t(D)}[${audioLabel}]`);
       } else {
@@ -3087,15 +3237,59 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
   let videoOut = "[cv0]";
   let textIndex = 0;
 
+  /** Composites one upper video track over the accumulated lower frame. The identity-only path stays
+   * byte-for-byte identical. For a non-Normal mode, FFmpeg's `blend` computes the RGB result, then the
+   * upper track's original alpha is restored before overlaying it. That last step is essential for
+   * crops/rotation/masks/opacity: `blend=darken` treats transparent black as black and would otherwise
+   * paint a black rectangle around the real clip, unlike Canvas compositing in preview. */
+  function compositeVideoTrack(base: string, track: Track, trackIndex: number): string {
+    const modes: ClipBlendMode[] = ["normal", "overlay", "screen", "darken", "lighten"];
+    const groups = modes.flatMap((mode) => {
+      const windows = track.clips
+        .filter((clip) => (clip.blendMode ?? "normal") === mode)
+        .map((clip) => [clip.timelineStart, clipEnd(clip)] as [number, number]);
+      return windows.length ? [{ mode, windows }] : [];
+    });
+
+    if (groups.length === 1 && groups[0].mode === "normal") {
+      const label = `layer${trackIndex}`;
+      filters.push(`${base}[cv${trackIndex}]overlay=format=auto[${label}]`);
+      return `[${label}]`;
+    }
+
+    const copies = groups.map((_, i) => `blend${trackIndex}_src${i}`);
+    if (copies.length > 1) filters.push(`[cv${trackIndex}]split=${copies.length}${copies.map((label) => `[${label}]`).join("")}`);
+    else copies[0] = `cv${trackIndex}`;
+
+    let chain = base;
+    groups.forEach(({ mode, windows }, groupIndex) => {
+      const source = copies[groupIndex];
+      const enable = windowsExpr(windows);
+      const output = `layer${trackIndex}_${groupIndex}`;
+      if (mode === "normal") {
+        filters.push(`${chain}[${source}]overlay=format=auto:enable='${enable}'[${output}]`);
+      } else {
+        const prefix = `blend${trackIndex}_${groupIndex}`;
+        filters.push(`${chain}split=2[${prefix}_base][${prefix}_fxbase]`);
+        filters.push(`[${source}]format=rgba,split=2[${prefix}_upper][${prefix}_alpha_src]`);
+        filters.push(`[${prefix}_fxbase][${prefix}_upper]blend=all_mode=${mode}[${prefix}_rgb]`);
+        filters.push(`[${prefix}_alpha_src]alphaextract[${prefix}_alpha]`);
+        filters.push(`[${prefix}_rgb]format=rgba,colorchannelmixer=aa=0[${prefix}_clear]`);
+        filters.push(`[${prefix}_clear][${prefix}_alpha]alphamerge[${prefix}_masked]`);
+        filters.push(`[${prefix}_base][${prefix}_masked]overlay=format=auto:enable='${enable}'[${output}]`);
+      }
+      chain = `[${output}]`;
+    });
+    return chain;
+  }
+
   for (const track of project.sequence.tracks) {
     if (!track.visible) continue;
 
     if (track.kind === "video") {
       const vIdx = videoTrackIndexMap.get(track.id);
       if (vIdx !== undefined && vIdx > 0) {
-        const label = `layer${vIdx}`;
-        filters.push(`${videoOut}[cv${vIdx}]overlay=format=auto[${label}]`);
-        videoOut = `[${label}]`;
+        videoOut = compositeVideoTrack(videoOut, track, vIdx);
       }
     } else if (track.kind === "text") {
       if (track.clips.length === 0) continue;

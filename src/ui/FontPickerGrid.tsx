@@ -45,17 +45,19 @@ export function sampleTextFor(label: string): string {
  *  drift apart the way a pre-rendered thumbnail could. `khmerOnly` filters to Khmer-script faces (Auto
  *  Captions' Khmer path always passes `true`) or away from them (every other language passes `false`) —
  *  a Latin-only face has no Khmer glyphs to render at all, and vice versa, so showing the other bucket
- *  would just be a grid full of choices that render as tofu/fallback for whatever's actually selected. */
+ *  would just be a grid full of choices that render as tofu/fallback for whatever's actually selected.
+ *  Omit `khmerOnly` for Script, where the pasted text itself may mix scripts and the user needs the
+ *  complete bundled font library. */
 export function FontPickerGrid({
   khmerOnly,
   selectedId,
   onPick,
 }: {
-  khmerOnly: boolean;
+  khmerOnly?: boolean;
   selectedId: string;
   onPick: (fontId: string) => void;
 }) {
-  const fonts = FONT_REGISTRY.filter((f) => isKhmerFont(f) === khmerOnly);
+  const fonts = khmerOnly === undefined ? FONT_REGISTRY : FONT_REGISTRY.filter((f) => isKhmerFont(f) === khmerOnly);
   return (
     <div className="grid grid-cols-3 gap-1.5">
       {fonts.map((font) => (

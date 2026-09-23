@@ -1,5 +1,6 @@
 import { clipDuration, clipEnd } from "../project/createProject.ts";
 import type { Clip, Track, TransitionType } from "../project/types.ts";
+import { clipSourceTimeAtElapsed } from "./clipTiming.ts";
 
 /** Every OFFERED `TransitionType`, in the order shown in both the Inspector's "Transition In" dropdown
  *  and the toolbar's picker grid — grouped by family (crossfade, wipe, slide, slice, circle, glitch/
@@ -137,9 +138,9 @@ function findAdjacentSuccessor(track: Track, clip: Clip): Clip | undefined {
  *  the end of its file holds its final frame (and goes silent) for the rest of the blend rather than
  *  running past the media. */
 export function transitionPartnerSourceTime(partner: Clip, elapsedPastCut: number, sourceDuration?: number): number {
-  const time = partner.sourceOut + elapsedPastCut;
+  const time = clipSourceTimeAtElapsed(partner, clipDuration(partner) + elapsedPastCut);
   if (sourceDuration === undefined || !(sourceDuration > 0)) return time;
-  return Math.min(time, Math.max(partner.sourceIn, sourceDuration));
+  return Math.max(0, Math.min(time, Math.max(partner.sourceIn, sourceDuration)));
 }
 
 /** How far PAST its own nominal out-point `clip`'s media keeps playing, because the clip right after it
@@ -213,7 +214,7 @@ export function findActiveTransitionAtTime(track: Track, time: number): ActiveTr
           const fromClip = blend.partner;
           const toClip = clip;
           const fromSourceTime = transitionPartnerSourceTime(fromClip, elapsed - D / 2);
-          const toSourceTime = Math.max(0, toClip.sourceIn - D / 2 + elapsed);
+          const toSourceTime = Math.max(0, clipSourceTimeAtElapsed(toClip, elapsed - D / 2));
           return {
             kind: "junction",
             type: clip.transitionIn?.type ?? "crossfade",
@@ -241,7 +242,7 @@ export function findActiveTransitionAtTime(track: Track, time: number): ActiveTr
             progress,
             elapsed,
             toClip: clip,
-            toSourceTime: clip.sourceIn + elapsed,
+            toSourceTime: clipSourceTimeAtElapsed(clip, elapsed),
           };
         }
       }
@@ -262,7 +263,7 @@ export function findActiveTransitionAtTime(track: Track, time: number): ActiveTr
           progress,
           elapsed,
           fromClip: clip,
-          fromSourceTime: clip.sourceIn + (time - clip.timelineStart),
+          fromSourceTime: clipSourceTimeAtElapsed(clip, time - clip.timelineStart),
         };
       }
     }
@@ -300,7 +301,7 @@ export function resolveAudioTransitionGain(track: Track, clip: Clip, time: numbe
       if (time >= transitionStart && time <= transitionEnd) {
         const elapsed = time - transitionStart;
         const progress = Math.min(1, Math.max(0, elapsed / D));
-        const partnerSourceTime = Math.max(0, successor.sourceIn - D / 2 + elapsed);
+        const partnerSourceTime = Math.max(0, clipSourceTimeAtElapsed(successor, elapsed - D / 2));
         return {
           gain: 1 - progress,
           partner: {

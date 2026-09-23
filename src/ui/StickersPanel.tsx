@@ -1,12 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { Search } from "@veasnawt/vicons";
 import { getStickerAvailability, searchStickers, type StickerAvailability, type StickerSearchResult } from "../api/client.ts";
 import type { StickerProvider, StickerType } from "../project/stickers.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
+import { ToolPanelFrame } from "./ToolPanelFrame.tsx";
 
 const SEARCH_DEBOUNCE_MS = 400;
 
@@ -114,18 +114,8 @@ export function StickersPanel({ onClose }: { onClose: () => void }) {
   const giphyCredits = availability?.giphyCredits ?? 0;
   const bothProviders = Boolean(availability?.klipy && availability?.giphy);
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center sm:p-4"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("Stickers")}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="flex h-[85dvh] w-full max-w-lg flex-col rounded-t-2xl border border-white/10 bg-[#12151c] shadow-2xl sm:h-[80vh] sm:rounded-xl"
-      >
+  return (
+    <ToolPanelFrame ariaLabel={t("Stickers")} onClose={onClose}>
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
           <h2 className="text-sm font-semibold text-white">{t("Stickers")}</h2>
           <button onClick={onClose} aria-label={t("Close")} className="rounded p-1 text-white/40 transition hover:bg-white/10 hover:text-white">
@@ -243,8 +233,6 @@ export function StickersPanel({ onClose }: { onClose: () => void }) {
             {provider === "giphy" && giphyCredits > 0 && !bothProviders && <span>{t("{n} credits each", { n: giphyCredits })}</span>}
           </div>
         )}
-      </div>
-    </div>,
-    document.body
+    </ToolPanelFrame>
   );
 }

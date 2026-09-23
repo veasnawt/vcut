@@ -8,9 +8,11 @@ export { VCutApp } from "./ui/VCutApp.tsx";
 export { TemplateDraftApp } from "./ui/TemplateDraftApp.tsx";
 export { reportError } from "./api/crashLog.ts";
 
-export type { Asset, AssetKind, Clip, ClipTransform, ExportSettings, Project, Sequence, TextStyle, Track, TrackKind } from "./project/types.ts";
+export type { Asset, AssetKind, Clip, ClipBlendMode, ClipMask, ClipMaskShape, ClipTransform, ExportSettings, Project, Sequence, SpeedCurvePoint, TextStyle, Track, TrackKind } from "./project/types.ts";
 export {
+  CLIP_BLEND_MODES,
   DEFAULT_TEXT_STYLE,
+  DEFAULT_CLIP_MASK,
   FPS_PRESETS,
   IDENTITY_TRANSFORM,
   IMAGE_DEFAULT_DURATION,
@@ -44,6 +46,11 @@ export {
   removeTrack,
   reorderTrack,
   setClipMuted,
+  setClipBlendMode,
+  setClipFlipHorizontal,
+  setClipMask,
+  setClipReverse,
+  setClipSpeed,
   setClipTransform,
   setTextAsset,
   setTrackFlag,
@@ -52,6 +59,21 @@ export {
 } from "./timeline/operations.ts";
 export { audibleClips, clipAtTime, isEmpty, snapPoints, snapTime, visibleVideoClips } from "./timeline/queries.ts";
 export { formatDuration, formatTimecode, frameDuration, snapToFrame } from "./timeline/time.ts";
+export {
+  calculateTrimPreview,
+  clampFrameDuration,
+  clampTimelineZoom,
+  DEFAULT_TIMELINE_PIXELS_PER_SECOND,
+  MAX_TIMELINE_PIXELS_PER_SECOND,
+  MIN_TIMELINE_PIXELS_PER_SECOND,
+  resolveMoveDrag,
+  resolveTimelineSnap,
+  timelineScrollLeftForAnchor,
+  timelineSnapThreshold,
+  timelineSpanPixels,
+  timelineTimeAtClientX,
+  visibleRulerTicks,
+} from "./timeline/interaction.ts";
 
 export {
   AddClipCommand,
@@ -61,6 +83,11 @@ export {
   RemoveTrackCommand,
   ReorderTrackCommand,
   SetClipMutedCommand,
+  SetClipBlendModeCommand,
+  SetClipFlipHorizontalCommand,
+  SetClipMaskCommand,
+  SetClipReverseCommand,
+  SetClipSpeedCommand,
   SetClipTransformCommand,
   SetTextCommand,
   SetTrackFlagCommand,
@@ -78,3 +105,4 @@ export { flushPendingSave, useEditorStore } from "./store/editorStore.ts";
 export { PlaybackEngine } from "./playback/PlaybackEngine.ts";
 export { computeTransformedBox } from "./playback/transformGeometry.ts";
 export type { TransformedBox } from "./playback/transformGeometry.ts";
+export { clipPlaybackDuration, clipProgressAtElapsed, clipSourceTimeAtElapsed, clipSpeedAtElapsed } from "./timeline/clipTiming.ts";

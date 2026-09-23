@@ -1,5 +1,6 @@
 import type { Asset, Clip, LutAsset, Project, Sequence, TextStyle, Track, TrackKind } from "./types.ts";
 import { DEFAULT_TEXT_STYLE, PROJECT_SCHEMA_VERSION, SHORT_PRESET } from "./types.ts";
+import { clipPlaybackDuration } from "../timeline/clipTiming.ts";
 
 /** `crypto.randomUUID` is gated to secure contexts (HTTPS, or literally `localhost`) — a plain LAN
  *  IP over HTTP does NOT count, even one this app's own local-only guard explicitly allows for
@@ -158,14 +159,14 @@ export function sequenceDuration(project: Project): number {
   let end = 0;
   for (const track of project.sequence.tracks) {
     for (const clip of track.clips) {
-      end = Math.max(end, clip.timelineStart + (clip.sourceOut - clip.sourceIn));
+      end = Math.max(end, clip.timelineStart + clipPlaybackDuration(clip));
     }
   }
   return end;
 }
 
 export function clipDuration(clip: Clip): number {
-  return clip.sourceOut - clip.sourceIn;
+  return clipPlaybackDuration(clip);
 }
 
 export function clipEnd(clip: Clip): number {

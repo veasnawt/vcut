@@ -1,5 +1,5 @@
 import { findAsset, findClip } from "../project/createProject.ts";
-import type { ClipEffects, ClipTransform, ColorGrading, Project, TextCrop, TextStyle } from "../project/types.ts";
+import type { ClipEffects, ClipMask, ClipTransform, ColorGrading, Project, TextCrop, TextStyle } from "../project/types.ts";
 import { DEFAULT_TEXT_STYLE, IDENTITY_TRANSFORM } from "../project/types.ts";
 
 /** One clip's live-drag (not-yet-committed) position — `transform` for a video/image clip, `textStyle`/
@@ -16,6 +16,7 @@ export interface ClipOverride {
   effects?: ClipEffects;
   colorGrading?: ColorGrading;
   textCrop?: TextCrop;
+  mask?: ClipMask;
 }
 
 /** For every OTHER selected clip (excluding `primaryClipId`, the one actually under the pointer),

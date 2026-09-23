@@ -313,6 +313,37 @@ export interface ClipTransform {
   crop: { top: number; right: number; bottom: number; left: number };
 }
 
+export type ClipMaskShape = "rectangle" | "ellipse";
+
+/** A non-destructive mask in the transformed clip's normalized local space. */
+export interface ClipMask {
+  shape: ClipMaskShape;
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+  /** Soft edge as a fraction of the smaller masked dimension. */
+  feather: number;
+  invert: boolean;
+}
+
+export const DEFAULT_CLIP_MASK: ClipMask = {
+  shape: "rectangle",
+  centerX: 0.5,
+  centerY: 0.5,
+  width: 0.75,
+  height: 0.75,
+  feather: 0,
+  invert: false,
+};
+
+/** One point on a variable-speed curve. `position` is normalized playback progress through the
+ *  selected source window; `speed` is the instantaneous source-seconds/timeline-second multiplier. */
+export interface SpeedCurvePoint {
+  position: number;
+  speed: number;
+}
+
 /** The untransformed default — what an absent `Clip.transform` means. Exported so every consumer
  *  (Inspector fields, TransformHandles, tests) starts from the same values rather than each hand-
  *  rolling `{ offsetX: 0, ... }` and risking one of them drifting out of sync. */
@@ -620,6 +651,11 @@ export type TextAnimationType = "bounce" | "pulse" | "wiggle" | "typewriter" | "
  *  `TextAnimationType` has to `transitionIn`/`transitionOut`. */
 export type PixelEffectType = "glitch" | "waterRipple";
 
+/** How a visual clip combines with already-rendered tracks below it. Canvas and FFmpeg use these
+ * exact names, which keeps preview/export mapping explicit and serialization easy to validate. */
+export const CLIP_BLEND_MODES = ["normal", "overlay", "screen", "darken", "lighten"] as const;
+export type ClipBlendMode = (typeof CLIP_BLEND_MODES)[number];
+
 /** One clip on a track. The heart of non-destructive editing: a clip is a *reference* to a slice of
  *  a source asset plus a position, never a copy of media. Trimming a 10-minute source down to 15
  *  seconds only moves `sourceIn`/`sourceOut` — the file on disk is never touched. */
@@ -632,6 +668,20 @@ export interface Clip {
   sourceOut: number;
   /** Seconds along the timeline where this clip begins. */
   timelineStart: number;
+  /** Mirrors the source around its visual vertical axis. Absent/false is the identity value. Kept
+   *  separately from `ClipTransform.scale` so crop geometry, resize handles, and transform
+   *  keyframes retain their existing positive-scale contract. */
+  flipHorizontal?: boolean;
+  /** Plays a video clip's selected source window from `sourceOut` back to `sourceIn`. */
+  reverse?: boolean;
+  /** Constant playback multiplier. Absent is the identity value 1. */
+  speed?: number;
+  /** Variable playback multiplier. When present with at least two points, this replaces `speed`. */
+  speedCurve?: SpeedCurvePoint[];
+  /** Optional local-space visual mask for image and video clips. */
+  mask?: ClipMask;
+  /** Absent is Normal/source-over. Only image and video clips expose this in the Inspector. */
+  blendMode?: ClipBlendMode;
   /** Absent means untransformed (equivalent to `IDENTITY_TRANSFORM`) — an untouched clip's JSON stays
    *  small, an older `project.json` written before this field existed loads unchanged, and both
    *  renderers can take a cheaper, already-tested code path when there's nothing to apply. */

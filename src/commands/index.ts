@@ -1,6 +1,6 @@
-import { clipEnd, createClip, createTextAsset, findAsset, findClip, findTrack, newId } from "../project/createProject.ts";
+import { clipDuration, clipEnd, createClip, createTextAsset, findAsset, findClip, findTrack, newId } from "../project/createProject.ts";
 import { applyTextStylePreset, type TextStylePreset } from "../project/textStylePresets.ts";
-import type { ChromaKeySettings, Asset, Clip, ClipEffects, ClipTransform, ColorGrading, CoverSelection, Project, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
+import type { ChromaKeySettings, Asset, Clip, ClipBlendMode, ClipEffects, ClipMask, ClipTransform, ColorGrading, CoverSelection, Project, SpeedCurvePoint, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
 import { DEFAULT_TEXT_STYLE, IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../project/types.ts";
 import {
   addClip,
@@ -17,6 +17,11 @@ import {
   setClipColorGradingKeyframes,
   setClipEffects,
   setClipEffectsKeyframes,
+  setClipBlendMode,
+  setClipFlipHorizontal,
+  setClipMask,
+  setClipReverse,
+  setClipSpeed,
   setClipGain,
   setClipLut,
   setClipMuted,
@@ -435,15 +440,9 @@ function cloneClipContent(
     newAssets.push(clonedAsset);
     assetId = clonedAsset.id;
   }
-  const clip = createClip({ assetId, sourceIn: original.sourceIn, sourceOut: original.sourceOut, timelineStart: newStart });
-  clip.id = newClipId;
-  if (original.transform) clip.transform = original.transform;
-  if (original.effects) clip.effects = original.effects;
-  if (original.textAnimation) clip.textAnimation = original.textAnimation;
-  if (original.transformKeyframes) clip.transformKeyframes = original.transformKeyframes;
-  if (original.effectsKeyframes) clip.effectsKeyframes = original.effectsKeyframes;
-  if (original.mutedAudio !== undefined) clip.mutedAudio = original.mutedAudio;
-  if (original.gain !== undefined) clip.gain = original.gain;
+  const clip: Clip = { ...structuredClone(original), id: newClipId, assetId, timelineStart: newStart };
+  delete clip.transitionIn;
+  delete clip.transitionOut;
   return clip;
 }
 
@@ -517,7 +516,7 @@ export class DuplicateClipsCommand implements Command {
     const starts = placeGroupAt(
       resolved.map((r) => ({
         timelineStart: r.original.timelineStart,
-        duration: r.original.sourceOut - r.original.sourceIn,
+        duration: clipDuration(r.original),
         draftTrack: r.draftTrack,
       })),
       groupEnd,
@@ -676,7 +675,7 @@ export class PasteClipsCommand implements Command {
     const starts = placeGroupAt(
       resolved.map((r) => ({
         timelineStart: r.entry.clip.timelineStart,
-        duration: r.entry.clip.sourceOut - r.entry.clip.sourceIn,
+        duration: clipDuration(r.entry.clip),
         draftTrack: r.draftTrack,
       })),
       this.anchorStart,
@@ -761,6 +760,137 @@ export class SetClipTransformCommand implements Command {
   revert(project: Project): Project {
     if (this.previous === null) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
     return setClipTransform(project, this.clipId, this.previous);
+  }
+}
+
+/** Undoable horizontal mirror toggle. */
+export class SetClipFlipHorizontalCommand implements Command {
+  label = "Flip Horizontal";
+  private applied = false;
+  private previous = false;
+  private clipId: string;
+  private enabled: boolean;
+
+  constructor(clipId: string, enabled: boolean) {
+    this.clipId = clipId;
+    this.enabled = enabled;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = found.clip.flipHorizontal === true;
+    this.applied = true;
+    return setClipFlipHorizontal(project, this.clipId, this.enabled);
+  }
+
+  revert(project: Project): Project {
+    if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipFlipHorizontal(project, this.clipId, this.previous);
+  }
+}
+
+export class SetClipBlendModeCommand implements Command {
+  label = "Change Blend Mode";
+  private applied = false;
+  private previous: ClipBlendMode = "normal";
+  private clipId: string;
+  private blendMode: ClipBlendMode;
+
+  constructor(clipId: string, blendMode: ClipBlendMode) {
+    this.clipId = clipId;
+    this.blendMode = blendMode;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = found.clip.blendMode ?? "normal";
+    this.applied = true;
+    return setClipBlendMode(project, this.clipId, this.blendMode);
+  }
+
+  revert(project: Project): Project {
+    if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipBlendMode(project, this.clipId, this.previous);
+  }
+}
+
+export class SetClipReverseCommand implements Command {
+  label = "Reverse Clip";
+  private applied = false;
+  private previous = false;
+
+  private clipId: string;
+  private enabled: boolean;
+
+  constructor(clipId: string, enabled: boolean) {
+    this.clipId = clipId;
+    this.enabled = enabled;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = found.clip.reverse === true;
+    this.applied = true;
+    return setClipReverse(project, this.clipId, this.enabled);
+  }
+
+  revert(project: Project): Project {
+    if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipReverse(project, this.clipId, this.previous);
+  }
+}
+
+export class SetClipMaskCommand implements Command {
+  label = "Mask Clip";
+  private applied = false;
+  private previous: ClipMask | null = null;
+
+  private clipId: string;
+  private mask: ClipMask | null;
+
+  constructor(clipId: string, mask: ClipMask | null) {
+    this.clipId = clipId;
+    this.mask = mask;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = found.clip.mask ? structuredClone(found.clip.mask) : null;
+    this.applied = true;
+    return setClipMask(project, this.clipId, this.mask);
+  }
+
+  revert(project: Project): Project {
+    if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipMask(project, this.clipId, this.previous);
+  }
+}
+
+/** Speed changes clip duration, so this uses the existing track-scoped memento to undo the ripple. */
+export class SetClipSpeedCommand extends TrackScopedCommand {
+  label = "Change Clip Speed";
+  private clipId: string;
+  private speed: number;
+  private curve: SpeedCurvePoint[] | null;
+
+  constructor(clipId: string, speed: number, curve: SpeedCurvePoint[] | null = null) {
+    super();
+    this.clipId = clipId;
+    this.speed = speed;
+    this.curve = curve;
+  }
+
+  protected affectedTrackIds(project: Project): string[] {
+    const found = findClip(project, this.clipId);
+    return found ? [found.track.id] : [];
+  }
+
+  protected run(project: Project): Project {
+    return setClipSpeed(project, this.clipId, this.speed, this.curve);
   }
 }
 

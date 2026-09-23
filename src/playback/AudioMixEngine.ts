@@ -154,6 +154,8 @@ export class AudioMixEngine {
   private getMediaUrl: (assetId: string) => string | null;
 
   private bufferCache = new Map<string, Promise<AudioBuffer>>();
+  private reversedBufferCache = new Map<string, Promise<AudioBuffer>>();
+  private retimedVideoClipNodes = new Map<string, TrackClipNode>();
   private bufferLastUsed = new Map<string, number>();
   private trackClipNodes = new Map<string, TrackClipNode>();
   /** What happened to each audio-track asset's fetch and decode, kept even after a failure clears
@@ -620,6 +622,67 @@ export class AudioMixEngine {
     node.gainNode.gain.setTargetAtTime(muted ? 0 : gain, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
   }
 
+  /** Reverse playback cannot come from an HTMLMediaElement (negative playbackRate is unsupported),
+   *  so its embedded audio uses the same decoded-buffer clock as audio-track clips. */
+  syncRetimedVideoClipAudio(clip: Clip, sourceTime: number, speed: number, gain: number, muted: boolean, playing: boolean): void {
+    const existing = this.retimedVideoClipNodes.get(clip.id);
+    if (!playing || muted) {
+      if (existing) {
+        try { existing.source.stop(); } catch {}
+        existing.source.disconnect();
+        existing.gainNode.disconnect();
+        this.retimedVideoClipNodes.delete(clip.id);
+      }
+      return;
+    }
+    const target = clip.reverse ? -sourceTime : sourceTime;
+    if (existing) {
+      const expected = existing.sourceTimeAtStart + (this.audioContext.currentTime - existing.contextTimeAtStart) * existing.source.playbackRate.value;
+      if (!detectRealSeek(expected, target, SEEK_DETECTION_TOLERANCE)) {
+        existing.gainNode.gain.setTargetAtTime(gain, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
+        existing.source.playbackRate.setTargetAtTime(speed, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
+        return;
+      }
+      try { existing.source.stop(); } catch {}
+      existing.source.disconnect();
+      existing.gainNode.disconnect();
+      this.retimedVideoClipNodes.delete(clip.id);
+    }
+    const url = this.getMediaUrl(clip.assetId);
+    if (!url) return;
+    const promise = clip.reverse
+      ? (this.reversedBufferCache.get(clip.assetId) ?? this.getOrDecodeBuffer(clip.assetId, url).then((buffer) => {
+          const reversed = this.audioContext.createBuffer(buffer.numberOfChannels, buffer.length, buffer.sampleRate);
+          for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+            const input = buffer.getChannelData(channel);
+            const output = reversed.getChannelData(channel);
+            for (let i = 0, j = input.length - 1; i < input.length; i++, j--) output[i] = input[j];
+          }
+          return reversed;
+        }))
+      : this.getOrDecodeBuffer(clip.assetId, url);
+    if (clip.reverse && !this.reversedBufferCache.has(clip.assetId)) this.reversedBufferCache.set(clip.assetId, promise);
+    void promise.then((buffer) => {
+      if (this.retimedVideoClipNodes.has(clip.id) || !playing) return;
+      const offset = Math.min(buffer.duration, Math.max(0, clip.reverse ? buffer.duration - sourceTime : sourceTime));
+      const remainingSource = clip.reverse ? sourceTime - clip.sourceIn : clip.sourceOut - sourceTime;
+      if (remainingSource <= 0) return;
+      const source = this.audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = speed;
+      const gainNode = this.audioContext.createGain();
+      gainNode.gain.value = gain;
+      source.connect(gainNode).connect(this.masterGain);
+      const contextTimeAtStart = this.audioContext.currentTime;
+      source.start(contextTimeAtStart, offset, Math.min(remainingSource, buffer.duration - offset));
+      const node = { source, gainNode, contextTimeAtStart, sourceTimeAtStart: clip.reverse ? -sourceTime : sourceTime };
+      this.retimedVideoClipNodes.set(clip.id, node);
+      source.onended = () => {
+        if (this.retimedVideoClipNodes.get(clip.id)?.source === source) this.retimedVideoClipNodes.delete(clip.id);
+      };
+    }).catch(() => {});
+  }
+
   /** Mitigation for the one click category this rearchitecture does NOT structurally fix — see this
    *  class's own doc comment on video-embedded audio. Called by `PlaybackEngine.syncMedia` exactly
    *  where it already decides a hard `currentTime` reseek on a video element is unavoidable: ducks that
@@ -756,6 +819,12 @@ export class AudioMixEngine {
     for (const [clipId, node] of this.trackClipNodes) this.stopTrackClipNode(clipId, node);
     for (const [clipId, node] of [...this.elementClipNodes]) this.releaseElementClip(clipId, node);
     for (const clipId of [...this.videoClipNodes.keys()]) this.releaseVideoClipAudio(clipId);
+    for (const [clipId, node] of this.retimedVideoClipNodes) {
+      try { node.source.stop(); } catch {}
+      node.source.disconnect();
+      node.gainNode.disconnect();
+      this.retimedVideoClipNodes.delete(clipId);
+    }
     for (const node of this.trackGainNodes.values()) node.disconnect();
     this.trackGainNodes.clear();
     for (const node of this.trackPanNodes.values()) node.disconnect();

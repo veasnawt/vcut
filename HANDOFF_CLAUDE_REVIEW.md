@@ -2,6 +2,195 @@
 
 Updated: 2026-09-23 (Asia/Bangkok).
 
+## Latest release: Shared tool panels and Script typography/animation - 2026-09-23
+
+### Tool-panel UX
+
+- Added `src/ui/ToolPanelFrame.tsx`, based on the established Sticker panel: toolbar-opened tools are
+  full-width bottom sheets on phones and centered, fixed-height cards on larger screens. Each tool
+  keeps its header/actions visible while its own body scrolls.
+- Script, Auto Captions, Voice Record, Music, Sound Effects, Stickers, and AI Edit now use the shared
+  shell. Compact anchored pickers such as Font, Color, Animation, and Transitions remain anchored to
+  their toolbar buttons because their position is part of their editing context.
+- Close/backdrop behavior is still workflow-aware: recording/review, caption generation, and AI Edit
+  cannot be dismissed while their existing busy states say it is unsafe to do so.
+
+### Script Font and Animation
+
+- Script now has the same `Font / Style / Animation` tab flow as Auto Captions. It uses the existing
+  font and animation pickers rather than adding another registry or rendering path.
+- A generated Script batch passes the selected font and animation through the existing
+  `landCaptions` -> `AddCaptionsCommand` path. The whole batch remains one undo step and persists via
+  the existing text style, clip animation, serialization, preview, and export implementations.
+- Script exposes the full bundled font library because pasted text can mix scripts. With no explicit
+  pick, Khmer text defaults to Koulen and other text defaults to Lato.
+
+### Verification and 0.2.3 artifacts
+
+- Package and hosted-app TypeScript: pass. Production Next.js, Capacitor/Vite, Electron, Android
+  `assembleDebug`, Android sync, and iOS sync: pass. Native iOS compilation/signing still requires
+  macOS with CocoaPods/Xcode.
+- Full package suite: **1,125 pass / 0 fail / 0 skip** across 187 suites.
+- Real-browser checks pass at 1280x800 and 390x844 for Script, Auto Captions, Voice, Music, SFX, and
+  Stickers. The mobile panels are full-width and bottom-aligned; the desktop panels share the same
+  centered 80vh layout. Script keeps Font/Style/Animation and Generate reachable at both sizes.
+- End-to-end Script check generated and saved a real text clip with `fontFamily: "roboto"` and
+  `textAnimation.type: "bounce"`, then undid/saved and confirmed the test asset was removed.
+- Windows installer: `apps/vcut-desktop/release/VCut Setup 0.2.3.exe` (232,524,562 bytes; SHA-256
+  `987051F32FE6C801097EE80DFDEFED09861FAC4564C034F25B83338C5C22CE93`).
+- Android APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.3.apk` (200,419,071 bytes;
+  SHA-256 `CECB15BAE79808D484CDEBAEC92456B2C80BF42F15A1C3DBA1631CAB11A1C1F1`).
+
+## Latest release: Timeline precision and interaction quality - 2026-09-23
+
+### Timing and coordinate fixes
+
+- Added `src/timeline/interaction.ts` as the shared frame-aware interaction layer for pointer-to-time
+  conversion, zoom anchoring, snap thresholds, group movement, trim previews, transition-duration
+  bounds, presentation-only minimum widths, and virtualized ruler ticks.
+- Clip drags now use absolute timeline time from the scroll container instead of only `clientX` delta.
+  Scrolling during a drag therefore no longer changes where the clip lands. Multi-selected clips use
+  their outer bounds, clamp as one group at time zero, and retain every internal gap.
+- Move and trim previews are frame-quantized before commit. Retimed, reversed, and speed-curve trim
+  previews use the same timeline-to-source mapping as playback/export; source time is kept fractional
+  where required so a frame-aligned timeline edit does not change duration when released.
+- Snapping remains pixel-friendly but is capped to a small frame window at overview zoom, preventing
+  a 16 px target from becoming a several-second magnet. Clip edges, playhead, and export in/out
+  markers participate where representable. A vertical amber guide and exact timecode show the target.
+- Cross-track drops now reject locked or wrong-kind rows during the preview itself, matching commit.
+  No-op drags/trims no longer add undo entries.
+
+### Ruler, zoom, playhead, and transitions
+
+- Ruler ticks are generated from integer frame indices and only around the visible viewport. Deep
+  zoom reaches 1,200 px/s and shows frame ticks without creating a whole-project DOM tree.
+- Mouse-wheel, pinch, button, keyboard, and reset zoom share one anchor equation. Reset preserves the
+  time under the viewport center instead of jumping. Mobile uses the same equation with its leading
+  pad and fixed-center playhead.
+- The ruler supports frame stepping with Arrow keys, 10-frame stepping with Shift, and Home/End.
+  ARIA values and hover timecodes now retain frame precision.
+- Transition junctions now receive cut time in seconds rather than pre-multiplied pixels, remain
+  centered on the cut, and use scroll-aware pointer time while resizing. Minimum clip/junction widths
+  are visual only and never feed back into saved duration.
+- Existing authored transition durations remain exact for compatibility and export fidelity; new
+  timeline handle adjustments are frame-stepped.
+
+### Verification, artifacts, and deployment
+
+- Package and host TypeScript: pass.
+- Full package suite: **1,125 pass / 0 fail / 0 skip** across 187 suites. The new focused suite adds
+  pointer/zoom inverses, zoom-independent snapping, group bounds, retimed/reversed trims, minimum
+  visual widths, integer-frame ruler ticks, frame-bounded transition handles, and exact retimed
+  split/trim coverage.
+- Production Next.js web build, Capacitor mobile build, Android/iOS `cap sync`, Electron packaging,
+  and Android `assembleDebug`: pass. iOS compilation/signing still requires macOS with CocoaPods/Xcode.
+- `scripts/timeline-check/check-timeline.cjs` passes against the packaged editor at 1440 px and 390 px.
+  It exercises real frame seeking, anchored zoom, scroll/playhead sync, snap-guide visibility, exact
+  saved move/trim positions, undo, and a cut-centered transition junction with no browser errors.
+- Windows installer: `apps/vcut-desktop/release/VCut Setup 0.2.2-timeline-precision.exe`
+  (232,524,139 bytes; SHA-256 `7EC0782A95031416DDDF8BEA942F8580FADA90DE6BB28B4257E9E50F9374FAC0`).
+- Android APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.2-timeline-precision.apk`
+  (200,756,195 bytes; SHA-256 `84B983887674F3010A0A9C338703F35EEBBF59E8BEF0FE60E93D8049E8B52120`).
+- Railway deployment `1c71a499-abef-483e-934f-fe2582ae6818` reached `SUCCESS`. The release is live at
+  `https://vcut.io`; `/` and `/edit` return HTTP 200 and the editor retains its microphone, camera,
+  and display-capture permissions policy.
+
+No commit or push was made. The implementation remains in the `packages/vcut` submodule working tree.
+
+## Latest release: Properties panel and clip Blend modes - 2026-09-23
+
+### Properties and AI Tools
+
+- Simplified the Inspector into a quieter card hierarchy with compact spacing, normal-case headings,
+  and a responsive segmented tab grid. The old Transform tab is now labelled Visual; all existing
+  controls and section state remain in the same Inspector architecture.
+- AI Tools now starts with one short explanation and three task cards: Creative AI, Remove Object,
+  and Auto Captions when the selected clip has audio. Only the selected workflow is rendered, so
+  users no longer scroll through several unrelated, simultaneously-expanded AI panels.
+- Remove Object still opens directly when its canvas workflow is armed. Video/image, audio, text,
+  transition, filter, LUT, chroma-key, source, and timeline behavior remains available behind the
+  same asset/track gates as before.
+
+### Blend implementation
+
+- Added optional `Clip.blendMode` with validated values `normal`, `overlay`, `screen`, `darken`, and
+  `lighten`. Absent/Normal remains the identity value for old project compatibility and compact JSON.
+- Added the existing pure-operation + command-stack flow (`setClipBlendMode` and
+  `SetClipBlendModeCommand`) with locked-track checks and exact undo/redo restoration.
+- Canvas preview maps the modes to `globalCompositeOperation` per visual layer and switches the
+  active mode at the midpoint of centered junction transitions.
+- FFmpeg export composites each upper video track over the accumulated lower frame. Non-Normal
+  modes preserve the upper clip's original alpha before overlay, so crop, rotation, masks, opacity,
+  and transparent letterboxing do not create black rectangles. A real FFmpeg Darken render verifies
+  both the blended center and untouched transparent corners.
+
+### Verification and artifacts
+
+- Package TypeScript: pass.
+- Full package suite: **1,117 pass / 0 fail / 0 skip** across 185 suites.
+- Focused editing/serialization/operations/undo/export suite: **535 pass / 0 fail**.
+- Production web, Capacitor mobile, and Electron builds: pass.
+- Responsive packaged-app check: pass at 1440px and 390px. It exercises Blend save + undo through
+  the real UI, switches all AI task cards, checks applicable tabs, and finds no horizontal overflow
+  or browser errors.
+- Android and iOS native projects were synced. iOS compilation/signing still requires macOS with
+  CocoaPods/Xcode.
+- Android APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.2-properties-blend.apk`
+  (200,754,492 bytes; SHA-256 `9AD856DFB3C65FF2602A065B29B0C1B9F6C91D8ACFBBD6F8B69EF40180BE4CDF`).
+- Windows installer: `apps/vcut-desktop/release/VCut Setup 0.2.2-properties-blend.exe`
+  (232,519,955 bytes; SHA-256 `5D86424EF9E4F65B95EB2CACA73F39C00C67914D3183B05ABF06C7361A386C2E`).
+- Railway deployment `4a10e1dc-2069-43d1-bfe9-8e9201514808` reached `SUCCESS`; the new release is
+  live at `https://vcut.io`, and `https://vcut.io/edit` returns HTTP 200.
+
+No commit or push was made. The implementation remains in the `packages/vcut` submodule working tree.
+
+## Latest release: Flip, Reverse, Mask, and Speed/Time Remapping — 2026-09-23
+
+### Implementation
+
+- Extended the existing `Clip` model with optional `flipHorizontal`, `reverse`, `mask`, `speed`, and
+  `speedCurve` fields. `serialize.ts` validates and restores every field, so old projects retain
+  identity behavior and edited projects round-trip without a parallel storage format.
+- Added `timeline/clipTiming.ts` as the shared timeline-to-source mapping. Constant speed and linear
+  speed curves use the same duration integral/inverse mapping in timeline layout, preview, trimming,
+  splitting, transition handles, and FFmpeg export. Reversed clips use the same mapping in the
+  opposite source direction.
+- Added undoable commands and pure operations for all four tools. Changing speed ripples later clips
+  on the same track and the existing track-scoped command memento restores the whole track on undo.
+  Duplicate, paste, split, trim, range trim, and overwrite carving preserve the new properties and
+  correctly slice/rebase curves and keyframes.
+- Preview now mirrors images/videos on canvas, frame-seeks reversed video, schedules reversed embedded
+  audio through Web Audio, applies rectangle/ellipse masks with feather/invert, and follows variable
+  speed continuously. Mask fields use live preview overrides while editing and commit once to undo.
+- Export now emits `hflip`, `reverse`/`areverse`, matching alpha masks, constant `setpts`/`atempo`, and
+  piecewise time-remap expressions. Curve audio is divided at control points, retimed, and concatenated
+  to the same boundary times as video.
+- Inspector UI exposes Flip Horizontal and Mask for images/videos, plus Normal/Curve speed modes,
+  presets, editable curve points, and Reverse Playback for video clips.
+
+### Verification and artifacts
+
+- Package TypeScript: pass.
+- Full package suite: **1,115 pass / 0 fail / 0 skip** in 73.2 seconds.
+- New real-FFmpeg integration renders flip + reverse + feathered ellipse mask + speed curve together.
+- Focused operations/export/undo regression suite: **499 pass / 0 fail**.
+- Production Next web build: pass.
+- Capacitor mobile build and `cap sync`: pass for Android and iOS. Windows cannot run Xcode/CocoaPods;
+  the iOS native project contains the current web assets and plugin metadata for the next Mac build.
+- Android APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.2-editing-tools.apk`
+  (200,753,020 bytes; SHA-256 `256D313AA96946257034B4C9B8FD249C5747D69AD1FF410D845A1F92C0A54D73`).
+- Windows portable ZIP: `apps/vcut-desktop/release/VCut-0.2.2-editing-tools-win-x64.zip`
+  (305,094,870 bytes; SHA-256 `2D837D49455DBBF0AD0CFC889D265B2C09C16E948F16BA0E9CE61B9F7F1F0F61`).
+  The unpacked Electron app built correctly. NSIS failed twice at its 249 MB mmap step on this machine,
+  so the invalid 230 KB partial installer was renamed with `.failed-partial.exe` and must not be shipped.
+- Railway deployment `826f613e-e828-4f9c-b215-56a4eaa10ab2` reached `SUCCESS` and replaced the prior
+  release. `https://vcut.io/edit` returned HTTP 200 from the new container; the existing microphone,
+  camera, and display-capture permissions policy is present. This release is live.
+
+No commit or push was made. The implementation remains in the `packages/vcut` submodule working tree;
+the root repository only reports that submodule as modified. Production deployment was made from this
+working tree, so a later commit must preserve it exactly.
+
 ## Latest release: Canvas Controls UX & Fit Zoom Alignment — 2026-09-23
 
 ### 1. Floating Canvas Controls & Rotation Clean-Up (`src/ui/TransformHandles.tsx`, `src/i18n/translations.ts`)

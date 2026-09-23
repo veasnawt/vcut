@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
 import { Ai, Close, Refresh } from "@veasnawt/vicons";
 import { mediaUrl } from "../api/client.ts";
 import { SwapClipAssetCommand } from "../commands/index.ts";
@@ -10,6 +9,7 @@ import type { Asset } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
+import { ToolPanelFrame } from "./ToolPanelFrame.tsx";
 
 const PROMPT_INSPIRATIONS = [
   { label: "Anime Watercolor", prompt: "turn into high quality Japanese anime watercolor illustration style" },
@@ -96,17 +96,9 @@ export function AiEditModal({
     onClose();
   }
 
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("AI Edit")}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !generating) onClose();
-      }}
-    >
-      <div className="flex h-full max-h-[700px] w-full max-w-2xl flex-col rounded-2xl border border-white/10 bg-[#12151c] shadow-2xl overflow-hidden">
+  return (
+    <ToolPanelFrame ariaLabel={t("AI Edit")} onClose={onClose} canClose={!generating} size="wide">
+      <>
         {/* Header */}
         <div className="flex items-center justify-between border-b border-white/10 px-5 py-3.5">
           <div className="flex items-center gap-2.5">
@@ -282,8 +274,7 @@ export function AiEditModal({
             )}
           </div>
         </div>
-      </div>
-    </div>,
-    document.body
+      </>
+    </ToolPanelFrame>
   );
 }

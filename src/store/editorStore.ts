@@ -33,6 +33,7 @@ import type { TextStylePreset } from "../project/textStylePresets.ts";
 import type { Asset, Clip, Project, TextStyle } from "../project/types.ts";
 import { IDENTITY_TRANSFORM } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
+import { clampTimelineZoom, DEFAULT_TIMELINE_PIXELS_PER_SECOND } from "../timeline/interaction.ts";
 import { defaultClipDuration, EditError, trackKindForAsset } from "../timeline/operations.ts";
 import { clipAtTime, nonOverlappingPointStart, nonOverlappingStart } from "../timeline/queries.ts";
 import { snapToFrame } from "../timeline/time.ts";
@@ -60,7 +61,7 @@ function readStoredLanguage(): Language {
 const AUTOSAVE_DELAY_MS = 1500;
 
 /** The timeline's starting zoom level, and what Ctrl/⌘+0 resets it back to. */
-const DEFAULT_PIXELS_PER_SECOND = 60;
+const DEFAULT_PIXELS_PER_SECOND = DEFAULT_TIMELINE_PIXELS_PER_SECOND;
 
 export type StatusTone = "info" | "error";
 
@@ -1023,7 +1024,8 @@ export const useEditorStore = create<EditorState>((set, get) => {
       // never actually follow it past this point (see `PlaybackEngine.tick`'s own
       // `INTERNAL_CLOCK_RESYNC_TOLERANCE` comment for that resync logic).
       const outroAllowance = total > 0 ? OUTRO_DURATION_SECONDS : 0;
-      set({ playhead: snapToFrame(Math.min(Math.max(0, seconds), Math.max(0, total + outroAllowance)), fps) });
+      const maximum = Math.max(0, total + outroAllowance);
+      set({ playhead: Math.min(maximum, Math.max(0, snapToFrame(seconds, fps))) });
     },
 
     setPlaying(playing) {
@@ -1042,13 +1044,15 @@ export const useEditorStore = create<EditorState>((set, get) => {
     setExportRangeStart(seconds) {
       const project = get().project;
       const fps = project?.sequence.fps ?? 30;
-      set({ exportRangeStart: seconds === null ? null : snapToFrame(seconds, fps) });
+      const maximum = project ? sequenceDuration(project) : 0;
+      set({ exportRangeStart: seconds === null ? null : Math.min(maximum, Math.max(0, snapToFrame(seconds, fps))) });
     },
 
     setExportRangeEnd(seconds) {
       const project = get().project;
       const fps = project?.sequence.fps ?? 30;
-      set({ exportRangeEnd: seconds === null ? null : snapToFrame(seconds, fps) });
+      const maximum = project ? sequenceDuration(project) : 0;
+      set({ exportRangeEnd: seconds === null ? null : Math.min(maximum, Math.max(0, snapToFrame(seconds, fps))) });
     },
 
     clearExportRange() {
@@ -1070,7 +1074,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     },
 
     setPixelsPerSecond(value) {
-      set({ pixelsPerSecond: Math.min(400, Math.max(4, value)) });
+      set({ pixelsPerSecond: clampTimelineZoom(value) });
     },
 
     zoomBy(factor) {

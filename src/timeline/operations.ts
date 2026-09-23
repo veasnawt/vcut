@@ -1,7 +1,8 @@
 import { clipDuration, clipEnd, createClip, createTextAsset, findAsset, findClip, findTrack, newId } from "../project/createProject.ts";
-import type { ChromaKeySettings, Asset, Clip, ClipEffects, ClipTransform, ColorCurve, ColorGrading, CoverSelection, Project, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
-import { DEFAULT_TEXT_STYLE, IMAGE_DEFAULT_DURATION, isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop, isIdentityTransform, TEXT_DEFAULT_DURATION } from "../project/types.ts";
+import type { ChromaKeySettings, Asset, Clip, ClipBlendMode, ClipEffects, ClipMask, ClipTransform, ColorCurve, ColorGrading, CoverSelection, Project, SpeedCurvePoint, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
+import { CLIP_BLEND_MODES, DEFAULT_TEXT_STYLE, IMAGE_DEFAULT_DURATION, isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop, isIdentityTransform, TEXT_DEFAULT_DURATION } from "../project/types.ts";
 import { frameDuration, snapToFrame } from "./time.ts";
+import { clampClipSpeed, clipProgressAtElapsed, clipSourceTimeAtElapsed, normalizedSpeedCurve, sliceSpeedCurve } from "./clipTiming.ts";
 
 /** Every operation here is PURE: it takes a project and returns a NEW project, never mutating the
  *  input. That's what lets the undo stack keep a previous project value and restore it exactly, and
@@ -29,6 +30,50 @@ export class EditError extends Error {
 
 function sortClips(track: Track): void {
   track.clips.sort((a, b) => a.timelineStart - b.timelineStart);
+}
+
+/** Returns the part of `clip` visible between two clip-relative TIMELINE times. This is shared by
+ * overwrite edits so a retimed/reversed clip is cut through the same timeline-to-source mapping as
+ * preview and export, rather than treating one timeline second as one source second. */
+function clipTimelineWindow(
+  clip: Clip,
+  fromElapsed: number,
+  toElapsed: number,
+  timelineStart: number,
+  id = clip.id
+): Clip {
+  const duration = clipDuration(clip);
+  const from = Math.min(duration, Math.max(0, fromElapsed));
+  const to = Math.min(duration, Math.max(from, toElapsed));
+  const fromProgress = clipProgressAtElapsed(clip, from);
+  const toProgress = clipProgressAtElapsed(clip, to);
+  const fromSource = clipSourceTimeAtElapsed(clip, from);
+  const toSource = clipSourceTimeAtElapsed(clip, to);
+  const next: Clip = {
+    ...structuredClone(clip),
+    id,
+    sourceIn: clip.reverse ? toSource : fromSource,
+    sourceOut: clip.reverse ? fromSource : toSource,
+    timelineStart,
+  };
+
+  const curve = sliceSpeedCurve(clip.speedCurve, fromProgress, toProgress);
+  if (curve) next.speedCurve = curve;
+  else delete next.speedCurve;
+
+  for (const key of ["transformKeyframes", "effectsKeyframes", "colorGradingKeyframes"] as const) {
+    const frames = clip[key];
+    if (!frames) continue;
+    const selected = frames
+      .filter((frame) => frame.time >= from - 1e-6 && frame.time <= to + 1e-6)
+      .map((frame) => ({ ...structuredClone(frame), time: Math.min(to - from, Math.max(0, frame.time - from)) }));
+    if (selected.length) (next as any)[key] = selected;
+    else delete (next as any)[key];
+  }
+
+  if (from > 1e-6) delete next.transitionIn;
+  if (to < duration - 1e-6) delete next.transitionOut;
+  return next;
 }
 
 /** Carves `[start, end)` out of every clip on `track` except `exceptClipId`. A clip fully covered is
@@ -74,16 +119,10 @@ function carveRange(
       const headDur = start - cStart;
       const tailDur = cEnd - end;
       if (headDur >= min) {
-        result.push({ ...clip, sourceOut: snapToFrame(clip.sourceIn + headDur, fps) });
+        result.push(clipTimelineWindow(clip, 0, headDur, cStart));
       }
       if (tailDur >= min) {
-        const tail = createClip({
-          assetId: clip.assetId,
-          sourceIn: snapToFrame(clip.sourceIn + (end - cStart), fps),
-          sourceOut: clip.sourceOut,
-          timelineStart: end,
-        });
-        if (tailId) tail.id = tailId;
+        const tail = clipTimelineWindow(clip, end - cStart, cEnd - cStart, end, tailId ?? newId("c"));
         result.push(tail);
       }
       continue;
@@ -91,17 +130,13 @@ function carveRange(
     // Overlapped on its tail — keep the head.
     if (cStart < start) {
       const headDur = start - cStart;
-      if (headDur >= min) result.push({ ...clip, sourceOut: snapToFrame(clip.sourceIn + headDur, fps) });
+      if (headDur >= min) result.push(clipTimelineWindow(clip, 0, headDur, cStart));
       continue;
     }
     // Overlapped on its head — keep the tail, which shifts its in-point into the source.
     const trimmed = end - cStart;
     if (cEnd - end >= min) {
-      result.push({
-        ...clip,
-        sourceIn: snapToFrame(clip.sourceIn + trimmed, fps),
-        timelineStart: end,
-      });
+      result.push(clipTimelineWindow(clip, trimmed, cEnd - cStart, end));
     }
   }
   track.clips = result;
@@ -186,15 +221,20 @@ export function splitClip(project: Project, clipId: string, atTime: number, newC
     }
 
     const offsetIntoSource = at - clip.timelineStart;
-    const splitSourceTime = snapToFrame(clip.sourceIn + offsetIntoSource, fps);
+    const progress = clipProgressAtElapsed(clip, offsetIntoSource);
+    const splitSourceTime = clipSourceTimeAtElapsed(clip, offsetIntoSource);
+    const originalSourceIn = clip.sourceIn;
+    const originalSourceOut = clip.sourceOut;
+    const originalCurve = clip.speedCurve;
 
-    const tail = createClip({
-      assetId: clip.assetId,
-      sourceIn: splitSourceTime,
-      sourceOut: clip.sourceOut,
+    const tail: Clip = {
+      ...structuredClone(clip),
+      id: newClipId ?? newId("c"),
+      sourceIn: clip.reverse ? originalSourceIn : splitSourceTime,
+      sourceOut: clip.reverse ? splitSourceTime : originalSourceOut,
       timelineStart: at,
-    });
-    if (newClipId) tail.id = newClipId;
+    };
+    delete tail.transitionIn;
 
     // Both resulting pieces are the SAME original clip, just cut in two — a clip's own
     // Transform/Effects/animation/audio settings describe its CONTENT, not its position on the
@@ -204,11 +244,6 @@ export function splitClip(project: Project, clipId: string, atTime: number, newC
     // never what splitting a clip means. `transitionIn` stays on the head only (unchanged — its own
     // start never moved) and is deliberately NOT given to the tail: a split creates an ordinary hard
     // cut between the two pieces, not a new crossfade neither side asked for.
-    if (clip.transform) tail.transform = clip.transform;
-    if (clip.effects) tail.effects = clip.effects;
-    if (clip.textAnimation) tail.textAnimation = clip.textAnimation;
-    if (clip.mutedAudio !== undefined) tail.mutedAudio = clip.mutedAudio;
-    if (clip.gain !== undefined) tail.gain = clip.gain;
     if (clip.transitionOut) {
       tail.transitionOut = clip.transitionOut;
       delete clip.transitionOut;
@@ -238,7 +273,14 @@ export function splitClip(project: Project, clipId: string, atTime: number, newC
       if (tail.effectsKeyframes.length === 0) delete tail.effectsKeyframes;
     }
 
-    clip.sourceOut = splitSourceTime;
+    if (clip.reverse) clip.sourceIn = splitSourceTime;
+    else clip.sourceOut = splitSourceTime;
+    const headCurve = sliceSpeedCurve(originalCurve, 0, progress);
+    const tailCurve = sliceSpeedCurve(originalCurve, progress, 1);
+    if (headCurve) clip.speedCurve = headCurve;
+    else delete clip.speedCurve;
+    if (tailCurve) tail.speedCurve = tailCurve;
+    else delete tail.speedCurve;
     track.clips.push(tail);
     sortClips(track);
   });
@@ -270,6 +312,48 @@ export function trimClip(project: Project, clipId: string, edge: "in" | "out", t
     const sourceLimit = hasFixedSourceLength ? asset!.duration : Number.POSITIVE_INFINITY;
     const target = snapToFrame(toTime, fps);
 
+    // Retimed video uses a nonlinear timeline-to-source mapping. Handle inward trims through that
+    // shared mapping and re-normalize the surviving curve; the legacy arithmetic below remains the
+    // exact identity-speed path.
+    if (asset?.kind === "video" && (clip.reverse || clip.speedCurve || Math.abs((clip.speed ?? 1) - 1) > 1e-6)) {
+      const oldDuration = clipDuration(clip);
+      const trimKeyframes = (removed: number, nextDuration: number) => {
+        for (const key of ["transformKeyframes", "effectsKeyframes", "colorGradingKeyframes"] as const) {
+          const frames = clip[key];
+          if (!frames) continue;
+          const next = frames
+            .filter((frame) => frame.time >= removed - 1e-6 && frame.time <= removed + nextDuration + 1e-6)
+            .map((frame) => ({ ...frame, time: Math.min(nextDuration, Math.max(0, frame.time - removed)) }));
+          if (next.length) (clip as any)[key] = next;
+          else delete (clip as any)[key];
+        }
+      };
+      if (edge === "in") {
+        const applied = Math.min(Math.max(target - clip.timelineStart, 0), oldDuration - min);
+        const progress = clipProgressAtElapsed(clip, applied);
+        const sourceAt = clipSourceTimeAtElapsed(clip, applied);
+        const curve = sliceSpeedCurve(clip.speedCurve, progress, 1);
+        if (clip.reverse) clip.sourceOut = sourceAt;
+        else clip.sourceIn = sourceAt;
+        if (curve) clip.speedCurve = curve;
+        else delete clip.speedCurve;
+        clip.timelineStart = snapToFrame(clip.timelineStart + applied, fps);
+        trimKeyframes(applied, oldDuration - applied);
+      } else {
+        const desired = Math.min(oldDuration, Math.max(min, target - clip.timelineStart));
+        const progress = clipProgressAtElapsed(clip, desired);
+        const sourceAt = clipSourceTimeAtElapsed(clip, desired);
+        const curve = sliceSpeedCurve(clip.speedCurve, 0, progress);
+        if (clip.reverse) clip.sourceIn = sourceAt;
+        else clip.sourceOut = sourceAt;
+        if (curve) clip.speedCurve = curve;
+        else delete clip.speedCurve;
+        trimKeyframes(0, desired);
+      }
+      sortClips(track);
+      return;
+    }
+
     if (edge === "in") {
       const delta = target - clip.timelineStart;
       // Can't pull the in-point earlier than the start of the source media, nor later than one frame
@@ -286,17 +370,17 @@ export function trimClip(project: Project, clipId: string, edge: "in" | "out", t
       if (newStart < 0) {
         // Dragging the in-point past time zero would push the clip off the front of the timeline.
         const corrected = applied - newStart;
-        clip.sourceIn = snapToFrame(clip.sourceIn + corrected, fps);
+        clip.sourceIn = clip.sourceIn + corrected;
         clip.timelineStart = 0;
         return;
       }
-      clip.sourceIn = snapToFrame(clip.sourceIn + applied, fps);
+      clip.sourceIn = clip.sourceIn + applied;
       clip.timelineStart = snapToFrame(newStart, fps);
     } else {
       const desiredDuration = target - clip.timelineStart;
       const maxDuration = sourceLimit - clip.sourceIn;
       const duration = Math.min(Math.max(desiredDuration, min), maxDuration);
-      clip.sourceOut = snapToFrame(clip.sourceIn + duration, fps);
+      clip.sourceOut = clip.sourceIn + duration;
     }
     sortClips(track);
   });
@@ -576,7 +660,7 @@ export function createTextBehindSubject(
   const textClipId = customTextClipId ?? newId("c");
   const cutoutClipId = customCutoutClipId ?? newId("c");
 
-  const duration = sourceClip.sourceOut - sourceClip.sourceIn;
+  const duration = clipDuration(sourceClip);
 
   // Modern bold punchy text style for the effect
   const boldStyle: TextStyle = {
@@ -736,6 +820,102 @@ export function setClipTransform(project: Project, clipId: string, transform: Cl
       delete found.clip.transform;
     } else {
       found.clip.transform = clamped;
+    }
+  });
+}
+
+/** Toggles a visual clip's horizontal mirror without changing its source or transform geometry. */
+export function setClipFlipHorizontal(project: Project, clipId: string, enabled: boolean): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    if (enabled) found.clip.flipHorizontal = true;
+    else delete found.clip.flipHorizontal;
+  });
+}
+
+/** Sets how an image/video clip composites with visual tracks below it. Normal is represented by an
+ * absent field, following the model's existing compact identity-value convention. */
+export function setClipBlendMode(project: Project, clipId: string, blendMode: ClipBlendMode): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    const asset = findAsset(draft, found.clip.assetId);
+    if (found.track.kind !== "video" || (asset?.kind !== "video" && asset?.kind !== "image")) {
+      throw new EditError("Blend is only available for image and video clips");
+    }
+    if (!CLIP_BLEND_MODES.includes(blendMode)) throw new EditError("Unknown blend mode");
+    if (blendMode === "normal") delete found.clip.blendMode;
+    else found.clip.blendMode = blendMode;
+  });
+}
+
+export function setClipReverse(project: Project, clipId: string, enabled: boolean): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    const asset = findAsset(draft, found.clip.assetId);
+    if (asset?.kind !== "video") throw new EditError("Reverse is only available for video clips");
+    if (enabled) found.clip.reverse = true;
+    else delete found.clip.reverse;
+  });
+}
+
+function clampClipMask(mask: ClipMask): ClipMask {
+  return {
+    shape: mask.shape === "ellipse" ? "ellipse" : "rectangle",
+    centerX: Math.min(1, Math.max(0, mask.centerX)),
+    centerY: Math.min(1, Math.max(0, mask.centerY)),
+    width: Math.min(1, Math.max(0.01, mask.width)),
+    height: Math.min(1, Math.max(0.01, mask.height)),
+    feather: Math.min(0.5, Math.max(0, mask.feather)),
+    invert: mask.invert === true,
+  };
+}
+
+export function setClipMask(project: Project, clipId: string, mask: ClipMask | null): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    if (mask) found.clip.mask = clampClipMask(mask);
+    else delete found.clip.mask;
+  });
+}
+
+/** Applies constant or curved video speed and ripples later clips by the duration delta. */
+export function setClipSpeed(project: Project, clipId: string, speed: number, curve: SpeedCurvePoint[] | null = null): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    const asset = findAsset(draft, found.clip.assetId);
+    if (asset?.kind !== "video") throw new EditError("Speed is only available for video clips");
+    const oldDuration = clipDuration(found.clip);
+    const oldEnd = found.clip.timelineStart + oldDuration;
+    const clampedSpeed = clampClipSpeed(speed);
+    if (Math.abs(clampedSpeed - 1) < 1e-6) delete found.clip.speed;
+    else found.clip.speed = clampedSpeed;
+    const normalized = normalizedSpeedCurve(curve ?? undefined, clampedSpeed);
+    if (normalized) found.clip.speedCurve = normalized;
+    else delete found.clip.speedCurve;
+    const newDuration = clipDuration(found.clip);
+    const ratio = oldDuration > 1e-9 ? newDuration / oldDuration : 1;
+    for (const key of ["transformKeyframes", "effectsKeyframes", "colorGradingKeyframes"] as const) {
+      const frames = found.clip[key];
+      if (frames) for (const frame of frames) frame.time = Math.min(newDuration, Math.max(0, frame.time * ratio));
+    }
+    const delta = newDuration - oldDuration;
+    if (Math.abs(delta) > 1e-9) {
+      for (const other of found.track.clips) {
+        if (other.id !== found.clip.id && other.timelineStart >= oldEnd - 1e-6) {
+          other.timelineStart = snapToFrame(Math.max(0, other.timelineStart + delta), draft.sequence.fps);
+        }
+      }
+      sortClips(found.track);
     }
   });
 }

@@ -1,6 +1,6 @@
 import { clipDuration, clipEnd } from "../project/createProject.ts";
 import { animationFrameIndex, animationFrameRect, type AssetAnimation } from "../project/stickers.ts";
-import type { ChromaKeySettings, Clip, ClipEffects, ClipTransform, ColorGrading, CustomFontAsset, Project, TextStyle, TransitionType, Track } from "../project/types.ts";
+import type { ChromaKeySettings, Clip, ClipEffects, ClipMask, ClipTransform, ColorGrading, CustomFontAsset, Project, TextStyle, TransitionType, Track } from "../project/types.ts";
 import { isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
 import { applyColorGrading, buildCurveLut, composeLuts } from "../timeline/colorCurves.ts";
@@ -21,6 +21,7 @@ import {
   transitionFamily,
 } from "../timeline/transitionMotion.ts";
 import { audibleClips, clipAtTime, visibleVideoClips } from "../timeline/queries.ts";
+import { clipSourceTimeAtElapsed, clipSpeedAtElapsed } from "../timeline/clipTiming.ts";
 import {
   type ActiveTransitionInfo,
   findActiveTransitionAtTime,
@@ -44,6 +45,11 @@ const AUDIO_PREFETCH_SCAN_INTERVAL_MS = 1000;
 // `transitionFamily` lives in `timeline/transitionMotion.ts` so export can share it without importing
 // this DOM-bound module; re-exported here for existing callers.
 export { transitionFamily, type TransitionFamily } from "../timeline/transitionMotion.ts";
+
+/** Canvas names match the project model except Normal, whose Canvas spelling is `source-over`. */
+export function clipBlendCompositeOperation(clip: Pick<Clip, "blendMode">): GlobalCompositeOperation {
+  return !clip.blendMode || clip.blendMode === "normal" ? "source-over" : clip.blendMode;
+}
 
 // Module-level (not per-`PlaybackEngine`-instance) scratch canvases for the pixel-math transition
 // styles below — `compositeTransitionFrame` is a standalone function usable with no live instance at
@@ -517,13 +523,14 @@ export function planMediaSync(
   sourceTime: number,
   playing: boolean,
   allowRateCorrection = true,
-  pausedSeekTolerance = DRIFT_TOLERANCE
+  pausedSeekTolerance = DRIFT_TOLERANCE,
+  targetPlaybackRate = 1
 ): MediaSyncAction {
   const none: MediaSyncAction = { playbackRate: null, seekTo: null };
 
   if (state.seeking) {
     if (state.seekingForMs < SEEK_STUCK_MS) return none;
-    return { playbackRate: state.playbackRate !== 1 ? 1 : null, seekTo: sourceTime };
+    return { playbackRate: state.playbackRate !== targetPlaybackRate ? targetPlaybackRate : null, seekTo: sourceTime };
   }
 
   // Positive: the element is AHEAD of where it should be (needs to slow down/seek back). Negative:
@@ -534,7 +541,7 @@ export function planMediaSync(
   if (absDrift > (playing ? DRIFT_TOLERANCE : pausedSeekTolerance)) {
     // A real jump (scrub, clip switch, a tab that was throttled/backgrounded) — nothing gradual could
     // close a gap this size fast enough to matter, so snap, resetting any in-progress nudge first.
-    return { playbackRate: state.playbackRate !== 1 ? 1 : null, seekTo: sourceTime };
+    return { playbackRate: state.playbackRate !== targetPlaybackRate ? targetPlaybackRate : null, seekTo: sourceTime };
   }
 
   if (playing && allowRateCorrection && absDrift > DRIFT_CORRECTION_TOLERANCE) {
@@ -542,12 +549,12 @@ export function planMediaSync(
     // from ~0 at the dead-zone edge up to the max rate at `DRIFT_TOLERANCE` itself.
     const t = Math.min(1, (absDrift - DRIFT_CORRECTION_TOLERANCE) / (DRIFT_TOLERANCE - DRIFT_CORRECTION_TOLERANCE));
     const delta = MAX_DRIFT_CORRECTION_RATE_DELTA * t;
-    const target = drift > 0 ? Math.max(0.1, 1 - delta) : 1 + delta;
+    const target = targetPlaybackRate * (drift > 0 ? Math.max(0.1, 1 - delta) : 1 + delta);
     return Math.abs(target - state.playbackRate) >= PLAYBACK_RATE_EPSILON ? { playbackRate: target, seekTo: null } : none;
   }
 
   // Back within the dead zone (or paused) — stop nudging.
-  return state.playbackRate !== 1 ? { playbackRate: 1, seekTo: null } : none;
+  return state.playbackRate !== targetPlaybackRate ? { playbackRate: targetPlaybackRate, seekTo: null } : none;
 }
 
 /** How long a video element may stay paused/seeking/under-buffered while the transport is playing
@@ -750,6 +757,33 @@ export function applyManualEffects(imageData: ImageData, effects: ClipEffects): 
     data[i + 2] = b * 255;
   }
   if (effects.blur > 0) applyBoxBlur(imageData, effects.blur);
+}
+
+/** Multiplies source alpha by a rectangle/ellipse mask. Coordinates are normalized to the clip's
+ *  visible post-crop source rectangle so preview and FFmpeg use the same local space. */
+export function applyClipMask(imageData: ImageData, mask: ClipMask, crop: ClipTransform["crop"]): void {
+  const { width, height, data } = imageData;
+  const x0 = crop.left * width;
+  const y0 = crop.top * height;
+  const visibleWidth = Math.max(1, width * (1 - crop.left - crop.right));
+  const visibleHeight = Math.max(1, height * (1 - crop.top - crop.bottom));
+  const feather = mask.feather;
+  for (let y = 0; y < height; y++) {
+    const ny = (y + 0.5 - y0) / visibleHeight;
+    for (let x = 0; x < width; x++) {
+      const nx = (x + 0.5 - x0) / visibleWidth;
+      let signed: number;
+      if (mask.shape === "ellipse") {
+        const rx = Math.max(0.005, mask.width / 2);
+        const ry = Math.max(0.005, mask.height / 2);
+        signed = 1 - Math.hypot((nx - mask.centerX) / rx, (ny - mask.centerY) / ry);
+      } else {
+        signed = Math.min(mask.width / 2 - Math.abs(nx - mask.centerX), mask.height / 2 - Math.abs(ny - mask.centerY));
+      }
+      const alpha = feather > 0 ? Math.min(1, Math.max(0, signed / feather + 0.5)) : signed >= 0 ? 1 : 0;
+      data[(y * width + x) * 4 + 3] *= mask.invert ? 1 - alpha : alpha;
+    }
+  }
 }
 
 /** A Gaussian blur of standard deviation `sigma`, approximated by three successive box blurs (the
@@ -1516,7 +1550,20 @@ export class PlaybackEngine {
    *  through `AudioMixEngine.syncVideoClipAudio` instead (called separately, right after this, from
    *  `drawVideoClip`), since `createMediaElementSource` captures the element's native output entirely —
    *  setting `.volume` on an element already routed through Web Audio would have no audible effect. */
-  private syncMedia(clipId: string, element: HTMLVideoElement, sourceTime: number, playing: boolean): void {
+  private syncMedia(clipId: string, element: HTMLVideoElement, sourceTime: number, playing: boolean, targetPlaybackRate = 1, reverse = false): void {
+    if (reverse) {
+      if (!element.paused) element.pause();
+      if (element.readyState === 0) return;
+      // A reversed clip begins at its out-point. Seeking to the exact media duration is outside the
+      // last decodable frame in Safari/iOS and can briefly draw black, so stay a fraction of a frame
+      // inside the source while retaining the same exported time mapping.
+      const seekTime = Math.max(0, Math.min(sourceTime, Number.isFinite(element.duration) ? Math.max(0, element.duration - 1 / 120) : sourceTime));
+      if (!element.seeking && Math.abs(element.currentTime - seekTime) > PRECISE_SCRUB_TOLERANCE) {
+        element.currentTime = seekTime;
+        this.mediaWaitingThisFrame = true;
+      }
+      return;
+    }
     if (holdMediaAtEnd(element, sourceTime)) {
       this.playOutcome.set(clipId, "held");
       this.watchForStall(clipId, element, sourceTime, false);
@@ -1596,6 +1643,7 @@ export class PlaybackEngine {
       playing,
       this.rateCorrection,
       this.preciseScrub ? PRECISE_SCRUB_TOLERANCE : DRIFT_TOLERANCE
+      ,targetPlaybackRate
     );
     // Rate BEFORE seek, never after: a rate change issued right behind a seek lands while that seek is
     // still in flight, which is exactly the interruption `planMediaSync` exists to stop.
@@ -1807,9 +1855,9 @@ export class PlaybackEngine {
   private activeAudioClips(project: Project, time: number): { trackId: string; clip: Clip; sourceTime: number; gain: number; sourceEnd: number }[] {
     const results: { trackId: string; clip: Clip; sourceTime: number; gain: number; sourceEnd: number }[] = [];
     for (const { track, clip } of audibleClips(project)) {
-      const duration = clip.sourceOut - clip.sourceIn;
+      const duration = clipDuration(clip);
       if (time < clip.timelineStart || time >= clip.timelineStart + duration) continue;
-      const sourceTime = clip.sourceIn + (time - clip.timelineStart);
+      const sourceTime = clipSourceTimeAtElapsed(clip, time - clip.timelineStart);
 
       const { gain, partner } = resolveAudioTransitionGain(track, clip, time);
       // Scheduled to run on past the out-point when the next clip blends out of this one, so the
@@ -1907,7 +1955,7 @@ export class PlaybackEngine {
         }
         const animation = asset?.animation;
         if (animation && this.host.spriteUrlFor) {
-          element = this.animationFrameFor(clip.id, element, animation, clip.sourceIn + (time - clip.timelineStart));
+          element = this.animationFrameFor(clip.id, element, animation, clipSourceTimeAtElapsed(clip, time - clip.timelineStart));
           sourceWidth = animation.frameWidth;
           sourceHeight = animation.frameHeight;
         } else {
@@ -1918,10 +1966,10 @@ export class PlaybackEngine {
         const sourceTime =
           activeTransition?.kind === "junction" && activeTransition.toSourceTime !== undefined
             ? activeTransition.toSourceTime
-            : Math.max(0, clip.sourceIn + (time - clip.timelineStart));
+            : Math.max(0, clipSourceTimeAtElapsed(clip, time - clip.timelineStart));
         // The track's own visibility no longer needs checking here: `drawVideoLayer` already skips
         // hidden tracks entirely before this is ever called.
-        this.syncMedia(clip.id, element, sourceTime, this.host.isPlaying());
+        this.syncMedia(clip.id, element, sourceTime, this.host.isPlaying(), clipSpeedAtElapsed(clip, time - clip.timelineStart), clip.reverse === true);
         // A video clip's own audio is silenced/scaled when the clip itself is muted/gained, OR when the
         // whole track it's on is muted — matching what export does (`buildExportPlan.ts`'s own
         // `buildTrackStreams` folds `track.muted` into the same `hasAudio` check), so preview and output
@@ -1937,7 +1985,15 @@ export class PlaybackEngine {
         // `AudioMixEngine` as a second simultaneously-active source here — see `drawTransitionPartner`'s
         // own comment on why the partner's audio is deliberately not synced.
         const { gain: transitionGain } = resolveAudioTransitionGain(track, clip, time);
-        this.audioMixEngine.syncVideoClipAudio(clip, element, (clip.gain ?? 1) * transitionGain, (clip.mutedAudio ?? false) || track.muted);
+        const audioGain = (clip.gain ?? 1) * transitionGain;
+        const audioMuted = (clip.mutedAudio ?? false) || track.muted;
+        if (clip.reverse) {
+          this.audioMixEngine.syncVideoClipAudio(clip, element, 0, true);
+          this.audioMixEngine.syncRetimedVideoClipAudio(clip, sourceTime, clipSpeedAtElapsed(clip, time - clip.timelineStart), audioGain, audioMuted, this.host.isPlaying());
+        } else {
+          this.audioMixEngine.syncRetimedVideoClipAudio(clip, sourceTime, 1, 0, true, false);
+          this.audioMixEngine.syncVideoClipAudio(clip, element, audioGain, audioMuted);
+        }
         // readyState < 2 means no frame is decoded yet; drawing would throw or paint garbage.
         if (element.readyState < 2) {
           this.drawIncomplete = true;
@@ -1971,6 +2027,7 @@ export class PlaybackEngine {
     const effects = override?.effects ?? resolveClipEffects(clip, elapsed);
     // Same live-drag override as `transform`/`effects` above — a CurveEditor drag previews here too.
     const colorGrading = override?.colorGrading ?? resolveClipColorGrading(clip, elapsed);
+    const mask = override?.mask ?? clip.mask;
 
     // A REAL partner is drawn FULLY OPAQUE to its own scratch canvas first, then blended by
     // `compositeTransitionFrame` against this clip (also drawn to its own scratch canvas) according to
@@ -2018,7 +2075,9 @@ export class PlaybackEngine {
           clip.id,
           clip.lutId,
           clip.pixelEffect,
-          elapsed
+          elapsed,
+          clip.flipHorizontal,
+          mask
         );
         compositeTransitionFrame(
           context,
@@ -2055,7 +2114,9 @@ export class PlaybackEngine {
             clip.id,
             clip.lutId,
             clip.pixelEffect,
-            elapsed
+            elapsed,
+            clip.flipHorizontal,
+            mask
           );
         },
         { windowElapsed: activeTransition.elapsed, windowDuration: activeTransition.duration, clipElapsed: elapsed, fadingOut: false }
@@ -2085,7 +2146,9 @@ export class PlaybackEngine {
             clip.id,
             clip.lutId,
             clip.pixelEffect,
-            elapsed
+            elapsed,
+            clip.flipHorizontal,
+            mask
           );
         },
         {
@@ -2098,7 +2161,7 @@ export class PlaybackEngine {
       return;
     }
 
-    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed);
+    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed, clip.flipHorizontal, mask);
   }
 
   /** Draws and plays the outgoing clip's source handle during a blend, holding its final frame at EOF.
@@ -2153,8 +2216,22 @@ export class PlaybackEngine {
         // the cut. It used to be PAUSED here instead (a frozen last frame, while export replayed the
         // tail in motion), with its embedded audio cut; now its audio fades out under the incoming
         // clip's fade-in, the way export's `acrossfade` mixes them.
-        this.syncMedia(partner.id, element, sourceTime, this.host.isPlaying());
-        this.audioMixEngine.syncVideoClipAudio(partner, element, (partner.gain ?? 1) * (1 - Math.min(1, elapsed / duration)), (partner.mutedAudio ?? false) || trackMuted);
+        this.syncMedia(
+          partner.id,
+          element,
+          sourceTime,
+          this.host.isPlaying(),
+          clipSpeedAtElapsed(partner, clipDuration(partner) - duration / 2 + elapsed),
+          partner.reverse === true
+        );
+        const partnerGain = (partner.gain ?? 1) * (1 - Math.min(1, elapsed / duration));
+        const partnerMuted = (partner.mutedAudio ?? false) || trackMuted;
+        if (partner.reverse) {
+          this.audioMixEngine.syncVideoClipAudio(partner, element, 0, true);
+          this.audioMixEngine.syncRetimedVideoClipAudio(partner, sourceTime, clipSpeedAtElapsed(partner, clipDuration(partner) - duration / 2 + elapsed), partnerGain, partnerMuted, this.host.isPlaying());
+        } else {
+          this.audioMixEngine.syncVideoClipAudio(partner, element, partnerGain, partnerMuted);
+        }
         if (element.readyState < 2) return false;
         sourceWidth = element.videoWidth;
         sourceHeight = element.videoHeight;
@@ -2172,7 +2249,7 @@ export class PlaybackEngine {
     const transform = resolveClipTransform(partner, partnerElapsed);
     const effects = resolveClipEffects(partner, partnerElapsed);
     const colorGrading = resolveClipColorGrading(partner, partnerElapsed);
-    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, partner.chromaKey, colorGrading, partner.id, partner.lutId, partner.pixelEffect, partnerElapsed);
+    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, partner.chromaKey, colorGrading, partner.id, partner.lutId, partner.pixelEffect, partnerElapsed, partner.flipHorizontal, partner.mask);
     return true;
   }
 
@@ -2204,7 +2281,9 @@ export class PlaybackEngine {
     clipId?: string,
     lutId?: string,
     pixelEffect?: Clip["pixelEffect"],
-    elapsedSeconds = 0
+    elapsedSeconds = 0,
+    flipHorizontal = false,
+    mask?: ClipMask
   ): void {
     const box = computeTransformedBox(sourceWidth, sourceHeight, frameWidth, frameHeight, transform);
     if (!box) return;
@@ -2229,7 +2308,7 @@ export class PlaybackEngine {
     // failure by. `applyManualEffects` is the pixel-math equivalent, run through this SAME readback
     // pipeline rather than a separate one.
     const needsManualEffects = !isIdentityEffects(effects) && !supportsCanvasFilter();
-    if (chromaKey || needsColorGrading || needsLut || pixelEffect || needsManualEffects) {
+    if (chromaKey || needsColorGrading || needsLut || pixelEffect || needsManualEffects || mask) {
       const scratch = this.chromaKeyCanvas(sourceWidth, sourceHeight);
       if (scratch) {
         scratch.clearRect(0, 0, sourceWidth, sourceHeight);
@@ -2253,6 +2332,7 @@ export class PlaybackEngine {
           if (pixelEffect.type === "glitch") applyGlitch(imageData, elapsedSeconds, speed);
           else applyWaterRipple(imageData, elapsedSeconds, speed);
         }
+        if (mask) applyClipMask(imageData, mask, transform.crop);
         // Last — `context.filter` (when supported) applies at DRAW time, after this whole readback
         // pipeline already finished and drew its result back via `putImageData`; running the manual
         // fallback last too keeps the two paths visually consistent with each other. Blur is EXCLUDED
@@ -2287,6 +2367,7 @@ export class PlaybackEngine {
     context.globalAlpha = effects.opacity * alphaMultiplier;
     context.translate(box.centerX, box.centerY);
     if (transform.rotationDeg !== 0) context.rotate((transform.rotationDeg * Math.PI) / 180);
+    if (flipHorizontal) context.scale(-1, 1);
     context.drawImage(
       source,
       box.cropX,
@@ -2470,12 +2551,21 @@ export class PlaybackEngine {
         if (activeTransition?.kind === "junction" && activeTransition.fromClip && activeTransition.toClip) {
           activeClipIds.add(activeTransition.fromClip.id);
           activeClipIds.add(activeTransition.toClip.id);
+          const blendClip = time < (activeTransition.cut ?? activeTransition.toClip.timelineStart)
+            ? activeTransition.fromClip
+            : activeTransition.toClip;
+          context.save();
+          context.globalCompositeOperation = clipBlendCompositeOperation(blendClip);
           this.drawVideoClip(project, context, frameWidth, frameHeight, track, activeTransition.toClip, time, activeTransition);
+          context.restore();
         } else {
           const clip = clipAtTime(track, time);
           if (!clip) continue;
           activeClipIds.add(clip.id);
+          context.save();
+          context.globalCompositeOperation = clipBlendCompositeOperation(clip);
           this.drawVideoClip(project, context, frameWidth, frameHeight, track, clip, time, activeTransition);
+          context.restore();
         }
       } else if (track.kind === "text") {
         this.drawSingleTextTrack(project, context, frameWidth, frameHeight, track, time);

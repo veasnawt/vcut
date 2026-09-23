@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   cancelCaptions,
   captionsAvailable,
@@ -27,6 +26,7 @@ import { defaultFontIdFor, FontPickerGrid } from "./FontPickerGrid.tsx";
 import { PickerTabs } from "./PickerTabs.tsx";
 import { TextAnimationPickerGrid } from "./TextAnimationPickerGrid.tsx";
 import { TextStylePresetGrid } from "./TextStylePresetGrid.tsx";
+import { ToolPanelFrame } from "./ToolPanelFrame.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 import { useVisualViewportHeight } from "./useVisualViewportHeight.ts";
 
@@ -290,14 +290,12 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
 
   return (
     <>
-      {createPortal(
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-          onClick={() => phase !== "running" && onClose()}
-          role="dialog"
-          aria-modal="true"
-          aria-label={t("Auto Captions")}
-        >
+      <ToolPanelFrame
+        ariaLabel={t("Auto Captions")}
+        onClose={onClose}
+        canClose={phase !== "running"}
+        maxHeight={Math.max(320, viewportHeight)}
+      >
       {/* `flex flex-col` — title fixed at top, footer buttons fixed at bottom (both `shrink-0`),
           Language/Style/Animation in their own `overflow-y-auto` middle section: on a short phone that
           combination can run taller than the viewport, and without a scrollable region ANYWHERE the
@@ -308,19 +306,26 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
           dynamic browser chrome being visible), which is what let content below the fold end up
           genuinely unreachable rather than merely needing a scroll. Same fix as
           `TextToClipsDialog.tsx`'s identical structure. */}
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ maxHeight: Math.max(240, viewportHeight - 32) }}
-        className="flex w-full max-w-sm flex-col rounded-xl border border-white/10 bg-[#12151c] p-5 shadow-2xl"
-      >
-        <h2 className="flex shrink-0 items-center gap-1.5 text-sm font-semibold text-white">
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
+          <h2 className="flex items-center gap-1.5 text-sm font-semibold text-white">
           {t("Auto Captions")}
           {/* Same hosted-only, credit-metered "PRO" badge as the toolbar button that opens this
               dialog and Inspector's own equivalent section — see `VCutApp.tsx`'s `ToolbarButton`
               for the full reasoning. */}
           {hosted && <span className="rounded-sm bg-amber-400 px-1 text-[9px] font-bold leading-tight tracking-wide text-black">PRO</span>}
-        </h2>
-        <p className="mt-2 shrink-0 text-xs leading-relaxed text-white/60">
+          </h2>
+          <button
+            onClick={onClose}
+            disabled={phase === "running"}
+            aria-label={t("Close")}
+            className="rounded p-1 text-white/40 transition hover:bg-white/10 hover:text-white disabled:opacity-30"
+          >
+            ×
+          </button>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col px-4 py-3">
+          <p className="shrink-0 text-xs leading-relaxed text-white/60">
           {!hasClipSelection
             ? t("Transcribes the whole sequence's audio and adds the result as editable caption clips on a new track.")
             : clipIds!.length === 1
@@ -476,7 +481,7 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
           {error && <p className="mt-2 text-[12px] text-amber-200/80">{error}</p>}
         </div>
 
-        <div className="mt-5 flex shrink-0 items-center justify-end gap-2">
+        <div className="-mx-4 -mb-3 mt-3 flex shrink-0 items-center justify-end gap-2 border-t border-white/10 px-4 py-3">
           {/* mr-auto pushes this to the LEFT edge of the row, away from the two action buttons — a
               cost estimate reads as context for the decision, not a third button competing for the
               same visual slot. */}
@@ -500,10 +505,9 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
             </button>
           )}
         </div>
+        </div>
       </div>
-        </div>,
-        document.body
-      )}
+      </ToolPanelFrame>
       {confirmingClear && (
         <ConfirmDialog
           title={t("Clear existing captions?")}

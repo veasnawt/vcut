@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { Microphone } from "@veasnawt/vicons";
 import { useTranslation } from "../i18n/useTranslation.ts";
+import { ToolPanelFrame } from "./ToolPanelFrame.tsx";
 import { useVisualViewportHeight } from "./useVisualViewportHeight.ts";
 import { useVoiceRecording, pad2 } from "./useVoiceRecording.ts";
 import type { RecordingEffectsOptions } from "../audio/recordingEffects.ts";
@@ -244,20 +244,14 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
   // silently abandon (or misleadingly suggest it affects) a take that hasn't been confirmed yet.
   const isBusy = phase !== "idle" || reviewing;
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-      onClick={() => !isBusy && onClose()}
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("Voice Record")}
+  return (
+    <ToolPanelFrame
+      ariaLabel={t("Voice Record")}
+      onClose={onClose}
+      canClose={!isBusy}
+      maxHeight={Math.max(320, viewportHeight)}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ maxHeight: Math.max(320, viewportHeight - 32) }}
-        className="flex w-full max-w-sm flex-col rounded-xl border border-white/10 bg-[#12151c] p-5 shadow-2xl"
-      >
-        <div className="flex shrink-0 items-center justify-between">
+        <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3">
           <h2 className="text-sm font-semibold text-white">{t("Voice Record")}</h2>
           <button
             onClick={onClose}
@@ -270,7 +264,7 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <div className="mt-4 min-h-0 flex-1 overflow-y-auto scrollbar-none">
+        <div className="min-h-0 flex-1 overflow-y-auto scrollbar-none px-4 py-3">
           {/* Teleprompter — script entry when idle, an auto-scrolling read-only view once recording. */}
           <div className="flex items-center justify-between">
             <button
@@ -448,8 +442,6 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
             </>
           )}
         </div>
-      </div>
-    </div>,
-    document.body
+    </ToolPanelFrame>
   );
 }

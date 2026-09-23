@@ -4,6 +4,7 @@ import type {
   ChromaKeySettings,
   Clip,
   ClipEffects,
+  ClipMask,
   ClipTransform,
   ColorCurve,
   ColorGrading,
@@ -25,6 +26,8 @@ import { parseAssetAnimation, parseStickerSource } from "./stickers.ts";
 import { TRANSITION_TYPE_OPTIONS } from "../timeline/transitions.ts";
 import { TEXT_ANIMATION_TYPE_OPTIONS } from "../timeline/textAnimation.ts";
 import { PIXEL_EFFECT_TYPE_OPTIONS } from "../timeline/pixelEffects.ts";
+import { clampClipSpeed, normalizedSpeedCurve } from "../timeline/clipTiming.ts";
+import { CLIP_BLEND_MODES } from "./types.ts";
 
 /** Thrown when a project file can't be trusted. Callers surface the message to the user rather than
  *  loading a half-understood project and letting the damage show up later as a corrupted edit. */
@@ -584,6 +587,33 @@ function parseClipPixelEffect(raw: unknown): Clip["pixelEffect"] {
   };
 }
 
+function parseClipMask(raw: unknown): ClipMask | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (r.shape !== "rectangle" && r.shape !== "ellipse") return undefined;
+  const finite = (value: unknown, fallback: number) => typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return {
+    shape: r.shape,
+    centerX: Math.min(1, Math.max(0, finite(r.centerX, 0.5))),
+    centerY: Math.min(1, Math.max(0, finite(r.centerY, 0.5))),
+    width: Math.min(1, Math.max(0.01, finite(r.width, 0.75))),
+    height: Math.min(1, Math.max(0.01, finite(r.height, 0.75))),
+    feather: Math.min(0.5, Math.max(0, finite(r.feather, 0))),
+    invert: r.invert === true,
+  };
+}
+
+function parseSpeedCurve(raw: unknown): Clip["speedCurve"] {
+  if (!Array.isArray(raw)) return undefined;
+  const points = raw.flatMap((value) => {
+    if (!value || typeof value !== "object") return [];
+    const r = value as Record<string, unknown>;
+    if (typeof r.position !== "number" || typeof r.speed !== "number") return [];
+    return [{ position: r.position, speed: r.speed }];
+  });
+  return normalizedSpeedCurve(points) ?? undefined;
+}
+
 function parseClip(raw: Record<string, unknown>): Clip {
   const sourceIn = num(raw.sourceIn, "clip in-point");
   const sourceOut = num(raw.sourceOut, "clip out-point");
@@ -605,12 +635,24 @@ function parseClip(raw: Record<string, unknown>): Clip {
   const colorGradingKeyframes = parseColorGradingKeyframes(raw.colorGradingKeyframes);
   const textStyleKeyframes = parseTextStyleKeyframes(raw.textStyleKeyframes);
   const textCropKeyframes = parseTextCropKeyframes(raw.textCropKeyframes);
+  const mask = parseClipMask(raw.mask);
+  const speedCurve = parseSpeedCurve(raw.speedCurve);
   return {
     id: str(raw.id, "clip id"),
     assetId: str(raw.assetId, "clip asset reference"),
     sourceIn,
     sourceOut,
     timelineStart: Math.max(0, num(raw.timelineStart, "clip position")),
+    ...(raw.flipHorizontal === true ? { flipHorizontal: true } : null),
+    ...(raw.reverse === true ? { reverse: true } : null),
+    ...(typeof raw.speed === "number" && Number.isFinite(raw.speed) && Math.abs(clampClipSpeed(raw.speed) - 1) > 1e-6
+      ? { speed: clampClipSpeed(raw.speed) }
+      : null),
+    ...(speedCurve ? { speedCurve } : null),
+    ...(mask ? { mask } : null),
+    ...(typeof raw.blendMode === "string" && raw.blendMode !== "normal" && CLIP_BLEND_MODES.includes(raw.blendMode as any)
+      ? { blendMode: raw.blendMode as Clip["blendMode"] }
+      : null),
     ...(transform ? { transform } : null),
     ...(effects ? { effects } : null),
     ...(colorGrading ? { colorGrading } : null),

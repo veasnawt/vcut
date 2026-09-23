@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   Close,
   Cosmos,
@@ -19,6 +18,7 @@ import {
 import { filterMusicCatalog, MUSIC_CATEGORIES, type MusicCategory, type MusicTrack } from "../project/music.ts";
 import * as api from "../api/client.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
+import { ToolPanelFrame } from "./ToolPanelFrame.tsx";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
 
@@ -192,16 +192,8 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
     }
   }
 
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("Music Library")}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
+  return (
+    <ToolPanelFrame ariaLabel={t("Music Library")} onClose={onClose} size="wide">
       <audio ref={audioRef} preload="none" />
       <style>{`
         @keyframes vcutWave {
@@ -211,7 +203,7 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
         }
       `}</style>
 
-      <div className="flex h-full max-h-[640px] w-full max-w-2xl flex-col rounded-2xl border border-white/10 bg-[#12151c] shadow-2xl overflow-hidden">
+      <>
         {/* Header */}
         <div className="flex items-center justify-between border-b border-white/10 px-5 py-3.5">
           <div className="flex items-center gap-2.5">
@@ -402,8 +394,7 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
             })
           )}
         </div>
-      </div>
-    </div>,
-    document.body
+      </>
+    </ToolPanelFrame>
   );
 }

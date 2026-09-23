@@ -1,6 +1,7 @@
 import { clipDuration } from "../project/createProject.ts";
 import type { Clip, Project } from "../project/types.ts";
 import { snapToFrame } from "../timeline/time.ts";
+import { clipProgressAtElapsed, clipSourceTimeAtElapsed, sliceSpeedCurve } from "../timeline/clipTiming.ts";
 
 /** Rewrites a project's clips to keep only what falls within `[start, end)`, shifting everything back
  *  so `start` becomes the new timeline zero — this is the ENTIRE mechanism behind exporting a
@@ -39,18 +40,28 @@ export function trimProjectToRange(project: Project, start: number, end: number)
       // Entirely before or after the range — drop it.
       if (clipEnd <= rangeStart || clipStart >= rangeEnd) continue;
 
-      const next: Clip = { ...clip };
+      const next: Clip = structuredClone(clip);
       // Overlaps the START boundary — trim the head, consuming that much more of the source.
       if (clipStart < rangeStart) {
-        next.sourceIn = clip.sourceIn + (rangeStart - clipStart);
-        next.timelineStart = rangeStart;
+        const elapsed = rangeStart - clipStart;
+        const sourceTime = clipSourceTimeAtElapsed(clip, elapsed);
+        if (clip.reverse) next.sourceOut = sourceTime;
+        else next.sourceIn = sourceTime;
       }
       // Overlaps the END boundary — trim the tail.
       if (clipEnd > rangeEnd) {
-        next.sourceOut = clip.sourceOut - (clipEnd - rangeEnd);
+        const elapsed = rangeEnd - clipStart;
+        const sourceTime = clipSourceTimeAtElapsed(clip, elapsed);
+        if (clip.reverse) next.sourceIn = sourceTime;
+        else next.sourceOut = sourceTime;
       }
       // Shift so the range's own start becomes the new timeline zero.
-      next.timelineStart -= rangeStart;
+      const fromElapsed = Math.max(0, rangeStart - clipStart);
+      const toElapsed = Math.min(clipDuration(clip), rangeEnd - clipStart);
+      const curve = sliceSpeedCurve(clip.speedCurve, clipProgressAtElapsed(clip, fromElapsed), clipProgressAtElapsed(clip, toElapsed));
+      if (curve) next.speedCurve = curve;
+      else delete next.speedCurve;
+      next.timelineStart = Math.max(clipStart, rangeStart) - rangeStart;
       kept.push(next);
     }
     track.clips = kept;

@@ -7,7 +7,14 @@ import { useTranslation } from "../i18n/useTranslation.ts";
 import { clipDuration, findClip } from "../project/createProject.ts";
 import type { Clip, Project, Track } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
-import { snapPoints, snapTime } from "../timeline/queries.ts";
+import {
+  calculateTrimPreview,
+  clampFrameDuration,
+  resolveMoveDrag,
+  resolveTimelineSnap,
+  timelineSpanPixels,
+} from "../timeline/interaction.ts";
+import { snapPoints } from "../timeline/queries.ts";
 import { formatDuration } from "../timeline/time.ts";
 import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCandidate } from "../timeline/transitions.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
@@ -111,6 +118,11 @@ interface Props {
    *  reach it. Omitted entirely for trim-handle drags, which never gate behind a long press and so
    *  never reach the code path that calls this. */
   onPanScroll: (deltaX: number) => void;
+  /** Maps the pointer through the Timeline's current scroll and mobile leading pad. Keeping this
+   *  conversion in one owner prevents clip drags from drifting when the viewport scrolls mid-gesture. */
+  timeAtClientX: (clientX: number) => number;
+  /** Shows the exact magnetic edge across every track while a move or trim is snapped. */
+  onSnapGuideChange: (time: number | null) => void;
 }
 
 /** Memoized below as `TimelineClip` — with every prop here either a primitive, a `useCallback`/
@@ -134,6 +146,8 @@ function TimelineClipComponent({
   onTargetTrackChange,
   isMobile,
   onPanScroll,
+  timeAtClientX,
+  onSnapGuideChange,
 }: Props) {
   const t = useTranslation();
   const run = useEditorStore((s) => s.run);
@@ -178,7 +192,7 @@ function TimelineClipComponent({
      *  progress" — drives a distinct highlight color (see the root element's own className) so hitting
      *  a snap point is something you can SEE, not just trust happened. Requested directly: dragging
      *  felt "imprecise" with only the plain dim-while-dragging feedback this had before. */
-    snapped: boolean;
+    snapTime: number | null;
   } | null>(null);
 
   // True the instant a touch long-press ARMS a move-drag (see `gateBehindLongPress` in `beginDrag`),
@@ -223,10 +237,11 @@ function TimelineClipComponent({
   // `setPreview(current => …)` updater is worse: that updater runs during render, and dispatching a
   // command from there triggers "Cannot update a component while rendering a different component".
   // A ref is the correct place for a value that mouse handlers need to read imperatively.
-  const previewRef = useRef<{ start: number; duration: number; sourceIn: number; sourceOut: number; snapped: boolean } | null>(null);
+  const previewRef = useRef<{ start: number; duration: number; sourceIn: number; sourceOut: number; snapTime: number | null } | null>(null);
   const dragRef = useRef<{
     mode: DragMode;
     startX: number;
+    startTime: number;
     origin: Clip;
     moved: boolean;
     /** True once a plain (not-yet-long-pressed) touch-drag has been reclassified as a timeline PAN
@@ -267,9 +282,10 @@ function TimelineClipComponent({
    *  at all instead of just listening for `dblclick`. */
   const lastQuickTapAtRef = useRef(0);
 
-  function updatePreview(next: { start: number; duration: number; sourceIn: number; sourceOut: number; snapped: boolean } | null) {
+  function updatePreview(next: { start: number; duration: number; sourceIn: number; sourceOut: number; snapTime: number | null } | null) {
     previewRef.current = next;
     setPreview(next);
+    onSnapGuideChange(next?.snapTime ?? null);
   }
 
   const duration = preview?.duration ?? clipDuration(clip);
@@ -367,7 +383,7 @@ function TimelineClipComponent({
     }
 
     const start = clientPoint(event);
-    dragRef.current = { mode, startX: start.x, origin: { ...clip }, moved: false };
+    dragRef.current = { mode, startX: start.x, startTime: timeAtClientX(start.x), origin: { ...clip }, moved: false };
     targetTrackRef.current = track.id;
     // Frozen once at drag start, reused by both `onMove` (to broadcast `groupMoveDelta` for the other
     // group members' own live preview) and `onUp` (to build the final `BatchCommand`) — same "is this
@@ -375,6 +391,12 @@ function TimelineClipComponent({
     // before this drag started falls back to a solo `[clip.id]`, matching `applyTapSelection`'s own
     // "starting a drag on an unselected clip replaces the selection" behavior above.
     const groupIds = mode === "move" && selectedClipIds.includes(clip.id) ? selectedClipIds : [clip.id];
+    const movingClips = groupIds.flatMap((id) => {
+      const found = findClip(project, id);
+      return found && (!found.track.locked || id === clip.id) ? [found.clip] : [];
+    });
+    const selectionStart = Math.min(...movingClips.map((item) => item.timelineStart));
+    const selectionEnd = Math.max(...movingClips.map((item) => item.timelineStart + clipDuration(item)));
     // Read imperatively rather than via a reactive subscription — this only needs the CURRENT
     // playhead at the instant a drag starts, not a value that re-renders every clip on the timeline
     // 30-60 times a second during playback (which is exactly what a `useEditorStore((s) => s.playhead)`
@@ -401,18 +423,9 @@ function TimelineClipComponent({
       excludeClipIds: groupIds,
       playhead: isTouch ? undefined : useEditorStore.getState().playhead,
     });
-    // Mirrors `operations.ts`'s own `trimClip` EXACTLY — real media can't trim past however much
-    // source footage actually exists (in either direction: can't show frames before 0:00 on the in
-    // edge, can't extend past the file's own end on the out edge); images/text/color have no such
-    // limit on EITHER edge — there's no real file position their `sourceIn`/`sourceOut` indexes into,
-    // just a bookkeeping window whose WIDTH is what matters, so it's free to slide arbitrarily
-    // (including negative) without breaking anything downstream (confirmed: export never uses
-    // `sourceIn` as a real ffmpeg seek offset for any of these three kinds). Needed here (not just in
-    // the command) so both trim previews can clamp against it too — see each branch's own comment
-    // below for the two different real, reported bugs this fixes (one per direction).
-    const hasFixedSourceLength = Boolean(asset) && asset!.kind !== "image" && asset!.kind !== "text" && asset!.kind !== "color";
-    const sourceLimit = hasFixedSourceLength ? asset!.duration : Number.POSITIVE_INFINITY;
-
+    const editorSnapshot = useEditorStore.getState();
+    if (editorSnapshot.exportRangeStart !== null) points.push(editorSnapshot.exportRangeStart);
+    if (editorSnapshot.exportRangeEnd !== null) points.push(editorSnapshot.exportRangeEnd);
     function onMove(moveEvent: MouseEvent | TouchEvent) {
       const drag = dragRef.current;
       if (!drag) return;
@@ -460,89 +473,92 @@ function TimelineClipComponent({
       }
       drag.moved = true;
 
-      const deltaSeconds = dx / pixelsPerSecond;
-      const snapWindow = (isTouch ? TOUCH_SNAP_PIXELS : SNAP_PIXELS) / pixelsPerSecond;
+      const deltaSeconds = timeAtClientX(point.x) - drag.startTime;
+      const snapPixels = isTouch ? TOUCH_SNAP_PIXELS : SNAP_PIXELS;
       const origin = drag.origin;
-      const originDuration = origin.sourceOut - origin.sourceIn;
+      const originDuration = clipDuration(origin);
 
       if (drag.mode === "move") {
         // Vertical position picks the destination track. Only trimming is locked to one track — an
         // edge being dragged sideways has no meaningful "other track" to land on.
-        const overTrackId = resolveTrackAt(point.y) ?? track.id;
+        const candidateTrack = project.sequence.tracks.find((item) => item.id === resolveTrackAt(point.y));
+        const overTrackId = candidateTrack && candidateTrack.kind === track.kind && !candidateTrack.locked
+          ? candidateTrack.id
+          : track.id;
         if (overTrackId !== targetTrackRef.current) {
           targetTrackRef.current = overTrackId;
           onTargetTrackChange(overTrackId === track.id ? null : overTrackId);
         }
 
-        const rawStart = Math.max(0, origin.timelineStart + deltaSeconds);
-        // Both edges are candidates for snapping; whichever lands closer wins, which is what makes
-        // butting one clip up against another feel reliable.
-        const snappedStart = snapTime(rawStart, points, snapWindow);
-        const snappedEnd = snapTime(rawStart + originDuration, points, snapWindow) - originDuration;
-        const best =
-          Math.abs(snappedStart - rawStart) <= Math.abs(snappedEnd - rawStart) ? snappedStart : snappedEnd;
+        const resolved = resolveMoveDrag({
+          rawDelta: deltaSeconds,
+          selectionStart,
+          selectionEnd,
+          points,
+          pixelsPerSecond,
+          fps: project.sequence.fps,
+          pixelRadius: snapPixels,
+          maximumFrames: isTouch ? 12 : 8,
+        });
         // A move doesn't touch sourceIn/sourceOut at all — the whole clip just slides, so the
-        // waveform's own window into the source stays exactly what it already was. `best !== rawStart`
-        // is a cheap, exact way to tell "did this land on a snap point" apart from "just where the
-        // finger happens to be" — see `preview.snapped`'s own comment on why that distinction matters.
+        // waveform's own window into the source stays exactly what it already was. The resolver also
+        // returns the magnetic boundary itself for the cross-track guide.
         // Broadcast to every OTHER selected clip's own component instance (see `groupMoveDelta`'s own
         // doc comment) so they visibly glide along with this one during the drag, instead of sitting
         // frozen until the final commit snaps them into place all at once — this clip's OWN preview
         // (just below) already moves it directly, so this is purely for the passengers.
-        if (groupIds.length > 1) setGroupMoveDelta(Math.max(0, best) - origin.timelineStart);
+        if (groupIds.length > 1) setGroupMoveDelta(resolved.delta);
         updatePreview({
-          start: Math.max(0, best),
+          start: origin.timelineStart + resolved.delta,
           duration: originDuration,
           sourceIn: origin.sourceIn,
           sourceOut: origin.sourceOut,
-          snapped: best !== rawStart,
+          snapTime: resolved.target,
         });
       } else if (drag.mode === "trim-in") {
         const unsnappedEdge = origin.timelineStart + deltaSeconds;
-        const snappedEdge = snapTime(unsnappedEdge, points, snapWindow);
-        // Mirrors trimClip's own authoritative clamps EXACTLY now (timeline can't go negative;
-        // real-media sourceIn can't go negative either, but image/text/color have no such floor —
-        // see `hasFixedSourceLength`'s own comment; and can't trim past one frame before the
-        // out-point). The sourceIn floor used to apply unconditionally (deferred entirely to the
-        // command, which back then made the SAME unconditional mistake) — two real, reported bugs
-        // from that one gap: a real-media snap point past the source's own start showed the amber
-        // "snapped" highlight and then landed somewhere else on release, while an image/text/color
-        // clip's in-edge couldn't extend past its own creation point AT ALL, snap or no snap, since
-        // its `sourceIn` starts at exactly 0 and the floor treated 0 as a hard wall for every kind.
-        const lowerBound = Math.max(0, hasFixedSourceLength ? origin.timelineStart - origin.sourceIn : Number.NEGATIVE_INFINITY);
-        const upperBound = origin.timelineStart + originDuration - 1 / project.sequence.fps;
-        const edge = Math.min(Math.max(snappedEdge, lowerBound), upperBound);
-        // Mirrors trimClip's own in-edge math: sourceIn shifts by exactly how far timelineStart moved.
-        const newSourceIn = origin.sourceIn + (edge - origin.timelineStart);
+        const resolved = resolveTimelineSnap({
+          rawTime: unsnappedEdge,
+          points,
+          pixelsPerSecond,
+          fps: project.sequence.fps,
+          pixelRadius: snapPixels,
+          maximumFrames: isTouch ? 12 : 8,
+        });
+        const trimmed = calculateTrimPreview({
+          clip: origin,
+          asset,
+          edge: "in",
+          targetTime: resolved.time,
+          fps: project.sequence.fps,
+        });
+        const landedOnTarget = resolved.target !== null && Math.abs(trimmed.start - resolved.target) < 1e-7;
         updatePreview({
-          start: edge,
-          duration: origin.timelineStart + originDuration - edge,
-          sourceIn: newSourceIn,
-          sourceOut: origin.sourceOut,
-          // Only "snapped" if a clamp above didn't pull the edge away from the snap point it landed
-          // on — showing the highlight for a position that's about to be overridden on release is
-          // exactly the bug this whole fix addresses.
-          snapped: edge === snappedEdge && snappedEdge !== unsnappedEdge,
+          ...trimmed,
+          snapTime: landedOnTarget ? resolved.target : null,
         });
       } else {
         const unsnappedEdge = origin.timelineStart + originDuration + deltaSeconds;
-        const snappedEdge = snapTime(unsnappedEdge, points, snapWindow);
-        // `upperBound` was missing entirely before this fix — trimClip's own command has always
-        // capped a trim-out at the source media's real remaining footage (`sourceLimit`), but this
-        // preview didn't, so snapping this clip's out-edge to a LATER clip's start (further away than
-        // the underlying file actually has left) showed the amber highlight the whole drag and then
-        // landed short of it on release the instant the command's own clamp kicked in — the single
-        // most likely real-world cause of "resize snap doesn't stick," confirmed a real, reported bug.
-        const lowerBound = origin.timelineStart + 1 / project.sequence.fps;
-        const upperBound = origin.timelineStart + (sourceLimit - origin.sourceIn);
-        const edge = Math.min(Math.max(snappedEdge, lowerBound), upperBound);
-        const newDuration = edge - origin.timelineStart;
+        const resolved = resolveTimelineSnap({
+          rawTime: unsnappedEdge,
+          points,
+          pixelsPerSecond,
+          fps: project.sequence.fps,
+          pixelRadius: snapPixels,
+          maximumFrames: isTouch ? 12 : 8,
+        });
+        const trimmed = calculateTrimPreview({
+          clip: origin,
+          asset,
+          edge: "out",
+          targetTime: resolved.time,
+          fps: project.sequence.fps,
+        });
+        const landedOnTarget =
+          resolved.target !== null && Math.abs(trimmed.start + trimmed.duration - resolved.target) < 1e-7;
         updatePreview({
-          start: origin.timelineStart,
-          duration: newDuration,
-          sourceIn: origin.sourceIn,
-          sourceOut: origin.sourceIn + newDuration,
-          snapped: edge === snappedEdge && snappedEdge !== unsnappedEdge,
+          ...trimmed,
+          snapTime: landedOnTarget ? resolved.target : null,
         });
       }
     }
@@ -605,7 +621,7 @@ function TimelineClipComponent({
         // than silently dropping the clip somewhere it can never render.
         if (drag.mode === "move") {
           const deltaSeconds = final.start - drag.origin.timelineStart;
-          if (groupIds.length > 1 && deltaSeconds !== 0) {
+          if (groupIds.length > 1 && Math.abs(deltaSeconds) > 1e-9) {
             // Every OTHER selected clip moves by the SAME time delta and stays on its OWN track —
             // only the clip actually under the pointer can change tracks; there's no single
             // meaningful "destination track" for clips that started on different ones. A clip on a
@@ -638,11 +654,14 @@ function TimelineClipComponent({
             targets.sort((a, b) => (deltaSeconds > 0 ? b.targetStart - a.targetStart : a.targetStart - b.targetStart));
             const moves = targets.map((target) => new MoveClipCommand(target.id, target.trackId, target.targetStart));
             run(new BatchCommand("Move Clips", moves));
-          } else {
+          } else if (Math.abs(deltaSeconds) > 1e-9 || targetTrackId !== track.id) {
             run(new MoveClipCommand(clip.id, targetTrackId, final.start));
           }
-        } else if (drag.mode === "trim-in") run(new TrimClipCommand(clip.id, "in", final.start));
-        else run(new TrimClipCommand(clip.id, "out", final.start + final.duration));
+        } else if (drag.mode === "trim-in") {
+          if (Math.abs(final.start - drag.origin.timelineStart) > 1e-9) run(new TrimClipCommand(clip.id, "in", final.start));
+        } else if (Math.abs(final.start + final.duration - (drag.origin.timelineStart + clipDuration(drag.origin))) > 1e-9) {
+          run(new TrimClipCommand(clip.id, "out", final.start + final.duration));
+        }
       }
     }
 
@@ -680,8 +699,8 @@ function TimelineClipComponent({
     preventDefaultIfMouse(event);
 
     const startPoint = clientPoint(event);
+    const startTimelineTime = timeAtClientX(startPoint.x);
     const startDuration = existing.duration;
-    const minDuration = 1 / project.sequence.fps;
     let moved = false;
 
     function onMove(moveEvent: MouseEvent | TouchEvent) {
@@ -691,8 +710,9 @@ function TimelineClipComponent({
       if (!moved && Math.abs(dx) < threshold) return;
       moved = true;
 
-      const deltaSeconds = (side === "in" ? dx : -dx) / pixelsPerSecond;
-      const next = Math.min(Math.max(minDuration, startDuration + deltaSeconds), duration);
+      const pointerDelta = timeAtClientX(point.x) - startTimelineTime;
+      const deltaSeconds = side === "in" ? pointerDelta : -pointerDelta;
+      const next = clampFrameDuration(startDuration + deltaSeconds, duration, project.sequence.fps);
       transitionDragRef.current = { side, duration: next };
       setTransitionDrag({ side, duration: next });
     }
@@ -772,7 +792,7 @@ function TimelineClipComponent({
       }}
       style={{
         left: start * pixelsPerSecond,
-        width: Math.max(2, duration * pixelsPerSecond),
+        width: timelineSpanPixels(duration, pixelsPerSecond, 2),
       }}
       // `touch-none`, UNCONDITIONALLY, same as the trim handles below and the ruler's own touch-none
       // in Timeline.tsx — deliberately NOT left at the permissive default and deferred to the browser's
@@ -810,7 +830,7 @@ function TimelineClipComponent({
       className={`group absolute top-1 bottom-1 touch-none select-none [-webkit-touch-callout:none] overflow-hidden rounded-md border text-left transition-[color,background-color,border-color,transform,box-shadow,opacity] duration-150 ${
         track.locked ? "cursor-default" : "cursor-grab active:cursor-grabbing"
       } ${
-        preview?.snapped
+        preview?.snapTime !== null && preview?.snapTime !== undefined
           // Distinct, unmissable highlight the instant a drag actually snaps to an edge/the
           // playhead — overrides the normal selected/kind coloring for as long as it's engaged, so
           // hitting a snap point is something you SEE happen, not just trust did. Requested directly:
@@ -911,7 +931,7 @@ function TimelineClipComponent({
             // live: without this, a wide (long-duration) wedge silently grew as TALL as it was wide,
             // pushing its own bottom point far past the clip's actual bottom edge — exactly the
             // "bottom corner isn't pinned" bug this fixes.
-            style={{ width: Math.max(1, transitionInDuration * pixelsPerSecond), height: "100%" }}
+            style={{ width: timelineSpanPixels(transitionInDuration, pixelsPerSecond, 1), height: "100%" }}
             viewBox="0 0 100 100"
             preserveAspectRatio="none"
           >
@@ -950,7 +970,7 @@ function TimelineClipComponent({
             className="pointer-events-none absolute right-0 top-0 z-[5]"
             // See `transitionIn`'s own SVG above for why `height: "100%"` (not just `inset-y-0`) is
             // required to keep the bottom point pinned to the clip's actual bottom edge.
-            style={{ width: Math.max(1, transitionOutDuration * pixelsPerSecond), height: "100%" }}
+            style={{ width: timelineSpanPixels(transitionOutDuration, pixelsPerSecond, 1), height: "100%" }}
             viewBox="0 0 100 100"
             preserveAspectRatio="none"
           >

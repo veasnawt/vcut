@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { Delete, Pause, Play, Search, Upload } from "@veasnawt/vicons";
 import { customSfxUrl, sfxAssetUrl } from "../api/client.ts";
 import { AddTrackCommand } from "../commands/index.ts";
@@ -11,6 +10,7 @@ import type { CustomSfxAsset, Track } from "../project/types.ts";
 import { defaultClipDuration } from "../timeline/operations.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
+import { ToolPanelFrame } from "./ToolPanelFrame.tsx";
 
 /** Category display order — a fixed sequence rather than whatever order `Object.groupBy`/first-seen
  *  happens to produce, so the panel's sections read top-to-bottom the same way every time regardless
@@ -205,18 +205,8 @@ export function SfxPanel({ onClose }: { onClose: () => void }) {
   })).filter((g) => g.items.length > 0);
   const hasNoResults = normalizedQuery !== "" && filteredCustomSfx.length === 0 && grouped.length === 0;
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-      aria-label={t("Sound Effects")}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="flex max-h-[80vh] w-full max-w-md flex-col rounded-xl border border-white/10 bg-[#12151c] shadow-2xl"
-      >
+  return (
+    <ToolPanelFrame ariaLabel={t("Sound Effects")} onClose={onClose}>
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-5 py-3">
           <h2 className="text-sm font-semibold text-white">{t("Sound Effects")}</h2>
           <div className="flex items-center gap-1">
@@ -361,8 +351,6 @@ export function SfxPanel({ onClose }: { onClose: () => void }) {
             await importSfx(file);
           }}
         />
-      </div>
-    </div>,
-    document.body
+    </ToolPanelFrame>
   );
 }

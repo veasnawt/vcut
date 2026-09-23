@@ -10,7 +10,14 @@ import { DEFAULT_TEXT_STYLE, type Track, type TrackKind } from "../project/types
 import { trackKindForAsset } from "../timeline/operations.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
-import { formatTimecode } from "../timeline/time.ts";
+import {
+  clampTimelineZoom,
+  DEFAULT_TIMELINE_PIXELS_PER_SECOND,
+  timelineScrollLeftForAnchor,
+  timelineTimeAtClientX,
+  visibleRulerTicks,
+} from "../timeline/interaction.ts";
+import { formatTimecode, snapToFrame } from "../timeline/time.ts";
 import { findTransitionCandidate } from "../timeline/transitions.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 import { TimelineClip } from "./TimelineClip.tsx";
@@ -49,12 +56,6 @@ const MARQUEE_DRAG_THRESHOLD = 3;
 
 /** Chooses a ruler interval that keeps labels readable at any zoom — roughly one every 80px, snapped
  *  to a human-friendly step so labels land on whole seconds and minutes rather than arbitrary values. */
-function tickInterval(pixelsPerSecond: number): number {
-  const targetSeconds = 80 / pixelsPerSecond;
-  const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
-  return steps.find((step) => step >= targetSeconds) ?? 900;
-}
-
 /** Same kind→accent-color convention `TrackHeader.tsx`'s own `KIND_ICON` uses, so a track's row and
  *  its "add something" affordance read as the same track at a glance. */
 const ADD_BUTTON_CLASS: Record<Track["kind"], string> = {
@@ -151,8 +152,7 @@ export function Timeline() {
   const { hosted, credits } = useHostedCreditsGate();
   const showOutroMarker = hosted && credits !== null && credits.plan !== "pro";
   const select = useEditorStore((s) => s.select);
-  const zoomBy = useEditorStore((s) => s.zoomBy);
-  const resetZoom = useEditorStore((s) => s.resetZoom);
+  const setPixelsPerSecond = useEditorStore((s) => s.setPixelsPerSecond);
   const run = useEditorStore((s) => s.run);
   const assetDrag = useEditorStore((s) => s.assetDrag);
   const setResolveTimelineDropTarget = useEditorStore((s) => s.setResolveTimelineDropTarget);
@@ -210,6 +210,7 @@ export function Timeline() {
    *  fresh on every render from `timeFromEvent`, which already accounts for the container's current
    *  scroll position, so this never needs to be kept in sync with scrolling by hand. */
   const [hoverX, setHoverX] = useState<number | null>(null);
+  const [snapGuideTime, setSnapGuideTime] = useState<number | null>(null);
   /** Mirrors `scrollRef.current.scrollLeft`/`.clientWidth` into React state — the persistent
    *  horizontal scrollbar below the tracks (see `HScrollbar`) needs both to size and position its
    *  thumb, and native scrolling doesn't trigger a re-render on its own. `scrollLeft` updates via the
@@ -313,9 +314,30 @@ export function Timeline() {
       const container = scrollRef.current;
       if (!container) return 0;
       const rect = container.getBoundingClientRect();
-      return (clientX - rect.left + container.scrollLeft - leadingPad) / pixelsPerSecond;
+      return timelineTimeAtClientX({
+        clientX,
+        viewportLeft: rect.left,
+        scrollLeft: container.scrollLeft,
+        leadingPad,
+        pixelsPerSecond,
+      });
     },
     [pixelsPerSecond, leadingPad]
+  );
+
+  const zoomTo = useCallback(
+    (requested: number, clientX?: number) => {
+      const next = clampTimelineZoom(requested);
+      if (Math.abs(next - pixelsPerSecond) < 1e-9) return;
+      const container = scrollRef.current;
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        const anchorClientX = isMobile ? rect.left + centerOffset : (clientX ?? rect.left + rect.width / 2);
+        zoomAnchorRef.current = { time: timeFromEvent(anchorClientX), clientX: anchorClientX };
+      }
+      setPixelsPerSecond(next);
+    },
+    [pixelsPerSecond, isMobile, centerOffset, timeFromEvent, setPixelsPerSecond]
   );
 
   /** Zooms by `factor`, keeping the time at `clientX` (defaulting to the center of the visible
@@ -334,14 +356,9 @@ export function Timeline() {
    *  the two never fight each other after a zoom. */
   const zoomAround = useCallback(
     (factor: number, clientX?: number) => {
-      const container = scrollRef.current;
-      if (!container) return zoomBy(factor);
-      const rect = container.getBoundingClientRect();
-      const anchorClientX = isMobile ? rect.left + centerOffset : (clientX ?? rect.left + rect.width / 2);
-      zoomAnchorRef.current = { time: timeFromEvent(anchorClientX), clientX: anchorClientX };
-      zoomBy(factor);
+      zoomTo(pixelsPerSecond * factor, clientX);
     },
-    [zoomBy, timeFromEvent, isMobile, centerOffset]
+    [zoomTo, pixelsPerSecond]
   );
 
   useLayoutEffect(() => {
@@ -353,7 +370,13 @@ export function Timeline() {
     // `+ leadingPad`: the inverse of `timeFromEvent`'s own `- leadingPad` — without it this would
     // land `leadingPad` px short of where `anchor.time` is actually drawn now that the ruler/clips
     // sit that far right of their raw `X * pixelsPerSecond` position (zero on desktop).
-    container.scrollLeft = anchor.time * pixelsPerSecond - (anchor.clientX - rect.left) + leadingPad;
+    container.scrollLeft = timelineScrollLeftForAnchor({
+      time: anchor.time,
+      clientX: anchor.clientX,
+      viewportLeft: rect.left,
+      leadingPad,
+      pixelsPerSecond,
+    });
   }, [pixelsPerSecond, leadingPad]);
 
   // Ctrl/⌘+wheel zooms, matching the convention in every timeline tool; a plain wheel keeps its
@@ -531,12 +554,12 @@ export function Timeline() {
   useEffect(() => {
     function onZoomEvent(event: Event) {
       const detail = (event as CustomEvent<{ factor?: number; reset?: boolean }>).detail;
-      if (detail.reset) resetZoom();
+      if (detail.reset) zoomTo(DEFAULT_TIMELINE_PIXELS_PER_SECOND);
       else if (detail.factor) zoomAround(detail.factor);
     }
     window.addEventListener("vcut:zoom", onZoomEvent);
     return () => window.removeEventListener("vcut:zoom", onZoomEvent);
-  }, [zoomAround, resetZoom]);
+  }, [zoomAround, zoomTo]);
 
   /** Whether `track` should render at `EMPTY_TRACK_HEIGHT` instead of `TRACK_HEIGHT` — mobile only.
    *  Two independent reasons a track qualifies: it's truly empty (a track with an in-progress
@@ -616,7 +639,7 @@ export function Timeline() {
   useEffect(() => {
     function apply(playhead: number) {
       const container = scrollRef.current;
-      if (rulerRef.current) rulerRef.current.setAttribute("aria-valuenow", String(Math.round(playhead)));
+      if (rulerRef.current) rulerRef.current.setAttribute("aria-valuenow", String(playhead));
 
       if (isMobile) {
         // Fixed-center playhead: the marker's on-screen position never depends on `playhead` at all —
@@ -893,8 +916,13 @@ export function Timeline() {
 
   if (!project) return null;
 
-  const interval = tickInterval(pixelsPerSecond);
-  const tickCount = Math.ceil(contentSeconds / interval) + 1;
+  const rulerTicks = visibleRulerTicks({
+    visibleStart: (scrollLeft - leadingPad) / pixelsPerSecond,
+    visibleEnd: (scrollLeft - leadingPad + viewportWidth) / pixelsPerSecond,
+    pixelsPerSecond,
+    fps: project.sequence.fps,
+    totalDuration: contentSeconds,
+  });
 
   return (
     <section className="flex h-full min-h-0 flex-col border-t border-white/10 bg-[#0b0d12]">
@@ -974,12 +1002,12 @@ export function Timeline() {
             −
           </button>
           <button
-            onClick={() => resetZoom()}
+            onClick={() => zoomTo(DEFAULT_TIMELINE_PIXELS_PER_SECOND)}
             aria-label={t("Reset zoom")}
             title={t("Reset zoom (Ctrl/⌘ 0)")}
             className="min-h-[26px] min-w-[3.5ch] rounded px-1 text-center font-mono text-[11px] tabular-nums text-white/45 transition hover:bg-white/10 hover:text-white"
           >
-            {Math.round((pixelsPerSecond / 60) * 100)}%
+            {Math.round((pixelsPerSecond / DEFAULT_TIMELINE_PIXELS_PER_SECOND) * 100)}%
           </button>
           <button
             onClick={() => zoomAround(1.4)}
@@ -1173,9 +1201,19 @@ export function Timeline() {
               role="slider"
               aria-label={t("Playhead")}
               aria-valuemin={0}
-              aria-valuemax={Math.round(total)}
-              aria-valuenow={Math.round(useEditorStore.getState().playhead)}
+              aria-valuemax={total}
+              aria-valuenow={useEditorStore.getState().playhead}
               tabIndex={0}
+              onKeyDown={(event) => {
+                const current = useEditorStore.getState().playhead;
+                const frames = event.shiftKey ? 10 : 1;
+                if (event.key === "ArrowRight" || event.key === "ArrowUp") setPlayhead(current + frames / project.sequence.fps);
+                else if (event.key === "ArrowLeft" || event.key === "ArrowDown") setPlayhead(current - frames / project.sequence.fps);
+                else if (event.key === "Home") setPlayhead(0);
+                else if (event.key === "End") setPlayhead(total);
+                else return;
+                event.preventDefault();
+              }}
               onMouseDown={scrub}
               onTouchStart={scrub}
               onMouseMove={(e) => setHoverX(e.clientX)}
@@ -1185,16 +1223,33 @@ export function Timeline() {
               // Timeline's own scroll container underneath it, fighting the scrub.
               className="sticky top-0 z-20 touch-none cursor-ew-resize select-none border-b border-white/10 bg-[#0d0f14]"
             >
-              {Array.from({ length: tickCount }, (_, i) => i * interval).map((seconds) => (
+              {rulerTicks.map((tick) => (
                 <div
-                  key={seconds}
-                  style={{ left: seconds * pixelsPerSecond }}
-                  className="absolute top-0 h-full border-l border-white/10 pl-1 text-[10px] leading-[26px] tabular-nums text-white/40"
+                  key={tick.frame}
+                  style={{ left: tick.seconds * pixelsPerSecond }}
+                  className={`absolute top-0 border-l pl-1 tabular-nums ${
+                    tick.major
+                      ? "h-full border-white/15 text-[10px] leading-[26px] text-white/45"
+                      : "h-2 border-white/10"
+                  }`}
                 >
-                  {formatTimecode(seconds, project.sequence.fps)}
+                  {tick.major ? formatTimecode(tick.seconds, project.sequence.fps) : null}
                 </div>
               ))}
             </div>
+
+            {snapGuideTime !== null && (
+              <div
+                aria-hidden
+                data-timeline-snap-guide
+                className="pointer-events-none absolute bottom-0 top-0 z-[25] w-px bg-amber-300 shadow-[0_0_6px_rgba(252,211,77,0.75)]"
+                style={{ left: snapGuideTime * pixelsPerSecond }}
+              >
+                <span className="absolute left-1 top-[28px] rounded bg-amber-300 px-1 py-0.5 font-mono text-[9px] font-semibold tabular-nums text-black shadow">
+                  {formatTimecode(snapGuideTime, project.sequence.fps)}
+                </span>
+              </div>
+            )}
 
             <div
               ref={lanesRef}
@@ -1288,6 +1343,8 @@ export function Timeline() {
                       onTargetTrackChange={setDropTrackId}
                       isMobile={isMobile}
                       onPanScroll={panTimelineBy}
+                      timeAtClientX={timeFromEvent}
+                      onSnapGuideChange={setSnapGuideTime}
                     />
                   ))}
                   {track.kind === "video" && track.clips.map((clip) => {
@@ -1296,12 +1353,13 @@ export function Timeline() {
                     const maximum = Math.min(clipDuration(previous), clipDuration(clip));
                     return <TransitionJunction
                       key={`junction-${clip.id}`}
-                      cut={clip.timelineStart * pixelsPerSecond}
+                      cutSeconds={clip.timelineStart}
                       duration={clip.transitionIn ? Math.min(clip.transitionIn.duration, maximum) : null}
                       maxDuration={maximum} pixelsPerSecond={pixelsPerSecond} fps={project.sequence.fps}
                       mobile={isMobile} locked={track.locked}
                       label={clip.transitionIn ? t("Change transition") : t("Add transition")}
                       durationLabel={t("Adjust transition duration")}
+                      timeAtClientX={timeFromEvent}
                       onOpen={(rect) => {
                         select([clip.id]);
                         useEditorStore.getState().setTransitionPickerRequest({ x: rect.left, y: rect.top, clipId: clip.id, mode: "in" });
@@ -1554,7 +1612,7 @@ export function Timeline() {
             top: (rulerRef.current?.getBoundingClientRect().bottom ?? 0) + 4,
           }}
         >
-          {formatTimecode(Math.max(0, timeFromEvent(hoverX)), project.sequence.fps)}
+          {formatTimecode(Math.max(0, snapToFrame(timeFromEvent(hoverX), project.sequence.fps)), project.sequence.fps)}
         </div>
       )}
 
