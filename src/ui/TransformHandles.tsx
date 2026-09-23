@@ -34,8 +34,8 @@ const DRAG_THRESHOLD = 3;
 // 16px read as too small to reliably hit on a touch device (confirmed dragging these one-handed on a
 // phone-sized viewport during a mobile UX pass) — 24px keeps the dots visually unobtrusive against a
 // full preview frame while roughly doubling the actual hit area (scales with the square of the size).
-// Still the invisible HIT-AREA size (and `clampPointToRect`'s own clamp margin) — kept unchanged from
-// that mobile UX pass. `HANDLE_DOT_SIZE` below is what actually renders now; the two used to be the
+// Still the invisible HIT-AREA size — kept unchanged from that mobile UX pass.
+// `HANDLE_DOT_SIZE` below is what actually renders now; the two used to be the
 // same value, which made the visible dot itself feel oversized on a mouse-driven desktop preview
 // (reported directly, not a touch-usability complaint) even though the LARGER touch target was and
 // still is the right call.
@@ -585,14 +585,15 @@ export function TransformHandles({
 
   // Corner/rotate handle SCREEN positions, computed independently of the (possibly huge, possibly
   // off-screen) rotated box below via the exact same rotation math `beginDrag`'s own anchor
-  // computation uses, then clamped into `stageRect` — see `clampPointToRect`'s own doc comment for
-  // why: without this, a large `transform.scale` pushes these small dots outside the visible preview
-  // (or behind another panel) with nothing left to grab, a real, confirmed bug. `beginDrag`'s own drag
-  // math is untouched — it only ever reads the pointer's actual position, never these computed points,
-  // so clamping is purely a render-time concern.
+  // computation uses. Clamp the CENTER to `stageRect`, with no inset: in a tight mobile portrait
+  // preview the clip's top edge can coincide with the stage's top edge. Insetting by half the 24px
+  // touch target moved both visible dots 12px BELOW that border (while the bottom dots stayed aligned).
+  // The fixed-position hit target may extend into the preview's outer padding; its center and visible
+  // dot must remain on the actual corner. Clamping still keeps oversized/rotated clips reachable.
+  // `beginDrag`'s math is untouched; it reads pointer position, not these render-only points.
   const cornerHandles = CORNERS.map(({ x, y, angle, label }) => {
     const truePoint = rotatedPoint(cssCenterX, cssCenterY, (x - 0.5) * cssWidth, (y - 0.5) * cssHeight, transform.rotationDeg);
-    return { x, y, cursor: resizeCursorForAngle(angle + transform.rotationDeg), label, point: clampPointToRect(truePoint, stageRect, HANDLE_SIZE / 2) };
+    return { x, y, cursor: resizeCursorForAngle(angle + transform.rotationDeg), label, point: clampPointToRect(truePoint, stageRect, 0) };
   });
   const stageWidth = stageRect.right - stageRect.left;
   const dockWidth = cropMode ? Math.min(276, Math.max(56, stageWidth - 16)) : 62;

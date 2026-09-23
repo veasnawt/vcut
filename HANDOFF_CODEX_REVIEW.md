@@ -4,6 +4,11 @@ Updated: 2026-09-23 (Asia/Bangkok).
 
 ## Current handoff (takes precedence over the historical review below)
 
+### Top resize handle alignment — 2026-09-23
+
+- `src/ui/TransformHandles.tsx` now clamps corner handle centers to the preview stage without the former 12px inset. On a tight portrait preview, the top clip edge can coincide with the stage edge; the inset had shifted the visible top dots below their actual corners. The 24px invisible touch targets and 10px visible dots remain unchanged.
+- Strict mobile build, Android `assembleDebug`, and Studios production build pass. Android debug APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.3-top-handles.apk` (200,806,424 bytes; SHA-256 `F2EDDF54F5987F87B808D1BA7C8ADDEC95B8B159A835C9A2925BB88269802B5A`), verified with APK Signature Scheme v2. iOS web assets and native plugins were synced; native compilation requires Xcode on macOS.
+
 ### Canvas Controls UX & Fit Zoom Alignment — 2026-09-23
 
 - **Floating Canvas Controls & Rotation Clean-Up (`src/ui/TransformHandles.tsx`, `src/i18n/translations.ts`)**:
