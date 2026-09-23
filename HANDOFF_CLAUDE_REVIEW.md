@@ -40,6 +40,12 @@ Updated: 2026-09-23 (Asia/Bangkok).
   `987051F32FE6C801097EE80DFDEFED09861FAC4564C034F25B83338C5C22CE93`).
 - Android APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.3.apk` (200,419,071 bytes;
   SHA-256 `CECB15BAE79808D484CDEBAEC92456B2C80BF42F15A1C3DBA1631CAB11A1C1F1`).
+- GitHub releases: `vcut-desktop-v0.2.3` and `vcut-mobile-v0.2.3`, both targeting package commit
+  `f2866f179653d29ceb9a3e0b784d51654c87020a`. GitHub's uploaded-asset digests match the local
+  SHA-256 values above.
+- Railway deployment `7566d676-83f9-4fd9-bf82-d2af92b66dba` reached `SUCCESS`. `https://vcut.io/`
+  and `/edit` return HTTP 200, and the production Permissions-Policy still enables microphone,
+  camera, and display capture for the same origin.
 
 ## Latest release: Timeline precision and interaction quality - 2026-09-23
 
