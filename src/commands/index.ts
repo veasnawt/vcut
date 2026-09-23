@@ -31,6 +31,7 @@ import {
   setClipTransformKeyframes,
   setClipTextStyleKeyframes,
   setClipPixelEffect,
+  setClipFaceEffects,
   setClipTextAnimation,
   setClipTransitionIn,
   setClipTransitionOut,
@@ -1321,6 +1322,34 @@ export class SetClipPixelEffectCommand implements Command {
   revert(project: Project): Project {
     if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
     return setClipPixelEffect(project, this.clipId, this.previous);
+  }
+}
+
+/** Exact-inverse command for an ordered Face Effect stack. Provider initialization never occurs in a
+ * command: commands stay pure project transforms, while preview/export observe the resulting state. */
+export class SetClipFaceEffectsCommand implements Command {
+  label = "Adjust Face Effects";
+  private applied = false;
+  private previous: Clip["faceEffects"] | null = null;
+  private clipId: string;
+  private faceEffects: Clip["faceEffects"] | null;
+
+  constructor(clipId: string, faceEffects: Clip["faceEffects"] | null) {
+    this.clipId = clipId;
+    this.faceEffects = faceEffects;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = found.clip.faceEffects ? structuredClone(found.clip.faceEffects) : null;
+    this.applied = true;
+    return setClipFaceEffects(project, this.clipId, this.faceEffects);
+  }
+
+  revert(project: Project): Project {
+    if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipFaceEffects(project, this.clipId, this.previous);
   }
 }
 

@@ -75,6 +75,13 @@ export interface ExportPlanOptions {
   /** Absolute path to the media file backing an asset. Injected rather than computed here so this
    *  module stays free of any filesystem or path knowledge. */
   inputPathFor: (assetId: string) => string;
+  /** Returns a provider-rendered replacement file for a clip with active Face Effects. The file must
+   * cover the ORIGINAL source timeline, starting at timestamp zero, because this plan still applies
+   * `sourceIn`/`sourceOut`, reverse, speed, and transition source handles after this step. For video,
+   * it must preserve the original audio stream; for an image, it must be a still image. The caller's
+   * async provider pre-pass runs before this pure FFmpeg-plan builder. Omitting the resolver or
+   * returning no path fails export explicitly, so a Face Effect never silently disappears. */
+  faceEffectInputPathFor?: (clip: Clip) => string | undefined;
   outputPath: string;
   /** Absolute path to a bundled font FILE, given its filename (e.g. "Battambang-Bold.ttf" — see the
    *  registry in `project/fonts.ts`, which is what this module uses to turn a clip's `fontFamily`/
@@ -216,6 +223,23 @@ export type Segment =
   | { kind: "gap"; duration: number }
   | { kind: "transition"; duration: number; from: TransitionSide; to: TransitionSide };
 
+function inputPathForClip(
+  clip: Clip,
+  options: Pick<ExportPlanOptions, "inputPathFor" | "faceEffectInputPathFor">
+): string {
+  const hasActiveFaceEffect = clip.faceEffects?.some((effect) => effect.enabled !== false && effect.intensity > 0) ?? false;
+  if (!hasActiveFaceEffect) return options.inputPathFor(clip.assetId);
+  // `buildAudioOnlyExportPlan` reuses this segment walker for transcription and deliberately supplies
+  // no visual preprocessor. Face geometry cannot change audio, so that caller keeps the original
+  // source. Full video export validates the resolver before it enters this walker (below).
+  if (!options.faceEffectInputPathFor) return options.inputPathFor(clip.assetId);
+  const processed = options.faceEffectInputPathFor?.(clip);
+  if (!processed) {
+    throw new ExportError("This project uses Face Effects, but the Face Effects export provider is not configured.");
+  }
+  return processed;
+}
+
 /** Walks the track start-to-end, emitting a segment per clip and a gap wherever the timeline is
  *  empty between them — plus, wherever `findTransitionPartner` confirms a real crossfade into a
  *  clip, a `"transition"` segment spliced in front of that clip's own (now head-shortened) one.
@@ -240,14 +264,13 @@ export type Segment =
  *  separate accounting needed. */
 /** Exported so `buildAudioOnlyExportPlan.ts` can reuse the exact same segment-walk (clip/gap/
  *  transition boundaries, transition-shortened heads) an audio-only mixdown needs to match precisely
- *  — narrowed to `Pick<ExportPlanOptions, "inputPathFor">` rather than the full options shape, since
- *  that's the only field this function itself ever reads (fonts/text-file paths are video-layer-only
- *  concerns, resolved by callers that actually draw text). */
+ *  — narrowed to the two media-path resolvers rather than the full options shape (fonts/text-file
+ *  paths are video-layer-only concerns, resolved by callers that actually draw text). */
 export function buildSegments(
   project: Project,
   track: Track,
   clips: Clip[],
-  options: Pick<ExportPlanOptions, "inputPathFor">,
+  options: Pick<ExportPlanOptions, "inputPathFor" | "faceEffectInputPathFor">,
   targetDuration: number
 ): Segment[] {
   const segments: Segment[] = [];
@@ -265,7 +288,7 @@ export function buildSegments(
     // its own, same as a still image — both resolve to a single generated frame that needs `-loop 1`
     // to occupy real time on the timeline, never `-ss`.
     const isImage = asset.kind === "image" || asset.kind === "color";
-    const path = options.inputPathFor(clip.assetId);
+    const path = inputPathForClip(clip, options);
     const fullDuration = clipDuration(clip);
     const transition = findTransitionPartner(track, clip);
     const transitionOut = findTransitionOut(track, clip);
@@ -297,7 +320,7 @@ export function buildSegments(
           clip: partner,
           hasAudio: partnerAsset.hasAudio,
           isImage: partnerAsset.kind === "image" || partnerAsset.kind === "color",
-          path: options.inputPathFor(partner.assetId),
+          path: inputPathForClip(partner, options),
           sourceIn: partner.sourceOut - halfD,
           elapsedStart: clipDuration(partner) - halfD,
         },
@@ -1745,6 +1768,14 @@ function computeTextFadeOutExtendedDuration(project: Project): number {
 }
 
 export function buildExportPlan(project: Project, options: ExportPlanOptions): ExportPlan {
+  const needsFaceEffectPreprocessing = project.sequence.tracks.some((track) =>
+    track.kind === "video" && track.visible && track.clips.some((clip) =>
+      clip.faceEffects?.some((effect) => effect.enabled !== false && effect.intensity > 0)
+    )
+  );
+  if (needsFaceEffectPreprocessing && !options.faceEffectInputPathFor) {
+    throw new ExportError("This project uses Face Effects, but the Face Effects export provider is not configured.");
+  }
   const { fps, crf, audioBitrateKbps } = project.exportSettings;
   // Every position/crop/offset in this whole file (`TEXT_MARGIN_PX`, `TextCrop` fractions, `ClipTransform`
   // pixel offsets, drawtext `x=`/`y=`, wordHighlight's ASS geometry, transition wipe/slide/circle

@@ -1274,6 +1274,41 @@ export function setClipPixelEffect(project: Project, clipId: string, pixelEffect
   });
 }
 
+/** Replaces a clip's ordered face-effect stack. This operation only edits project data; licensed SDK
+ * work belongs to the provider runtime so undo/redo remains synchronous and deterministic. */
+export function setClipFaceEffects(project: Project, clipId: string, faceEffects: Clip["faceEffects"] | null): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    const asset = findAsset(draft, found.clip.assetId);
+    if (!asset || (asset.kind !== "video" && asset.kind !== "image")) {
+      throw new EditError("Face Effects can only be applied to images and videos");
+    }
+    if (!faceEffects || faceEffects.length === 0) {
+      delete found.clip.faceEffects;
+      return;
+    }
+    const ids = new Set<string>();
+    found.clip.faceEffects = faceEffects.map((effect) => {
+      if (typeof effect.id !== "string" || !effect.id || ids.has(effect.id)) throw new EditError("Each Face Effect must have a unique id");
+      if (typeof effect.presetId !== "string" || !effect.presetId) throw new EditError("Face Effect preset is missing");
+      if (!Number.isFinite(effect.intensity)) throw new EditError("Face Effect intensity must be a finite number");
+      if (effect.target.kind === "trackedFace" && !effect.target.trackingId) {
+        throw new EditError("Tracked Face id is missing");
+      }
+      ids.add(effect.id);
+      return {
+        ...effect,
+        intensity: Math.min(1, Math.max(0, effect.intensity)),
+        target: effect.target.kind === "trackedFace"
+          ? { kind: "trackedFace", trackingId: effect.target.trackingId }
+          : { kind: "all" },
+      };
+    });
+  });
+}
+
 /** Mutes or unmutes a clip's own embedded audio. Like `transform`, `false` deletes the field rather
  *  than storing it explicitly — an unmuted clip's JSON stays exactly as small as it was before this
  *  feature existed, and undoing a mute toggle restores a truly absent field. */

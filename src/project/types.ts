@@ -651,6 +651,31 @@ export type TextAnimationType = "bounce" | "pulse" | "wiggle" | "typewriter" | "
  *  `TextAnimationType` has to `transitionIn`/`transitionOut`. */
 export type PixelEffectType = "glitch" | "waterRipple";
 
+/** Stable id for a face-effect definition. Kept as a string in saved projects so a preset supplied
+ * by a licensed provider can be added or retired without requiring a project-schema migration. The
+ * active registry validates ids before a user can apply one; deserialization preserves a safe id so
+ * an older project can report a missing preset instead of silently losing the edit. */
+export type FaceEffectPresetId = string;
+
+/** The selection model deliberately starts with all faces while leaving a forward-compatible seam
+ * for a tracked person. VCut does not expose per-person selection until a provider can prove stable
+ * identity tracking across seeking, trimming, preview, and export. */
+export type FaceEffectTarget =
+  | { kind: "all" }
+  | { kind: "trackedFace"; trackingId: string };
+
+/** One non-destructive face manipulation in a clip's ordered face-effect stack. `intensity` is
+ * normalized to 0..1; zero is an exact visual identity. The instance id belongs to the edit, while
+ * `presetId` identifies reusable rendering metadata. */
+export interface FaceEffectInstance {
+  id: string;
+  presetId: FaceEffectPresetId;
+  intensity: number;
+  target: FaceEffectTarget;
+  /** Disabled effects remain editable and serializable without participating in preview/export. */
+  enabled?: boolean;
+}
+
 /** How a visual clip combines with already-rendered tracks below it. Canvas and FFmpeg use these
  * exact names, which keeps preview/export mapping explicit and serialization easy to validate. */
 export const CLIP_BLEND_MODES = ["normal", "overlay", "screen", "darken", "lighten"] as const;
@@ -838,6 +863,11 @@ export interface Clip {
    *  runs LAST, after every color operation, and has no natural per-keyframe interpolation the way a
    *  numeric transform field does. */
   pixelEffect?: { type: PixelEffectType; speed?: number };
+  /** Ordered face-manipulation stack. This is separate from color Filters (`effects`/color grading)
+   * and standard pixel effects (`pixelEffect`) because face tracking needs a licensed provider and a
+   * frame-processing stage of its own. The separation lets all three coexist and gives export a
+   * precise pre-processing boundary instead of pretending FFmpeg can reproduce an SDK morph. */
+  faceEffects?: FaceEffectInstance[];
 }
 
 export interface Track {

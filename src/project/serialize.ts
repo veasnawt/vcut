@@ -11,6 +11,7 @@ import type {
   CoverSelection,
   CustomFontAsset,
   CustomSfxAsset,
+  FaceEffectInstance,
   LutAsset,
   Project,
   Sequence,
@@ -587,6 +588,39 @@ function parseClipPixelEffect(raw: unknown): Clip["pixelEffect"] {
   };
 }
 
+/** Lenient project-file parser for the face-effect stack. Unknown preset ids are intentionally kept:
+ * provider catalogs can change independently of the project schema, and retaining the id lets the UI
+ * explain that the required preset asset is unavailable instead of destructively deleting the edit.
+ * Structurally invalid entries are dropped individually so one damaged entry does not lose the rest. */
+function parseClipFaceEffects(raw: unknown): FaceEffectInstance[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const parsed = raw.flatMap((entry): FaceEffectInstance[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const r = entry as Record<string, unknown>;
+    if (typeof r.id !== "string" || r.id.length === 0 || r.id.length > 128) return [];
+    if (typeof r.presetId !== "string" || r.presetId.length === 0 || r.presetId.length > 128) return [];
+    if (typeof r.intensity !== "number" || !Number.isFinite(r.intensity)) return [];
+    const targetRaw = r.target;
+    let target: FaceEffectInstance["target"] = { kind: "all" };
+    if (targetRaw && typeof targetRaw === "object") {
+      const candidate = targetRaw as Record<string, unknown>;
+      if (candidate.kind === "trackedFace" && typeof candidate.trackingId === "string" && candidate.trackingId.length > 0) {
+        target = { kind: "trackedFace", trackingId: candidate.trackingId.slice(0, 128) };
+      } else if (candidate.kind !== "all") {
+        return [];
+      }
+    }
+    return [{
+      id: r.id,
+      presetId: r.presetId,
+      intensity: Math.min(1, Math.max(0, r.intensity)),
+      target,
+      ...(r.enabled === false ? { enabled: false } : null),
+    }];
+  });
+  return parsed.length > 0 ? parsed : undefined;
+}
+
 function parseClipMask(raw: unknown): ClipMask | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const r = raw as Record<string, unknown>;
@@ -629,6 +663,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
   const textAnimation = parseClipTextAnimation(raw.textAnimation);
   const wordTimings = parseClipWordTimings(raw.wordTimings);
   const pixelEffect = parseClipPixelEffect(raw.pixelEffect);
+  const faceEffects = parseClipFaceEffects(raw.faceEffects);
   const textCrop = parseTextCrop(raw.textCrop);
   const transformKeyframes = parseTransformKeyframes(raw.transformKeyframes);
   const effectsKeyframes = parseEffectsKeyframes(raw.effectsKeyframes);
@@ -666,6 +701,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
     ...(textAnimation ? { textAnimation } : null),
     ...(wordTimings ? { wordTimings } : null),
     ...(pixelEffect ? { pixelEffect } : null),
+    ...(faceEffects ? { faceEffects } : null),
     ...(typeof raw.lutId === "string" ? { lutId: raw.lutId } : null),
     ...(textCrop ? { textCrop } : null),
     ...(textCropKeyframes ? { textCropKeyframes } : null),
