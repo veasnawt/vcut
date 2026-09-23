@@ -1202,6 +1202,13 @@ export function Inspector() {
    *  recomputed on every render, so it can never show a blank or wrong-for-this-clip tab even for one
    *  frame the way a `useEffect`-based reset could. */
   const [requestedTab, setRequestedTab] = useState("text");
+  const inspectorTabRequest = useEditorStore((s) => s.inspectorTabRequest);
+  const requestInspectorTab = useEditorStore((s) => s.requestInspectorTab);
+  useEffect(() => {
+    if (!inspectorTabRequest) return;
+    setRequestedTab(inspectorTabRequest);
+    requestInspectorTab(null);
+  }, [inspectorTabRequest, requestInspectorTab]);
   const [selectedAiTool, setSelectedAiTool] = useState<"creative" | "remove" | "captions">("creative");
   const [cropEdge, setCropEdge] = useState<CropEdge>("top");
   const removeObjectArmedClipId = useEditorStore((s) => s.removeObjectArmedClipId);

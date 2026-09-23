@@ -8,6 +8,7 @@ import type { TransitionType } from "../project/types.ts";
 import { TRANSITION_TYPE_LABEL, TRANSITION_TYPE_OPTIONS } from "../timeline/transitions.ts";
 import { TransitionPreviewTile } from "./TransitionPreviewTile.tsx";
 import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
+import { DOCKED_PICKER_STYLE, useToolPanelDock } from "./ToolPanelDock.tsx";
 
 const MENU_WIDTH = 320;
 
@@ -99,6 +100,7 @@ export function TransitionPickerMenu({
 }) {
   const t = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
+  const dock = useToolPanelDock(anchorRef.current);
   const [position, setPosition] = useState({ left: 8, top: 8 });
   const [mode, setMode] = useState<"in" | "out">(initialMode ?? (!hasPredecessor && hasSuccessor ? "out" : "in"));
   // The slider's value while it's being dragged — committed (one undo step) on release, not per tick.
@@ -108,6 +110,7 @@ export function TransitionPickerMenu({
   // A junction can be anywhere in the timeline, unlike the bottom toolbar. Measure after the
   // anchor's DOM position is committed, and keep the entire scrollable picker within the viewport.
   useLayoutEffect(() => {
+    if (dock) return;
     const menu = menuRef.current;
     if (!menu) return;
     const place = () => {
@@ -130,7 +133,7 @@ export function TransitionPickerMenu({
       window.removeEventListener("resize", place);
       window.removeEventListener("vcut:toolbar-position-change", place);
     };
-  }, [anchorRef, initialMode]);
+  }, [anchorRef, initialMode, dock]);
 
   useEffect(() => {
     function onPointerDown(e: PointerEvent) {
@@ -173,7 +176,7 @@ export function TransitionPickerMenu({
       ref={menuRef}
       role="menu"
       aria-label={t("Transition style")}
-      style={{ position: "fixed", ...position, width: MENU_WIDTH, maxWidth: "calc(100vw - 16px)" }}
+      style={{ position: "fixed", ...position, width: MENU_WIDTH, maxWidth: "calc(100vw - 16px)", ...(dock ? DOCKED_PICKER_STYLE : {}) }}
       className="z-50 max-h-[70vh] overflow-y-auto rounded-lg border border-white/10 bg-[#181b22] p-2 shadow-2xl"
     >
       <div className="mb-2 flex gap-1 rounded-md bg-white/5 p-0.5">
@@ -271,6 +274,6 @@ export function TransitionPickerMenu({
         </div>
       )}
     </div>,
-    document.body
+    dock ?? document.body
   );
 }

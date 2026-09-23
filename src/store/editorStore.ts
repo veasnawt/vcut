@@ -255,6 +255,9 @@ export interface EditorState {
    *  here instead of as a plain prop. */
   mobileSheet: "media" | "inspector" | null;
   setMobileSheet: (next: "media" | "inspector" | null) => void;
+  /** One-shot request from canvas controls to show a specific Properties tab. */
+  inspectorTabRequest: "transform" | "timing" | null;
+  requestInspectorTab: (tab: "transform" | "timing" | null) => void;
 
   /** The live `<canvas>` `Preview.tsx` currently has attached to its `PlaybackEngine` — set by that
    *  same effect that calls `engine.attach(canvas)`, cleared back to `null` on unmount, mirroring
@@ -796,6 +799,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     importingLut: false,
     importingFont: false,
     mobileSheet: null,
+    inspectorTabRequest: null,
     previewCanvas: null,
     templateDraft: null,
     pendingTemplatePick: null,
@@ -1120,6 +1124,9 @@ export const useEditorStore = create<EditorState>((set, get) => {
     },
     setMobileSheet(next) {
       set({ mobileSheet: next });
+    },
+    requestInspectorTab(tab) {
+      set({ inspectorTabRequest: tab });
     },
     setPreviewCanvas(canvas) {
       set({ previewCanvas: canvas });

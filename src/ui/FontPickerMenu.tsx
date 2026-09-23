@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
+import { DOCKED_PICKER_STYLE, useToolPanelDock } from "./ToolPanelDock.tsx";
 import type { CustomFontAsset } from "../project/types.ts";
 import { DEFAULT_FONT_ID } from "../project/fonts.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -35,6 +36,7 @@ export function FontPickerMenu({
 }) {
   const t = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
+  const dock = useToolPanelDock(anchorRef.current);
   const anchor = anchorRef.current?.getBoundingClientRect();
 
   useEffect(() => {
@@ -63,7 +65,7 @@ export function FontPickerMenu({
       ref={menuRef}
       role="menu"
       aria-label={t("Font")}
-      style={{ position: "fixed", bottom, left, width: MENU_WIDTH, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH) }}
+      style={{ position: "fixed", bottom, left, width: MENU_WIDTH, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH), ...(dock ? DOCKED_PICKER_STYLE : {}) }}
       className="z-50 rounded-lg border border-white/10 bg-[#181b22] p-2.5 shadow-2xl"
     >
       <FontGridPicker
@@ -77,6 +79,6 @@ export function FontPickerMenu({
         searchPlaceholder={t("Search fonts...")}
       />
     </div>,
-    document.body
+    dock ?? document.body
   );
 }

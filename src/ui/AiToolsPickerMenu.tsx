@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
+import { DOCKED_PICKER_STYLE, useToolPanelDock } from "./ToolPanelDock.tsx";
 import { Ai, Backspace, Text, User } from "@veasnawt/vicons";
 import type { Asset, Clip } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
@@ -32,6 +33,7 @@ export function AiToolsPickerMenu({
 }) {
   const t = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
+  const dock = useToolPanelDock(anchorRef.current);
   const anchor = anchorRef.current?.getBoundingClientRect();
 
   const armRemoveObject = useEditorStore((s) => s.armRemoveObject);
@@ -107,7 +109,7 @@ export function AiToolsPickerMenu({
   return createPortal(
     <div
       ref={menuRef}
-      style={{ bottom: `${pos.bottom}px`, left: `${pos.left}px`, width: `${MENU_WIDTH}px`, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH, 360) }}
+      style={{ bottom: `${pos.bottom}px`, left: `${pos.left}px`, width: `${MENU_WIDTH}px`, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH, 360), ...(dock ? DOCKED_PICKER_STYLE : {}) }}
       className="fixed z-50 rounded-xl border border-white/10 bg-[#12151c] p-1.5 shadow-2xl backdrop-blur-xl"
     >
       <div className="px-2.5 py-1.5 border-b border-white/5 mb-1">
@@ -131,6 +133,6 @@ export function AiToolsPickerMenu({
         ))}
       </div>
     </div>,
-    document.body
+    dock ?? document.body
   );
 }

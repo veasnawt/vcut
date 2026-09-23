@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
+import { DOCKED_PICKER_STYLE, useToolPanelDock } from "./ToolPanelDock.tsx";
 import type { Clip } from "../project/types.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { TextAnimationPickerGrid } from "./TextAnimationPickerGrid.tsx";
@@ -35,6 +36,7 @@ export function AnimationPickerMenu({
 }) {
   const t = useTranslation();
   const menuRef = useRef<HTMLDivElement>(null);
+  const dock = useToolPanelDock(anchorRef.current);
   const anchor = anchorRef.current?.getBoundingClientRect();
 
   useEffect(() => {
@@ -63,7 +65,7 @@ export function AnimationPickerMenu({
       ref={menuRef}
       role="menu"
       aria-label={t("Animation")}
-      style={{ position: "fixed", bottom, left, width: MENU_WIDTH, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH, 300) }}
+      style={{ position: "fixed", bottom, left, width: MENU_WIDTH, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH, 300), ...(dock ? DOCKED_PICKER_STYLE : {}) }}
       className="z-50 rounded-lg border border-white/10 bg-[#181b22] p-2.5 shadow-2xl"
     >
       <TextAnimationPickerGrid
@@ -74,6 +76,6 @@ export function AnimationPickerMenu({
         }}
       />
     </div>,
-    document.body
+    dock ?? document.body
   );
 }

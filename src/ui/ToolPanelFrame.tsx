@@ -2,6 +2,7 @@
 
 import type { CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useToolPanelFrameDock } from "./ToolPanelDock.tsx";
 
 type ToolPanelSize = "compact" | "default" | "wide";
 
@@ -31,6 +32,20 @@ export function ToolPanelFrame({
   maxHeight?: CSSProperties["maxHeight"];
   children: ReactNode;
 }) {
+  const dock = useToolPanelFrameDock();
+  if (dock) {
+    return createPortal(
+      <div
+        role="dialog"
+        aria-label={ariaLabel}
+        data-can-close={canClose}
+        className="vcut-docked-frame flex h-full min-h-0 w-full flex-col overflow-hidden bg-[#12151c]"
+      >
+        {children}
+      </div>,
+      dock
+    );
+  }
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 sm:items-center sm:p-4"

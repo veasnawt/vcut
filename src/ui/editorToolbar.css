@@ -6,9 +6,33 @@
 
 .vcut-workspace { grid-column: 1; grid-row: 1; }
 .vcut-toolbar { grid-column: 1; grid-row: 2; }
+.vcut-tool-panel-root, .vcut-tool-dock-close { display: none; }
+.vcut-toolbar-shortcuts { margin-left: auto; border-left: 1px solid rgb(255 255 255 / 0.1); padding-left: 4px; }
+.vcut-properties-toggle { display: none; }
 
 @media (min-width: 1024px) {
   .vcut-toolbar-panel-buttons { display: none; }
+  .vcut-editor-body[data-vcut-properties-collapsed="true"] .vcut-properties-panel,
+  .vcut-editor-body[data-vcut-properties-collapsed="true"] .vcut-properties-resizer { display: none; }
+  .vcut-editor-body[data-vcut-properties-collapsed="false"][data-vcut-properties-full-height="true"] .vcut-properties-panel { grid-row: 1 / span 2; }
+  .vcut-editor-body[data-vcut-properties-collapsed="false"][data-vcut-properties-full-height="true"] .vcut-bottom-panel { grid-column: 1 / span 2; }
+  .vcut-editor-body[data-vcut-tool-dock-expanded="true"][data-vcut-properties-collapsed="false"][data-vcut-properties-full-height="true"] .vcut-bottom-panel { grid-column: 2; }
+  .vcut-properties-toggle {
+    position: absolute;
+    z-index: 30;
+    top: 50%;
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 44px;
+    transform: translate(50%, -50%);
+    border: 1px solid rgb(255 255 255 / 0.12);
+    border-radius: 7px;
+    background: #252b36;
+    color: rgb(255 255 255 / 0.7);
+    box-shadow: 0 2px 10px rgb(0 0 0 / 0.25);
+  }
+  .vcut-properties-toggle:hover, .vcut-properties-toggle:focus-visible { background: #334155; color: white; }
 
   html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body {
     grid-template-columns: 56px minmax(0, 1fr);
@@ -18,13 +42,78 @@
     grid-column: 2;
     grid-row: 1;
   }
-  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-media-open="false"] .vcut-workspace {
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-media-open="false"][data-vcut-tool-dock-open="false"] .vcut-workspace,
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-open="true"][data-vcut-tool-dock-expanded="false"] .vcut-workspace {
     grid-template-columns: 0px minmax(0, 1fr) var(--vs-props-w);
   }
-  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-media-open="false"] .vcut-media-panel,
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-media-open="false"][data-vcut-tool-dock-open="false"] .vcut-media-panel,
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-open="true"][data-vcut-tool-dock-expanded="false"] .vcut-media-panel,
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-open="true"][data-vcut-tool-dock-expanded="false"] .vcut-media-resizer,
   html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-media-open="false"] .vcut-media-resizer {
     display: none;
   }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-expanded="true"] .vcut-workspace {
+    grid-template-columns: 340px minmax(0, 1fr) var(--vs-props-w);
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-expanded="true"] .vcut-media-panel {
+    display: block;
+    position: relative;
+    grid-row: 1 / span 2;
+    overflow: hidden;
+    border-right: 1px solid rgb(255 255 255 / 0.1);
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-expanded="true"] .vcut-bottom-panel {
+    grid-column: 2 / span 2;
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-expanded="true"] .vcut-timeline-resizer { left: 340px; }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-expanded="true"] .vcut-media-panel-content,
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-expanded="true"] .vcut-media-resizer { display: none; }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-expanded="true"] .vcut-tool-panel-root {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #12151c;
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-expanded="true"] .vcut-tool-dock-close {
+    display: grid;
+    place-items: center;
+    position: absolute;
+    z-index: 2;
+    top: 8px;
+    right: 8px;
+    width: 24px;
+    height: 24px;
+    border-radius: 6px;
+    color: rgb(255 255 255 / 0.55);
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-editor-body[data-vcut-tool-dock-expanded="true"] .vcut-tool-dock-close:hover {
+    background: rgb(255 255 255 / 0.1);
+    color: white;
+  }
+  .vcut-media-panel:has(.vcut-docked-frame) .vcut-tool-dock-close { display: none !important; }
+  .vcut-tool-panel-root > :not(.vcut-docked-frame) { padding-top: 40px !important; }
+  .vcut-docked-frame { max-height: 100%; }
+  .vcut-tool-dock-toggle {
+    position: absolute;
+    z-index: 30;
+    top: 50%;
+    left: 340px;
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 44px;
+    transform: translate(-50%, -50%);
+    border: 1px solid rgb(255 255 255 / 0.12);
+    border-radius: 7px;
+    background: #252b36;
+    color: rgb(255 255 255 / 0.7);
+    box-shadow: 0 2px 10px rgb(0 0 0 / 0.25);
+  }
+  .vcut-tool-dock-toggle:hover, .vcut-tool-dock-toggle:focus-visible {
+    background: #334155;
+    color: white;
+  }
+  .vcut-tool-dock-toggle-collapsed { left: 10px; }
   html:not([data-vcut-toolbar-position="bottom"]) .vcut-toolbar {
     grid-column: 1;
     grid-row: 1;
@@ -58,6 +147,14 @@
     min-height: 0;
     overflow-x: hidden;
     overflow-y: auto;
+  }
+  html:not([data-vcut-toolbar-position="bottom"]) .vcut-toolbar-shortcuts {
+    width: 100%;
+    margin-top: auto;
+    margin-left: 0;
+    padding: 5px 0 0;
+    border-left: 0;
+    border-top: 1px solid rgb(255 255 255 / 0.1);
   }
   html:not([data-vcut-toolbar-position="bottom"]) .vcut-tool-button {
     width: 44px;

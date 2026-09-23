@@ -4,6 +4,23 @@ Updated: 2026-09-24 (Asia/Bangkok).
 
 ## Current handoff (takes precedence over the historical review below)
 
+### Editor space and canvas controls — 2026-09-24
+
+- The header keeps Export visible and moves Account/Profile, Layout (with an editor-layout icon), Language, and Save as template into the top-right More menu. The Layout submenu still switches Left/Bottom and preserves the existing browser preference.
+- The selected image/video canvas toolbar now has one-click Flip Horizontal beside Keyframe and Crop & Rotate. Its More menu exposes the existing Reverse, Mask, Speed & Time Remapping, and Properties operations as appropriate to the clip type; these use existing commands/Inspector tabs, so undo, serialization, preview, and export behavior remain on their established paths.
+- Desktop Properties has independent controls to extend to the bottom and to collapse/reopen from its edge. The timeline has a compact collapse state showing its current timecode and a reopen chevron; its mounted component retains scroll/zoom state while collapsed. The saved timeline height is restored when reopened. Mobile continues to use its existing bottom sheet layout.
+- Main files: `src/ui/VCutApp.tsx`, `src/ui/TransformHandles.tsx`, `src/ui/Timeline.tsx`, `src/ui/Inspector.tsx`, `src/store/editorStore.ts`, `src/ui/editorToolbar.css`, `src/i18n/translations.ts`, `scripts/toolbar-layout-check.cjs`.
+- Verified: all 1,141 VCut tests pass, as do VCut TypeScript, Studios production build, mobile production build, and the isolated browser layout check. That browser check covers the More/Layout menu, Properties full-height/collapse, timeline collapse/reopen, canvas Flip/Mask, left dock, toolbar preference, and mobile viewport. Release artifacts and production status are recorded below when available.
+
+### Docked tools and pinned Shortcuts — 2026-09-24
+
+- In desktop Left mode, toolbar-opened pickers and panels now occupy the Media column. Script, Captions, Voice, Music, SFX, Stickers, AI Edit, and the picker menus use the shared dock; timeline/context-menu pickers and the Bottom/mobile layouts retain their previous placement. A close button appears for docked pickers; framed panels keep their own close button.
+- The Font, Style, and Animation grids in Script and Auto Captions now fill the available dialog height and scroll within it. Script uses a shorter text input when docked so the grid remains usable in the shorter column. The left rail divider is horizontal.
+- A new Shortcuts button remains outside the scrollable tool list: at the bottom of the left rail or at the right edge of the bottom toolbar. Its list reflects the shortcuts actually handled by the editor, and its panel uses the shared dock on desktop Left.
+- Docked tools span the preview and timeline rows instead of stopping above the timeline. While a tool is open, the timeline starts beside it. A small chevron at the panel's right-edge midpoint collapses the column without closing the tool, and reopens it with one click. The timeline takes back the width when collapsed.
+- Main files: `src/ui/VCutApp.tsx`, `src/ui/editorToolbar.css`, `src/ui/ToolPanelDock.tsx`, `src/ui/ToolPanelFrame.tsx`, `src/ui/ShortcutsPanel.tsx`, Script/Captions dialogs and picker menus, `src/i18n/translations.ts`, `scripts/toolbar-layout-check.cjs`.
+- Verified: all 1,141 VCut tests pass; strict mobile production build and Studios production build pass. The isolated Edge browser layout check passes, including Shortcuts position in both layouts, Script/Captions docking, full-height tool column, timeline reflow, and chevron collapse/reopen. A visual screenshot of the docked Script panel was inspected.
+
 ### Desktop toolbar layout — 2026-09-24
 
 - Implemented the user's requested default Left tool rail for desktop (`>=1024px`) using the existing `StatusBar` actions. The old Bottom toolbar remains selectable through the header's Layout > Toolbar Position menu. The preference is local to the browser, survives refresh, and small screens always use Bottom. The Next and Vite entry documents apply a saved Bottom preference before hydration.

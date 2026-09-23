@@ -17,6 +17,7 @@ async function layout(page) {
     const rail = document.querySelector('.vcut-toolbar');
     const workspace = document.querySelector('.vcut-workspace');
     const media = document.querySelector('.vcut-media-panel');
+    const properties = document.querySelector('.vcut-properties-panel');
     const preview = document.querySelector('canvas');
     const timeline = workspace.querySelector('[class*="row-start-2"]');
     const rect = (node) => {
@@ -26,8 +27,9 @@ async function layout(page) {
     return {
       direction: getComputedStyle(rail).flexDirection,
       workspaceColumns: getComputedStyle(workspace).gridTemplateColumns.split(' ').map(Number.parseFloat),
-      rail: rect(rail), workspace: rect(workspace), preview: rect(preview), timeline: rect(timeline),
+      rail: rect(rail), workspace: rect(workspace), preview: rect(preview), timeline: rect(timeline), properties: rect(properties),
       mediaVisible: getComputedStyle(media).display !== 'none',
+      propertiesVisible: getComputedStyle(properties).display !== 'none',
       preference: localStorage.getItem('vcut-toolbar-position'),
       rootPreference: document.documentElement.dataset.vcutToolbarPosition,
     };
@@ -45,8 +47,14 @@ async function layout(page) {
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'project.json'), JSON.stringify(project));
   const otherId = 'toolbar-other', otherDir = path.join(tmp, '.vcut', otherId);
-  fs.mkdirSync(otherDir, { recursive: true });
-  fs.writeFileSync(path.join(otherDir, 'project.json'), JSON.stringify(createProject(otherId, 'Other toolbar project')));
+  const otherProject = createProject(otherId, 'Other toolbar project');
+  const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLTTAAAAABJRU5ErkJggg==', 'base64');
+  const imageAsset = { id: 'toolbar-image', kind: 'image', name: 'Test image', relPath: 'test.png', duration: 0, width: 1080, height: 1920, hasAudio: false, sizeBytes: imageBytes.length, importedAt: Date.now() };
+  otherProject.assets = [imageAsset];
+  otherProject.sequence.tracks[0].clips = [createClip({ assetId: imageAsset.id, sourceIn: 0, sourceOut: 3, timelineStart: 0 })];
+  fs.mkdirSync(path.join(otherDir, 'media'), { recursive: true });
+  fs.writeFileSync(path.join(otherDir, 'media', imageAsset.relPath), imageBytes);
+  fs.writeFileSync(path.join(otherDir, 'project.json'), JSON.stringify(otherProject));
   let logs = '', browser;
   const server = spawn(process.execPath, ['node_modules/next/dist/bin/next', 'start', '-p', String(port), '-H', '127.0.0.1'], {
     cwd: studio, windowsHide: true, env: { ...process.env, VEASNA_WORKSPACE_ROOT: tmp }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -73,6 +81,23 @@ async function layout(page) {
     assert.equal(state.mediaVisible, false, 'media panel should begin collapsed in left mode');
     assert.ok(state.preview.width > 0 && state.preview.height > 0);
     assert.ok(state.timeline.y >= state.preview.y + state.preview.height - 2, 'timeline remains below preview');
+    await page.getByRole('button', { name: 'Extend Properties to bottom' }).click();
+    state = await layout(page);
+    assert.ok(state.properties.height >= state.workspace.height - 2, 'Properties can span both editor rows');
+    assert.ok(state.timeline.x + state.timeline.width <= state.properties.x + 1, 'timeline ends before full-height Properties');
+    await page.getByRole('button', { name: 'Keep Properties above timeline' }).click();
+    await page.getByRole('button', { name: 'Collapse Properties' }).click();
+    state = await layout(page);
+    assert.equal(state.workspaceColumns[2], 0, 'Properties chevron releases its width');
+    assert.equal(state.propertiesVisible, false);
+    await page.getByRole('button', { name: 'Expand Properties' }).click();
+    assert.equal((await layout(page)).propertiesVisible, true);
+    await page.getByRole('button', { name: 'Collapse timeline' }).click();
+    state = await layout(page);
+    assert.ok(state.timeline.height <= 38, 'timeline collapses to a compact reopen strip');
+    assert.ok(await page.getByRole('button', { name: 'Expand timeline' }).isVisible());
+    await page.getByRole('button', { name: 'Expand timeline' }).click();
+    assert.ok((await layout(page)).timeline.height > 100, 'timeline expands without remounting');
     if (process.env.VCUT_TOOLBAR_SCREENSHOT) await page.screenshot({ path: process.env.VCUT_TOOLBAR_SCREENSHOT });
     const defaultCenterWidth = state.workspaceColumns[1];
     await page.locator('[aria-label="Media"]').first().click();
@@ -82,16 +107,55 @@ async function layout(page) {
     await page.locator('[aria-label="Media"]').first().click();
     assert.equal((await layout(page)).mediaVisible, false);
 
+    const shortcuts = page.getByRole('button', { name: 'Keyboard shortcuts' });
+    let shortcutBox = await shortcuts.boundingBox();
+    assert.ok(shortcutBox.y + shortcutBox.height >= state.rail.y + state.rail.height - 12, 'Shortcuts stays at the foot of the left rail');
+    await shortcuts.click();
+    await page.locator('.vcut-docked-frame[aria-label="Keyboard shortcuts"]').waitFor();
+    state = await layout(page);
+    assert.equal(state.workspaceColumns[0], 340, 'Shortcuts opens in the left tool column');
+    assert.ok(state.timeline.x >= state.workspace.x + 340 - 1, 'timeline begins beside the full-height tool panel');
+    const shortcutsFrameBox = await page.locator('.vcut-docked-frame[aria-label="Keyboard shortcuts"]').boundingBox();
+    assert.ok(shortcutsFrameBox.height >= state.workspace.height - 2, 'tool panel spans the preview and timeline rows');
+    await page.getByRole('button', { name: 'Collapse tool panel' }).click();
+    state = await layout(page);
+    assert.equal(state.workspaceColumns[0], 0, 'chevron collapses the tool column');
+    assert.ok(state.timeline.x <= state.workspace.x + 1, 'timeline regains the released space');
+    await page.getByRole('button', { name: 'Expand tool panel' }).click();
+    assert.equal((await layout(page)).workspaceColumns[0], 340, 'chevron reopens the same tool');
+    await shortcuts.click();
+    assert.equal((await layout(page)).mediaVisible, false);
+
+    await page.getByRole('button', { name: 'Import Text as Clips' }).click();
+    const scriptFrame = page.locator('.vcut-docked-frame[aria-label="Import Text as Clips"]');
+    await scriptFrame.waitFor();
+    const scriptBox = await scriptFrame.boundingBox();
+    assert.ok(scriptBox.height > 800, 'Script tool fills the left column height');
+    assert.ok((await scriptFrame.locator('div.overflow-y-auto').last().boundingBox()).height > 100, 'Script font grid gets usable vertical space');
+    if (process.env.VCUT_TOOLBAR_DOCK_SCREENSHOT) await page.screenshot({ path: process.env.VCUT_TOOLBAR_DOCK_SCREENSHOT });
+    await page.getByRole('button', { name: 'Auto Captions' }).click();
+    await page.locator('.vcut-docked-frame[aria-label="Auto Captions"]').waitFor();
+    assert.equal(await scriptFrame.count(), 0, 'switching tools replaces the dock content');
+    await page.getByRole('button', { name: 'Auto Captions' }).click();
+
     // Changing the position must preserve the mounted editor and current selection/zoom.
     await page.locator('canvas').click({ position: { x: 20, y: 20 } });
     await page.getByRole('button', { name: 'Zoom preview in' }).click();
     const zoom = await page.getByRole('button', { name: 'Reset preview zoom' }).textContent();
+    await page.getByRole('button', { name: 'More options' }).click();
+    assert.equal(await page.getByRole('menuitem', { name: 'Language' }).count(), 1, 'language is available in the header menu');
     await page.getByRole('button', { name: 'Toolbar Position' }).click();
     await page.getByRole('group', { name: 'Toolbar Position' }).getByRole('button', { name: 'Bottom', exact: true }).click();
     state = await layout(page);
     assert.equal(state.direction, 'row');
     assert.equal(state.preference, 'bottom');
     assert.equal(state.mediaVisible, true, 'bottom layout restores its existing media panel');
+    shortcutBox = await shortcuts.boundingBox();
+    assert.ok(shortcutBox.x + shortcutBox.width >= state.rail.x + state.rail.width - 12, 'Shortcuts stays at the right of the bottom toolbar');
+    await shortcuts.click();
+    await page.getByRole('dialog', { name: 'Keyboard shortcuts' }).waitFor();
+    assert.equal(await page.locator('.vcut-docked-frame').count(), 0, 'bottom Shortcuts uses the regular modal');
+    await page.keyboard.press('Escape');
     assert.equal(await page.getByRole('button', { name: 'Reset preview zoom' }).textContent(), zoom);
     assert.ok((await page.getByRole('button', { name: 'Crop & Rotate' }).count()) > 0, 'selection survives position switch');
     await page.reload({ waitUntil: 'networkidle' });
@@ -103,6 +167,7 @@ async function layout(page) {
     let popupBox = await page.locator('[role="menu"]').last().boundingBox();
     assert.ok(popupBox.y + popupBox.height <= state.rail.y + 1, 'bottom picker still opens above its toolbar');
     await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'More options' }).click();
     await page.getByRole('button', { name: 'Toolbar Position' }).click();
     await page.getByRole('group', { name: 'Toolbar Position' }).getByRole('button', { name: 'Left', exact: true }).click();
     assert.equal((await layout(page)).direction, 'column');
@@ -110,6 +175,16 @@ async function layout(page) {
     assert.equal((await layout(page)).direction, 'column', 'left preference survives refresh');
     await page.goto(`${base}/edit?projectId=${otherId}`, { waitUntil: 'networkidle' });
     assert.equal((await layout(page)).direction, 'column', 'preference survives changing projects');
+    await page.locator('canvas').click({ position: { x: 20, y: 20 } });
+    const flipButton = page.locator('button[title="Flip Horizontal"][aria-pressed]');
+    await flipButton.waitFor();
+    await flipButton.click();
+    assert.equal(await flipButton.getAttribute('aria-pressed'), 'true', 'canvas Flip uses the selected clip state');
+    await page.getByRole('button', { name: 'Clip options' }).click();
+    await page.getByRole('menuitem', { name: 'Add Mask' }).click();
+    await page.getByRole('button', { name: 'Clip options' }).click();
+    assert.ok(await page.getByRole('menuitem', { name: 'Remove Mask' }).isVisible(), 'canvas menu reflects an applied mask');
+    await page.keyboard.press('Escape');
     await page.goto(`${base}/edit?projectId=${id}`, { waitUntil: 'networkidle' });
 
     const textButton = page.getByRole('button', { name: 'Add text', exact: true }).first();
@@ -125,6 +200,11 @@ async function layout(page) {
     assert.equal(state.direction, 'row', 'mobile always uses the bottom toolbar');
     assert.ok(state.rail.y >= state.workspace.y + state.workspace.height - 1);
     assert.equal(state.preference, 'left', 'mobile does not overwrite the desktop preference');
+    await page.getByRole('button', { name: 'More options' }).click();
+    const moreBox = await page.getByRole('menu', { name: 'Editor menu' }).boundingBox();
+    assert.ok(moreBox.x >= 0 && moreBox.x + moreBox.width <= 390, 'header menu fits the mobile viewport');
+    assert.equal(await page.getByRole('menuitem', { name: 'Language' }).count(), 1);
+    await page.keyboard.press('Escape');
     await page.setViewportSize({ width: 1440, height: 900 });
     assert.equal((await layout(page)).direction, 'column');
     assert.deepEqual(errors, []);

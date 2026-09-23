@@ -389,7 +389,7 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
             spec's own interaction rule, not a mistake) — with zero horizontal padding to spare, that
             silently clipped the ring right off the left/right edges. The `-mx-1` cancels the padding's
             own width impact so children stay visually flush with the title/description above. */}
-        <div className="-mx-1 mt-4 min-h-0 flex-1 overflow-y-auto scrollbar-none px-1">
+        <div className="-mx-1 mt-4 flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-none px-1">
           {/* `status` stays permanently `null` in hosted mode (its own settings route 403s there —
               nothing to fetch) — `hosted` is what lets this move past "Checking…" using `available`
               alone instead of waiting on a value that will never arrive. */}
@@ -432,7 +432,7 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
               </div>
             </>
           ) : (
-            <>
+            <div className="flex min-h-0 flex-1 flex-col">
               {credentialsBlock}
               {languagePicker}
               {/* All three tabs are "chosen up front" — the whole batch of captions this job produces
@@ -450,14 +450,9 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
                 active={pickerTab}
                 onChange={setPickerTab}
               />
-              {/* Own capped-height scroll region, independent of the dialog's outer one — Font alone can
-                  run ~25 tiles for Khmer, and without this a tall tab's content would otherwise grow the
-                  WHOLE middle section (this dialog's footer is fixed outside it so Generate stays
-                  reachable either way, but `AutoCaptionsSection`'s own copy of this same UI in Inspector
-                  has no such fixed footer — there, an uncapped grid really did push its own Generate
-                  button far down a long scroll). Fixed height (not content-dependent) also means
-                  switching tabs never resizes the dialog around the user. */}
-              <div className="max-h-52 overflow-y-auto scrollbar-none pr-0.5">
+              {/* The active grid fills the remaining panel height. Its own scroll keeps the footer
+                  reachable even when the font or style list is much taller than the dialog. */}
+              <div className="min-h-0 flex-1 overflow-y-auto scrollbar-none pr-0.5">
                 {pickerTab === "font" && (
                   <FontPickerGrid khmerOnly={language === "km"} selectedId={fontId ?? defaultFontIdFor(language)} onPick={setFontId} />
                 )}
@@ -476,7 +471,7 @@ export function AutoCaptionsDialog({ onClose, clipIds }: { onClose: () => void; 
                 )}
                 {pickerTab === "animation" && <TextAnimationPickerGrid current={animation} onPick={setAnimation} />}
               </div>
-            </>
+            </div>
           )}
           {error && <p className="mt-2 text-[12px] text-amber-200/80">{error}</p>}
         </div>

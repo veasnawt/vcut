@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -9,6 +9,9 @@ import {
   ArrowLeft,
   Art,
   ChevronLeft,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
   ClosedCaption,
   Copy,
   Create,
@@ -19,7 +22,11 @@ import {
   Gauge,
   Grid,
   Headphone,
+  Key,
+  Globe,
+  Logout,
   Microphone,
+  More,
   Music,
   Profile,
   Save,
@@ -45,6 +52,7 @@ import { applyTextStylePreset } from "../project/textStylePresets.ts";
 import { DEFAULT_TEXT_STYLE, type Clip, type Track } from "../project/types.ts";
 import { flushPendingSave, useEditorStore } from "../store/editorStore.ts";
 import { clipAtTime } from "../timeline/queries.ts";
+import { formatTimecode } from "../timeline/time.ts";
 import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCandidate } from "../timeline/transitions.ts";
 import { AiToolsPickerMenu } from "./AiToolsPickerMenu.tsx";
 import { AnimationPickerMenu } from "./AnimationPickerMenu.tsx";
@@ -72,6 +80,7 @@ import { AiEditModal } from "./AiEditModal.tsx";
 import { MusicPanel } from "./MusicPanel.tsx";
 import { ScopesPanel } from "./ScopesPanel.tsx";
 import { SfxPanel } from "./SfxPanel.tsx";
+import { ShortcutsPanel } from "./ShortcutsPanel.tsx";
 import { StickersPanel } from "./StickersPanel.tsx";
 import { Timeline } from "./Timeline.tsx";
 import { TemplateFillScreen } from "./TemplateFillScreen.tsx";
@@ -79,7 +88,7 @@ import { TemplatePreviewScreen } from "./TemplatePreviewScreen.tsx";
 import { TextStylePickerMenu } from "./TextStylePickerMenu.tsx";
 import { TransitionPickerMenu } from "./TransitionPickerMenu.tsx";
 import { TransitionGlyph } from "./TransitionGlyph.tsx";
-import { UserMenu } from "./UserMenu.tsx";
+import { ToolPanelDockContext } from "./ToolPanelDock.tsx";
 import { effectiveToolbarPosition, readToolbarPosition, TOOLBAR_POSITION_STORAGE_KEY, type ToolbarPosition } from "./toolbarPosition.ts";
 import "./editorToolbar.css";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
@@ -130,6 +139,7 @@ function clampTimelineHeight(height: number, viewportHeight: number): number {
 const MIN_SIDE_PANEL_WIDTH = 180;
 const MIN_PREVIEW_WIDTH = 320;
 const TOOLBAR_RAIL_WIDTH = 56;
+const TOOL_DOCK_WIDTH = 340;
 
 function clampSideWidth(width: number, otherSideWidth: number, viewportWidth: number): number {
   const maxForPreview = viewportWidth - otherSideWidth - MIN_PREVIEW_WIDTH;
@@ -198,6 +208,30 @@ function splitAtPlayhead() {
  *  deliberate, explicitly requested UX call (a tool a viewer can't currently use isn't worth a
  *  permanent slot in an already-tight row), not an oversight; see each such tool's own call site for
  *  its specific hide condition. */
+function EditorLayoutIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg aria-hidden width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="3.5" width="19" height="17" rx="2" />
+      <path d="M8 3.5v17M8 15h13" />
+    </svg>
+  );
+}
+
+function CollapsedTimelineStrip({ onExpand }: { onExpand: () => void }) {
+  const t = useTranslation();
+  const playhead = useEditorStore((s) => s.playhead);
+  const fps = useEditorStore((s) => s.project?.sequence.fps ?? 30);
+  return (
+    <div className="flex h-full items-center justify-between border-t border-white/10 bg-[#0b0d12] px-3 text-[11px] text-white/55">
+      <span className="font-semibold uppercase tracking-wider">{t("Timeline")}</span>
+      <button type="button" onClick={onExpand} aria-label={t("Expand timeline")} title={t("Expand timeline")} className="flex items-center gap-2 rounded px-2 py-1 text-white/65 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300">
+        <span className="font-mono tabular-nums">{formatTimecode(playhead, fps)}</span>
+        <ChevronUp size={15} />
+      </button>
+    </div>
+  );
+}
+
 const ToolbarButton = React.forwardRef<
   HTMLButtonElement,
   {
@@ -313,6 +347,39 @@ function StatusBar({
   const [showAnimationMenu, setShowAnimationMenu] = useState(false);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
   const [showFontMenu, setShowFontMenu] = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const closeAllToolbarTools = React.useCallback(() => {
+    setCaptionsDialog(null);
+    setShowTextImport(false);
+    setShowTransitionMenu(false);
+    setShowColorMenu(false);
+    setShowEffectsMenu(false);
+    setShowPixelEffectMenu(false);
+    setShowAiToolsMenu(false);
+    setShowMusic(false);
+    setShowSfx(false);
+    setShowStickers(false);
+    setShowVoiceRecord(false);
+    setShowTextStyleMenu(false);
+    setShowAnimationMenu(false);
+    setShowStyleMenu(false);
+    setShowFontMenu(false);
+    setShowShortcuts(false);
+    setAiEditClipId(null);
+  }, []);
+  useEffect(() => {
+    window.addEventListener("vcut:close-tool-dock", closeAllToolbarTools);
+    return () => window.removeEventListener("vcut:close-tool-dock", closeAllToolbarTools);
+  }, [closeAllToolbarTools]);
+  function canSwitchToolbarTool() {
+    return !document.querySelector('.vcut-docked-frame[data-can-close="false"]');
+  }
+  function toggleToolbarTool(open: boolean, setOpen: (next: boolean) => void) {
+    if (!desktopLeft || canSwitchToolbarTool()) {
+      closeAllToolbarTools();
+      if (!open) setOpen(true);
+    }
+  }
   const transitionButtonRef = useRef<HTMLButtonElement>(null);
   const colorButtonRef = useRef<HTMLButtonElement>(null);
   const effectsButtonRef = useRef<HTMLButtonElement>(null);
@@ -612,7 +679,13 @@ function StatusBar({
           title={t("Media")}
           label={t("Media")}
           active={desktopLeft ? desktopMediaOpen : mobileSheet === "media"}
-          onClick={() => desktopLeft ? onToggleDesktopMedia() : setMobileSheet(mobileSheet === "media" ? null : "media")}
+          onClick={() => {
+            if (desktopLeft) {
+              if (!canSwitchToolbarTool()) return;
+              closeAllToolbarTools();
+              onToggleDesktopMedia();
+            } else setMobileSheet(mobileSheet === "media" ? null : "media");
+          }}
         >
           <Video size={18} />
         </ToolbarButton>
@@ -692,7 +765,7 @@ function StatusBar({
               title={t("Add text")}
               label={t("Text")}
               active={showTextStyleMenu}
-              onClick={() => setShowTextStyleMenu((v) => !v)}
+              onClick={() => toggleToolbarTool(showTextStyleMenu, setShowTextStyleMenu)}
             >
               {/* The label reads "Text" on its own — this is what signals "adds a new one" instead, a
                   small "+" badge on the glyph itself rather than spelling it out in the label text
@@ -734,7 +807,7 @@ function StatusBar({
                 onClose={() => setShowTextStyleMenu(false)}
               />
             )}
-            <ToolbarButton title={t("Import Text as Clips")} label={t("Script")} onClick={() => setShowTextImport(true)}>
+            <ToolbarButton title={t("Import Text as Clips")} label={t("Script")} active={showTextImport} onClick={() => toggleToolbarTool(showTextImport, setShowTextImport)}>
               <Document size={18} />
             </ToolbarButton>
           </>
@@ -759,7 +832,13 @@ function StatusBar({
             }
             label={t("Captions")}
             pro={CREDITS_ENABLED}
-            onClick={() => setCaptionsDialog(selectedClipIds.length === 0 ? {} : { clipIds: selectedClipIds })}
+            active={captionsDialog !== null}
+            onClick={() => {
+              if (!canSwitchToolbarTool()) return;
+              const next = captionsDialog === null;
+              closeAllToolbarTools();
+              if (next) setCaptionsDialog(selectedClipIds.length === 0 ? {} : { clipIds: selectedClipIds });
+            }}
           >
             <ClosedCaption size={18} />
           </ToolbarButton>
@@ -802,7 +881,7 @@ function StatusBar({
               active={showStyleMenu}
               onClick={() => {
                 setPickerAnchorSource("button");
-                setShowStyleMenu((v) => !v);
+                toggleToolbarTool(showStyleMenu, setShowStyleMenu);
               }}
             >
               <Grid size={18} />
@@ -843,7 +922,7 @@ function StatusBar({
               active={showFontMenu}
               onClick={() => {
                 setPickerAnchorSource("button");
-                setShowFontMenu((v) => !v);
+                toggleToolbarTool(showFontMenu, setShowFontMenu);
               }}
             >
               <Text size={18} />
@@ -891,7 +970,7 @@ function StatusBar({
               active={showAnimationMenu || Boolean(animationCurrent)}
               onClick={() => {
                 setPickerAnchorSource("button");
-                setShowAnimationMenu((v) => !v);
+                toggleToolbarTool(showAnimationMenu, setShowAnimationMenu);
               }}
             >
               <Star size={18} />
@@ -909,14 +988,14 @@ function StatusBar({
 
         {selectedClipIds.length === 0 && (
           <>
-            <span className="mx-1 h-5 w-px shrink-0 bg-white/10" />
+            <span className="vcut-toolbar-divider mx-1 h-5 w-px shrink-0 bg-white/10" />
 
             {/* Opens the Voice Record modal instead of recording immediately on click (that used to be
                 this button's own behavior, via the now-removed `VoiceoverRecorder` component) —
                 confirmed a real, explicit request for a deliberate record surface (tap-to-countdown or
                 press-and-hold-to-record, an optional Teleprompter, and post-processing choices) rather
                 than an instant always-armed toggle. */}
-            <ToolbarButton title={t("Record a voiceover from your microphone")} label={t("Voice")} onClick={() => setShowVoiceRecord(true)}>
+            <ToolbarButton title={t("Record a voiceover from your microphone")} label={t("Voice")} active={showVoiceRecord} onClick={() => toggleToolbarTool(showVoiceRecord, setShowVoiceRecord)}>
               <Microphone size={18} />
             </ToolbarButton>
             {/* Silences the whole live-preview mix (see `previewMuted`'s own doc comment) — sits right
@@ -941,13 +1020,13 @@ function StatusBar({
                 )}
               </span>
             </ToolbarButton>
-            <ToolbarButton title={t("Browse trending & viral music")} label={t("Music")} onClick={() => setShowMusic(true)}>
+            <ToolbarButton title={t("Browse trending & viral music")} label={t("Music")} active={showMusic} onClick={() => toggleToolbarTool(showMusic, setShowMusic)}>
               <Music size={18} />
             </ToolbarButton>
-            <ToolbarButton title={t("Sound Effects")} label={t("SFX")} onClick={() => setShowSfx(true)}>
+            <ToolbarButton title={t("Sound Effects")} label={t("SFX")} active={showSfx} onClick={() => toggleToolbarTool(showSfx, setShowSfx)}>
               <Headphone size={18} />
             </ToolbarButton>
-            <ToolbarButton title={t("Stickers and GIFs")} label={t("Stickers")} onClick={() => setShowStickers(true)}>
+            <ToolbarButton title={t("Stickers and GIFs")} label={t("Stickers")} active={showStickers} onClick={() => toggleToolbarTool(showStickers, setShowStickers)}>
               <Emoji size={18} />
             </ToolbarButton>
             <ToolbarButton
@@ -955,7 +1034,7 @@ function StatusBar({
               title={t("Add a color background")}
               label={t("Background")}
               active={showColorMenu}
-              onClick={() => setShowColorMenu((v) => !v)}
+              onClick={() => toggleToolbarTool(showColorMenu, setShowColorMenu)}
             >
               <Art size={18} />
             </ToolbarButton>
@@ -1065,7 +1144,7 @@ function StatusBar({
               onClick={() => {
                 setTransitionPickerRequest(null);
                 setPickerAnchorSource("button");
-                setShowTransitionMenu((v) => !v);
+                toggleToolbarTool(showTransitionMenu, setShowTransitionMenu);
               }}
             >
               <TransitionGlyph size={18} />
@@ -1156,7 +1235,7 @@ function StatusBar({
               active={effectsActive}
               onClick={() => {
                 setPickerAnchorSource("button");
-                setShowEffectsMenu((v) => !v);
+                toggleToolbarTool(showEffectsMenu, setShowEffectsMenu);
               }}
             >
               <Filter size={18} />
@@ -1177,7 +1256,7 @@ function StatusBar({
               active={pixelEffectActive}
               onClick={() => {
                 setPickerAnchorSource("button");
-                setShowPixelEffectMenu((v) => !v);
+                toggleToolbarTool(showPixelEffectMenu, setShowPixelEffectMenu);
               }}
             >
               <Create size={18} />
@@ -1205,7 +1284,7 @@ function StatusBar({
               active={showAiToolsMenu}
               onClick={() => {
                 setPickerAnchorSource("button");
-                setShowAiToolsMenu((v) => !v);
+                toggleToolbarTool(showAiToolsMenu, setShowAiToolsMenu);
               }}
             >
               <Ai size={18} />
@@ -1258,6 +1337,17 @@ function StatusBar({
           <Save size={18} />
         </ToolbarButton>
       </div>
+      <div className="vcut-toolbar-shortcuts shrink-0">
+        <ToolbarButton
+          title={t("Keyboard shortcuts")}
+          label={t("Shortcuts")}
+          active={showShortcuts}
+          onClick={() => toggleToolbarTool(showShortcuts, setShowShortcuts)}
+        >
+          <Key size={18} />
+        </ToolbarButton>
+      </div>
+      {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
       {captionsDialog && <AutoCaptionsDialog clipIds={captionsDialog.clipIds} onClose={() => setCaptionsDialog(null)} />}
       {showVoiceRecord && <VoiceRecordModal onClose={() => setShowVoiceRecord(false)} />}
       {showTextImport && <TextToClipsDialog onClose={() => setShowTextImport(false)} />}
@@ -1439,7 +1529,8 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   // concept, same gate every other credits-aware UI (Captions/Remove Object) already uses.
   const { hosted, credits } = useHostedCreditsGate();
   const [showMobileSignIn, setShowMobileSignIn] = useState(false);
-  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showLayoutOptions, setShowLayoutOptions] = useState(false);
   const [showSaveAsTemplate, setShowSaveAsTemplate] = useState(false);
   // Set by `TemplateFillScreen`'s own "Preview" button — every slot being filled makes that button
   // ENABLED, not an automatic jump to `TemplatePreviewScreen` the instant the last pick lands; the user
@@ -1459,7 +1550,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
     checkedTemplatePreviewOnLoad.current = true;
     if (templateSlots(project).length === 0) setConfirmedTemplatePreview(true);
   }, [project]);
-  const userMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
 
   // The desktop half of sign-in: `main.ts` extracts `access_token`/`refresh_token` from the
   // `vcut://auth-callback` redirect and forwards them here — `setSession` is what actually turns them
@@ -1531,20 +1622,35 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   const isMobile = useIsMobile();
   const [toolbarPosition, setToolbarPosition] = useState<ToolbarPosition>(readToolbarPosition);
   const [desktopMediaOpen, setDesktopMediaOpen] = useState(false);
+  const [toolDockElement, setToolDockElement] = useState<HTMLElement | null>(null);
+  const [toolDockOpen, setToolDockOpen] = useState(false);
+  const [toolDockCollapsed, setToolDockCollapsed] = useState(false);
+  const [propertiesCollapsed, setPropertiesCollapsed] = useState(false);
+  const [propertiesFullHeight, setPropertiesFullHeight] = useState(false);
   const desktopLeft = effectiveToolbarPosition(toolbarPosition, !isMobile) === "left";
-  const [showToolbarPositionMenu, setShowToolbarPositionMenu] = useState(false);
-  const toolbarPositionMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!toolDockElement) return;
+    const update = () => {
+      const open = toolDockElement.childElementCount > 0;
+      setToolDockOpen(open);
+      if (open) setToolDockCollapsed(false);
+    };
+    const observer = new MutationObserver(update);
+    observer.observe(toolDockElement, { childList: true });
+    update();
+    return () => observer.disconnect();
+  }, [toolDockElement]);
   useLayoutEffect(() => {
     document.documentElement.dataset.vcutToolbarPosition = toolbarPosition;
     window.dispatchEvent(new Event("vcut:toolbar-position-change"));
   }, [toolbarPosition]);
   useEffect(() => {
-    if (!showToolbarPositionMenu) return;
+    if (!showMoreMenu) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!toolbarPositionMenuRef.current?.contains(event.target as Node)) setShowToolbarPositionMenu(false);
+      if (!moreMenuRef.current?.contains(event.target as Node)) setShowMoreMenu(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setShowToolbarPositionMenu(false);
+      if (event.key === "Escape") setShowMoreMenu(false);
     };
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("keydown", onKeyDown);
@@ -1552,7 +1658,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [showToolbarPositionMenu]);
+  }, [showMoreMenu]);
   function chooseToolbarPosition(next: ToolbarPosition) {
     if (toolbarPosition === "bottom" && next === "left") setDesktopMediaOpen(true);
     setToolbarPosition(next);
@@ -1561,7 +1667,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
     } catch {
       // The current session still switches when storage is unavailable.
     }
-    setShowToolbarPositionMenu(false);
+    setShowMoreMenu(false);
   }
 
   // Media/Stock/AI is a pure pick-then-place flow (see `armedAssetId`'s own doc comment in
@@ -1633,6 +1739,9 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   // run during SSR), so the server/first-client-render pair stays byte-for-byte identical, and the
   // correction lands before the user ever sees the placeholder 224px.
   const [timelineHeight, setTimelineHeight] = useState(224);
+  const [timelineCollapsed, setTimelineCollapsed] = useState(false);
+  const compactTimeline = timelineCollapsed && bottomPanel === "timeline" && mobileSheet === null;
+  const visibleTimelineHeight = compactTimeline ? 36 : timelineHeight;
 
   useLayoutEffect(() => {
     const preferred = window.matchMedia("(min-width: 1024px)").matches ? 320 : 224;
@@ -1693,18 +1802,20 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   desktopLeftRef.current = desktopLeft;
   const desktopMediaOpenRef = useRef(desktopMediaOpen);
   desktopMediaOpenRef.current = desktopMediaOpen;
+  const toolDockOpenRef = useRef(toolDockOpen);
+  toolDockOpenRef.current = toolDockOpen;
 
   useLayoutEffect(() => {
     const width = window.innerWidth - (desktopLeft ? TOOLBAR_RAIL_WIDTH : 0);
     setMediaWidth((w) => clampSideWidth(w, propertiesWidthRef.current, width));
-    setPropertiesWidth((w) => clampSideWidth(w, desktopLeft && !desktopMediaOpen ? 0 : mediaWidthRef.current, width));
-  }, [desktopLeft, desktopMediaOpen]);
+    setPropertiesWidth((w) => clampSideWidth(w, desktopLeft && toolDockOpen ? TOOL_DOCK_WIDTH : desktopLeft && !desktopMediaOpen ? 0 : mediaWidthRef.current, width));
+  }, [desktopLeft, desktopMediaOpen, toolDockOpen]);
 
   useEffect(() => {
     function onResize() {
       const width = window.innerWidth - (desktopLeftRef.current ? TOOLBAR_RAIL_WIDTH : 0);
       setMediaWidth((w) => clampSideWidth(w, propertiesWidthRef.current, width));
-      setPropertiesWidth((w) => clampSideWidth(w, desktopLeftRef.current && !desktopMediaOpenRef.current ? 0 : mediaWidthRef.current, width));
+      setPropertiesWidth((w) => clampSideWidth(w, desktopLeftRef.current && toolDockOpenRef.current ? TOOL_DOCK_WIDTH : desktopLeftRef.current && !desktopMediaOpenRef.current ? 0 : mediaWidthRef.current, width));
     }
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
@@ -1734,7 +1845,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         const point = clientPoint(moveEvent);
         // Properties is the RIGHT column — dragging its left edge further left grows it.
         const dx = start.x - point.x;
-        setPropertiesWidth(clampSideWidth(startWidth + dx, desktopLeft && !desktopMediaOpen ? 0 : mediaWidthRef.current, window.innerWidth - (desktopLeft ? TOOLBAR_RAIL_WIDTH : 0)));
+        setPropertiesWidth(clampSideWidth(startWidth + dx, desktopLeft && toolDockOpen ? TOOL_DOCK_WIDTH : desktopLeft && !desktopMediaOpen ? 0 : mediaWidthRef.current, window.innerWidth - (desktopLeft ? TOOLBAR_RAIL_WIDTH : 0)));
       },
       () => removeListeners()
     );
@@ -1969,9 +2080,9 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   }
 
   return (
-    // "VCut" is a product name — never translated. `vcut-lang-km` (see studios/vcut's
-    // globals.css) swaps the whole chrome's font-family to a Khmer-capable face via inheritance —
-    // one place, cascades to every descendant, no per-component font changes needed.
+    <ToolPanelDockContext.Provider value={desktopLeft ? toolDockElement : null}>
+    {/* "VCut" is a product name — never translated. `vcut-lang-km` (see studios/vcut's
+        globals.css) swaps the whole chrome's font-family to a Khmer-capable face via inheritance. */}
     <div className={`flex h-full min-h-0 min-w-0 flex-col bg-[#0a0c10] text-white ${language === "km" ? "vcut-lang-km" : ""}`}>
       <header className="flex min-w-0 shrink-0 items-center gap-2 border-b border-white/10 px-3 py-2">
         {onHome ? (
@@ -1995,175 +2106,115 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         )}
         <EditableProjectTitle />
         <SaveStatus />
-        {/* One `ml-auto` on the whole trailing cluster, not on each button individually — two
-            adjacent auto margins would each try to absorb a share of the free space, opening an
-            unwanted gap BETWEEN sign-out and the language toggle instead of pushing the whole group
-            together against the right edge, which is what every one of these already relied on
-            `ml-auto` (previously just on the language button, the first/only item in this cluster
-            before Sign out existed) to do. */}
+        {/* Keep Export prominent; the less frequent editor, language, template, and account actions
+            share one menu at the far right. */}
         <div className="ml-auto flex shrink-0 items-center gap-2">
-          {/* Plain `window.location` (not Next's `useRouter`) since this component is shared with the
-              native mobile shell too, which has no Next.js router to call into at all — a full
-              navigation to `/login` works identically on web and desktop (both serve a real `/login`
-              page). Native mobile has no such page to navigate to at all (a static Vite build, no
-              server-rendered routes) — signing out there just clears the session and stays on the
-              current screen, same as `MobileSignInDialog` signing IN never navigates either. */}
-          {/* One combined trigger, not two separate always-visible buttons — confirmed a real UX
-              complaint: plain "Account"/"Sign out" text buttons sat directly against the save-status
-              text with no visual separation, reading as clutter rather than a legible header (see
-              `UserMenu.tsx`'s own doc comment). Web/desktop only: `/account` (plan/credits/Upgrade to
-              Pro) has no server-rendered route on native mobile's own static Vite build, so that menu
-              item would have nowhere to navigate to there — native mobile keeps the simple, direct
-              Sign out button below instead, unchanged from before this menu existed. */}
-          {/* An icon, not the truncated email text this originally showed — confirmed a real
-              "looks cluttered/overflowing" complaint, not hypothetical: a `max-w-[8rem]` truncated
-              email sitting in an already-tight trailing cluster read as busier than a single glyph
-              needs to. The email itself still shows, in full, right at the top of the menu this
-              opens (`UserMenu.tsx`'s own header row) — nothing is actually lost, just moved one
-              click deeper where there's real room to show it without truncation.
-              Pro accounts get an amber ring + a tiny badge dot on this exact icon — replaces an earlier
-              plain credits-count readout that sat separately in the header (confirmed a real request:
-              the count itself wasn't the useful part, a Pro/free distinction at a glance is). Hosted
-              only (`hosted` false on desktop/local dev, where there's no plan concept to distinguish at
-              all) and only once the plan has actually loaded (`credits !== null`) — defaulting to the
-              free look before that resolves would flash a Pro account as free for a moment, the more
-              visible direction to get wrong. */}
-          {user && !isNative && (
-            <button
-              ref={userMenuButtonRef}
-              onClick={() => setShowUserMenu((v) => !v)}
-              title={hosted && credits?.plan === "pro" ? `${user.email ?? t("Account")} (${t("Pro")})` : (user.email ?? t("Account"))}
-              aria-label={t("Account")}
-              className={`relative flex shrink-0 items-center justify-center rounded-md p-1.5 transition hover:bg-white/10 ${
-                hosted && credits?.plan === "pro" ? "text-amber-300 ring-1 ring-amber-400/60 hover:text-amber-200" : "text-white/40 hover:text-white"
-              }`}
-            >
-              <Profile size={16} />
-              {hosted && credits?.plan === "pro" && (
-                <span aria-hidden className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border border-[#0a0c10] bg-amber-400" />
-              )}
-            </button>
-          )}
-          {showUserMenu && (
-            <UserMenu
-              anchorRef={userMenuButtonRef}
-              email={user?.email ?? null}
-              // `null` outside hosted mode (or before the check resolves) — same "nothing to show
-              // yet" treatment the header's own Pro-ring badge already gives `credits`. NOT a plain
-              // header readout (see this trigger button's own comment on why that was already tried
-              // and reverted) — this is one click deeper, inside the menu the email itself already
-              // lives in, asked for directly as a way to actually SEE the balance without bringing
-              // that earlier clutter back to the always-visible row.
-              credits={hosted ? credits : null}
-              onOpenAccount={() => (window.location.href = "/account")}
-              onSignOut={() => void signOut().then(() => (window.location.href = "/login"))}
-              onClose={() => setShowUserMenu(false)}
-            />
-          )}
-          {user && isNative && (
-            <button
-              onClick={() => void signOut()}
-              title={user.email ?? t("Sign out")}
-              className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/40 transition hover:bg-white/10 hover:text-white"
-            >
-              {t("Sign out")}
-            </button>
-          )}
-          {/* Desktop's own sign-in entry point — opens the system browser rather than navigating this
-              window; see `desktopAuth.ts`'s own doc comment for why a magic-link/OAuth flow can't run
-              directly against this window's locally-bundled server (its port changes every launch,
-              which neither an emailed magic link nor a registered OAuth redirect URI can tolerate).
-              Never shown on web (the existing `/login` page IS the sign-in flow there) or on native
-              mobile (the next button below, opening `MobileSignInDialog` in-app instead). */}
-          {!user && isDesktopSignInAvailable() && (
-            <button
-              onClick={openDesktopSignIn}
-              className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/40 transition hover:bg-white/10 hover:text-white"
-            >
-              {t("Sign in")}
-            </button>
-          )}
-          {/* Native mobile's own sign-in entry point — opens `MobileSignInDialog` in-app rather than
-              the desktop button's system-browser hop, since Capacitor's WebView can run Supabase's JS
-              client directly (see that dialog's own doc comment for the full reasoning). */}
-          {!user && isNative && (
-            <button
-              onClick={() => setShowMobileSignIn(true)}
-              className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/40 transition hover:bg-white/10 hover:text-white"
-            >
-              {t("Sign in")}
-            </button>
-          )}
-          <div ref={toolbarPositionMenuRef} className="relative hidden lg:block">
-            <button
-              type="button"
-              onClick={() => setShowToolbarPositionMenu((open) => !open)}
-              title={t("Toolbar Position")}
-              aria-label={t("Toolbar Position")}
-              aria-expanded={showToolbarPositionMenu}
-              className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-white/60 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
-            >
-              <Settings size={15} />
-              {t("Layout")}
-            </button>
-            {showToolbarPositionMenu && (
-              <div role="group" aria-label={t("Toolbar Position")} className="absolute right-0 top-full z-50 mt-2 w-44 rounded-lg border border-white/15 bg-[#181b22] p-1.5 shadow-xl">
-                <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-white/45">{t("Toolbar Position")}</p>
-                {(["left", "bottom"] as const).map((position) => (
-                  <button
-                    key={position}
-                    type="button"
-                    aria-pressed={toolbarPosition === position}
-                    onClick={() => chooseToolbarPosition(position)}
-                    className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 ${toolbarPosition === position ? "bg-sky-500/20 text-sky-200" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
-                  >
-                    <span aria-hidden className={`h-3 w-3 rounded-full border ${toolbarPosition === position ? "border-sky-300 bg-sky-400" : "border-white/50"}`} />
-                    {t(position === "left" ? "Left" : "Bottom")}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <button
-            onClick={() => setLanguage(language === "en" ? "km" : "en")}
-            title={t("Switch language")}
-            aria-label={t("Switch language")}
-            className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/60 transition hover:bg-white/10 hover:text-white"
-          >
-            {language === "en" ? "ខ្មែរ" : "EN"}
-          </button>
-          {/* Grouped directly against Export (not sandwiched between it and the language toggle,
-              confirmed a real, reported ordering bug from the first version of this) — the two read
-              as one "project-level actions" cluster this way, language being the odd one out visually
-              sitting between two UNRELATED actions instead. Hosted-web only (no local/desktop "Pro"
-              concept) — clicking it either opens the naming dialog (already Pro) or hands off to
-              checkout (still free), the same "show it, prompt upgrade on click" pattern Auto Captions/
-              Remove Object already use elsewhere, rather than hiding the feature entirely from anyone
-              who hasn't upgraded yet. `hidden lg:inline-flex`: confirmed too tight below `lg` — the
-              header's own footer/toolbar already crams a lot into a phone-width row (see StatusBar's
-              own comments on that), and saving a template is enough of a rare, deliberate,
-              desktop-leaning action (reusing a whole project's STRUCTURE) that it isn't worth the
-              squeeze there; a template someone else made is still fully usable from the New Project
-              dialog on any device either way. */}
-          {hosted && (
-            <button
-              onClick={() => (credits?.plan === "pro" ? setShowSaveAsTemplate(true) : handleUpgradeClick())}
-              title={t("Save the current project's structure as a reusable template")}
-              className="hidden shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-white/60 transition hover:bg-white/10 hover:text-white lg:inline-flex"
-            >
-              {t("Save as template")}
-            </button>
-          )}
           <button
             onClick={() => setExportOpen(true)}
             className="shrink-0 rounded-md bg-sky-500 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-sky-400"
           >
             {t("Export")}
           </button>
+          <div ref={moreMenuRef} className="relative">
+            <button
+              type="button"
+              title={t("More options")}
+              aria-label={t("More options")}
+              aria-expanded={showMoreMenu}
+              onClick={() => {
+                setShowMoreMenu((open) => !open);
+                setShowLayoutOptions(false);
+              }}
+              className="relative flex h-8 w-8 items-center justify-center rounded-md text-white/65 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+            >
+              <More size={19} />
+              {hosted && credits?.plan === "pro" && (
+                <span aria-hidden className="absolute right-0 top-0 h-2 w-2 rounded-full border border-[#0a0c10] bg-amber-400" />
+              )}
+            </button>
+            {showMoreMenu && (
+              <div
+                role="menu"
+                aria-label={t("Editor menu")}
+                className="absolute right-0 top-full z-50 mt-2 max-h-[calc(100dvh-4rem)] w-56 overflow-y-auto rounded-xl border border-white/15 bg-[#181b22] p-1.5 shadow-2xl"
+              >
+                {user && (
+                  <div className="border-b border-white/10 px-2.5 py-2">
+                    <p className="truncate text-[11px] text-white/55">{user.email}</p>
+                    {hosted && credits && (
+                      <p className="mt-0.5 text-[11px] text-white/40">
+                        {t("{plan} · {n} credits left", { plan: credits.plan === "pro" ? t("Pro") : t("Free"), n: credits.creditsRemaining })}
+                      </p>
+                    )}
+                  </div>
+                )}
+                {user && !isNative && (
+                  <button role="menuitem" onClick={() => (window.location.href = "/account")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-white/80 transition hover:bg-white/10 hover:text-white">
+                    <Profile size={16} className="shrink-0 text-white/50" />{t("Account")}
+                  </button>
+                )}
+                {!user && isDesktopSignInAvailable() && (
+                  <button role="menuitem" onClick={() => { setShowMoreMenu(false); openDesktopSignIn(); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-white/80 transition hover:bg-white/10 hover:text-white">
+                    <Profile size={16} className="shrink-0 text-white/50" />{t("Sign in")}
+                  </button>
+                )}
+                {!user && isNative && (
+                  <button role="menuitem" onClick={() => { setShowMoreMenu(false); setShowMobileSignIn(true); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-white/80 transition hover:bg-white/10 hover:text-white">
+                    <Profile size={16} className="shrink-0 text-white/50" />{t("Sign in")}
+                  </button>
+                )}
+                {user && (
+                  <button role="menuitem" onClick={() => { setShowMoreMenu(false); if (isNative) void signOut(); else void signOut().then(() => (window.location.href = "/login")); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-white/80 transition hover:bg-white/10 hover:text-white">
+                    <Logout size={16} className="shrink-0 text-white/50" />{t("Sign out")}
+                  </button>
+                )}
+                {user && <div className="my-1 border-t border-white/10" />}
+                <div className="hidden lg:block">
+                  <button
+                    type="button"
+                    aria-label={t("Toolbar Position")}
+                    aria-expanded={showLayoutOptions}
+                    onClick={() => setShowLayoutOptions((open) => !open)}
+                    className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-white/80 transition hover:bg-white/10 hover:text-white"
+                  >
+                    <EditorLayoutIcon size={16} />
+                    <span className="flex-1">{t("Layout")}</span>
+                    <ChevronRight size={13} className={`text-white/40 transition-transform ${showLayoutOptions ? "rotate-90" : ""}`} />
+                  </button>
+                  {showLayoutOptions && (
+                    <div role="group" aria-label={t("Toolbar Position")} className="mb-1 ml-6 border-l border-white/10 pl-2">
+                      {(["left", "bottom"] as const).map((position) => (
+                        <button
+                          key={position}
+                          type="button"
+                          aria-pressed={toolbarPosition === position}
+                          onClick={() => chooseToolbarPosition(position)}
+                          className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition hover:bg-white/10 ${toolbarPosition === position ? "text-sky-300" : "text-white/65 hover:text-white"}`}
+                        >
+                          <span aria-hidden className={`h-2 w-2 rounded-full ${toolbarPosition === position ? "bg-sky-400" : "bg-white/25"}`} />
+                          {t(position === "left" ? "Left" : "Bottom")}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button role="menuitem" onClick={() => { setLanguage(language === "en" ? "km" : "en"); setShowMoreMenu(false); }} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-white/80 transition hover:bg-white/10 hover:text-white">
+                  <Globe size={16} className="shrink-0 text-white/50" />
+                  <span className="flex-1">{t("Language")}</span>
+                  <span className="text-[11px] text-white/45">{language === "en" ? "ខ្មែរ" : "EN"}</span>
+                </button>
+                {hosted && (
+                  <button role="menuitem" onClick={() => { setShowMoreMenu(false); if (credits?.plan === "pro") setShowSaveAsTemplate(true); else handleUpgradeClick(); }} title={t("Save the current project's structure as a reusable template")} className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-2 text-left text-xs text-white/80 transition hover:bg-white/10 hover:text-white">
+                    <Document size={16} className="shrink-0 text-white/50" />{t("Save as template")}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </header>
       {showSaveAsTemplate && <SaveAsTemplateDialog onClose={() => setShowSaveAsTemplate(false)} />}
-      <div className="vcut-editor-body min-h-0 min-w-0 flex-1" data-vcut-media-open={desktopMediaOpen}>
+      <div className="vcut-editor-body min-h-0 min-w-0 flex-1" data-vcut-media-open={desktopMediaOpen} data-vcut-tool-dock-open={toolDockOpen} data-vcut-tool-dock-expanded={toolDockOpen && !toolDockCollapsed} data-vcut-properties-collapsed={propertiesCollapsed} data-vcut-properties-full-height={propertiesFullHeight}>
 
       {/* Three panes at `lg`+ (1024px): an optional media panel, preview, and inspector,
           with the timeline across the bottom. The toolbar sits beside this workspace in Left mode.
@@ -2202,14 +2253,14 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
             // `timelineHeight` entirely — see `hidePreviewForMediaSheet`'s own doc comment above for
             // why the Media sheet specifically gets the whole area instead of the same fixed row
             // Timeline/every other sheet shares.
-            gridTemplateRows: hidePreviewForMediaSheet ? "0px minmax(0,1fr)" : `minmax(0,1fr) ${timelineHeight}px`,
+            gridTemplateRows: hidePreviewForMediaSheet ? "0px minmax(0,1fr)" : `minmax(0,1fr) ${visibleTimelineHeight}px`,
             "--vs-media-w": `${mediaWidth}px`,
-            "--vs-props-w": `${propertiesWidth}px`,
+            "--vs-props-w": `${propertiesCollapsed ? 0 : propertiesWidth}px`,
           } as React.CSSProperties
         }
       >
         <div className="row-start-1 min-h-0 min-w-0 lg:order-2 lg:col-start-2 lg:row-start-1" hidden={hidePreviewForMediaSheet}>
-          <Preview onResizeStart={beginTimelineResize} />
+          <Preview onResizeStart={(event) => { if (compactTimeline) setTimelineCollapsed(false); beginTimelineResize(event); }} />
         </div>
 
         {/* Permanent side columns, `lg`+ only — below `lg` these render nothing at all. Genuinely
@@ -2222,10 +2273,24 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
             phone-width session had the sheet open. Reached on mobile via the toolbar's Media/Properties
             buttons instead, which swap the Timeline row's content below. */}
         <div className="vcut-media-panel hidden min-h-0 min-w-0 lg:col-start-1 lg:row-start-1 lg:block">
-          {!isMobile && <MediaPanel />}
+          <div className="vcut-media-panel-content h-full min-h-0">{!isMobile && <MediaPanel />}</div>
+          <div ref={setToolDockElement} className="vcut-tool-panel-root h-full min-h-0" />
+          <button type="button" className="vcut-tool-dock-close" aria-label={t("Close")} onClick={() => window.dispatchEvent(new Event("vcut:close-tool-dock"))}>×</button>
         </div>
-        <div className="hidden min-h-0 min-w-0 lg:col-start-3 lg:row-start-1 lg:block">
+        <div className="vcut-properties-panel relative hidden min-h-0 min-w-0 lg:col-start-3 lg:row-start-1 lg:block">
           {!isMobile && <Inspector />}
+          {!isMobile && (
+            <button
+              type="button"
+              title={t(propertiesFullHeight ? "Keep Properties above timeline" : "Extend Properties to bottom")}
+              aria-label={t(propertiesFullHeight ? "Keep Properties above timeline" : "Extend Properties to bottom")}
+              aria-pressed={propertiesFullHeight}
+              onClick={() => setPropertiesFullHeight((fullHeight) => !fullHeight)}
+              className="absolute right-2 top-2 z-10 flex h-6 w-6 items-center justify-center rounded text-white/40 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+            >
+              {propertiesFullHeight ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+            </button>
+          )}
         </div>
 
         {/* The one row Timeline shares with Media/Properties below `lg`, and with Mixer at every
@@ -2233,7 +2298,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
             through to `bottomPanel` (Timeline vs. Mixer) once the permanent side columns above are
             visible. See `bottomPanel`'s own comment for why it's a separate concept from
             `mobileSheet`. */}
-        <div className="row-start-2 min-h-0 min-w-0 lg:col-span-3 lg:row-start-2">
+        <div className="vcut-bottom-panel relative row-start-2 min-h-0 min-w-0 lg:col-span-3 lg:row-start-2">
           {mobileSheet === "media" ? (
             <MediaPanel onAssetAdded={() => setMobileSheet(null)} />
           ) : mobileSheet === "inspector" ? (
@@ -2243,7 +2308,10 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           ) : bottomPanel === "scopes" ? (
             <ScopesPanel onFloat={() => beginFloat("scopes")} />
           ) : (
-            <Timeline />
+            <>
+              <div className={`h-full ${compactTimeline ? "invisible" : ""}`}><Timeline onCollapse={() => setTimelineCollapsed(true)} /></div>
+              {compactTimeline && <div className="absolute inset-0"><CollapsedTimelineStrip onExpand={() => setTimelineCollapsed(false)} /></div>}
+            </>
           )}
         </div>
 
@@ -2264,9 +2332,9 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           role="separator"
           aria-orientation="horizontal"
           aria-label={t("Resize timeline")}
-          hidden={hidePreviewForMediaSheet}
-          className="absolute inset-x-0 z-20 h-2.5 -translate-y-1/2 cursor-row-resize touch-none"
-          style={{ bottom: timelineHeight }}
+          hidden={hidePreviewForMediaSheet || compactTimeline}
+          className="vcut-timeline-resizer absolute inset-x-0 z-20 h-2.5 -translate-y-1/2 cursor-row-resize touch-none"
+          style={{ bottom: visibleTimelineHeight }}
         />
 
         {/* Media|Preview and Preview|Properties dividers — `lg`+ only, same reasoning as the columns
@@ -2291,9 +2359,34 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           role="separator"
           aria-orientation="vertical"
           aria-label={t("Resize properties panel")}
-          className="absolute inset-y-0 z-20 hidden w-2.5 translate-x-1/2 cursor-col-resize touch-none lg:block"
+          className="vcut-properties-resizer absolute inset-y-0 z-20 hidden w-2.5 translate-x-1/2 cursor-col-resize touch-none lg:block"
           style={{ right: propertiesWidth }}
         />
+        {!isMobile && (
+          <button
+            type="button"
+            className="vcut-properties-toggle"
+            style={{ right: propertiesCollapsed ? 10 : propertiesWidth }}
+            aria-label={t(propertiesCollapsed ? "Expand Properties" : "Collapse Properties")}
+            title={t(propertiesCollapsed ? "Expand Properties" : "Collapse Properties")}
+            aria-expanded={!propertiesCollapsed}
+            onClick={() => setPropertiesCollapsed((collapsed) => !collapsed)}
+          >
+            {propertiesCollapsed ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
+          </button>
+        )}
+        {desktopLeft && toolDockOpen && (
+          <button
+            type="button"
+            className={`vcut-tool-dock-toggle ${toolDockCollapsed ? "vcut-tool-dock-toggle-collapsed" : ""}`}
+            aria-label={t(toolDockCollapsed ? "Expand tool panel" : "Collapse tool panel")}
+            title={t(toolDockCollapsed ? "Expand tool panel" : "Collapse tool panel")}
+            aria-expanded={!toolDockCollapsed}
+            onClick={() => setToolDockCollapsed((collapsed) => !collapsed)}
+          >
+            {toolDockCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          </button>
+        )}
       </div>
 
       <StatusBar
@@ -2301,7 +2394,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         setMobileSheet={setMobileSheet}
         toolbarPosition={toolbarPosition}
         desktopMediaOpen={desktopMediaOpen}
-        onToggleDesktopMedia={() => setDesktopMediaOpen((open) => !open)}
+        onToggleDesktopMedia={() => setDesktopMediaOpen((open) => toolDockOpen ? true : !open)}
         bottomPanel={bottomPanel}
         setBottomPanel={setBottomPanel}
         floatingPanel={floatState?.panel ?? null}
@@ -2324,6 +2417,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         </FloatablePanel>
       )}
     </div>
+    </ToolPanelDockContext.Provider>
   );
 }
 

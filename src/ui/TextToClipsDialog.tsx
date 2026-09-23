@@ -11,6 +11,7 @@ import { PickerTabs } from "./PickerTabs.tsx";
 import { TextAnimationPickerGrid } from "./TextAnimationPickerGrid.tsx";
 import { TextStylePresetGrid } from "./TextStylePresetGrid.tsx";
 import { ToolPanelFrame } from "./ToolPanelFrame.tsx";
+import { useToolPanelFrameDock } from "./ToolPanelDock.tsx";
 import { useVisualViewportHeight } from "./useVisualViewportHeight.ts";
 
 const DEFAULT_SECONDS_PER_LINE = 3;
@@ -23,6 +24,7 @@ type PickerTab = "font" | "style" | "animation";
  *  "timing" here is just `secondsPerLine * lineIndex`, computed locally the instant Generate is
  *  clicked, so this dialog needs none of Auto Captions' job/SSE/credentials machinery. */
 export function TextToClipsDialog({ onClose }: { onClose: () => void }) {
+  const docked = Boolean(useToolPanelFrameDock());
   const t = useTranslation();
   const landCaptions = useEditorStore((s) => s.landCaptions);
   const viewportHeight = useVisualViewportHeight();
@@ -88,7 +90,7 @@ export function TextToClipsDialog({ onClose }: { onClose: () => void }) {
             zero horizontal padding to spare, that silently clipped the ring right off the left/right
             edges. The `-mx-1` cancels the padding's own width impact so children stay visually flush
             with the title above. */}
-        <div className="min-h-0 flex-1 overflow-y-auto scrollbar-none px-4 py-3">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto scrollbar-none px-4 py-3">
           <p className="text-xs leading-relaxed text-white/60">
             {t("Paste a script, lyrics, or a caption list — each line becomes its own text clip, placed back-to-back starting at the playhead.")}
           </p>
@@ -96,12 +98,12 @@ export function TextToClipsDialog({ onClose }: { onClose: () => void }) {
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
-            rows={8}
+            rows={docked ? 3 : 8}
             autoFocus
             placeholder={t("One line per clip…")}
             // 16px below `lg`: same iOS Safari auto-zoom-on-focus reasoning every other text input in
             // this app already follows (see MediaLibrary's search box for the original instance).
-            className="mt-3 w-full resize-none rounded bg-white/5 px-2.5 py-2 text-[16px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60 lg:text-[13px]"
+            className="mt-3 w-full shrink-0 resize-none rounded bg-white/5 px-2.5 py-2 text-[16px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60 lg:text-[13px]"
           />
 
           <div className="mt-1 flex items-center justify-between gap-3">
@@ -122,7 +124,7 @@ export function TextToClipsDialog({ onClose }: { onClose: () => void }) {
           {/* Chosen up front rather than after — these clips land as a batch, and restyling each one
               individually afterward is exactly the tedium a pre-picked look here avoids. No hover-preview
               (unlike Inspector's own version of this grid): no clip exists yet to preview onto. */}
-          <div className="mt-3">
+          <div className="mt-3 flex min-h-0 flex-1 flex-col">
             <PickerTabs
               tabs={[
                 { id: "font", label: t("Font") },
@@ -132,7 +134,7 @@ export function TextToClipsDialog({ onClose }: { onClose: () => void }) {
               active={pickerTab}
               onChange={setPickerTab}
             />
-            <div className="max-h-52 overflow-y-auto scrollbar-none pr-0.5">
+            <div className="min-h-0 flex-1 overflow-y-auto scrollbar-none pr-0.5">
               {pickerTab === "font" && <FontPickerGrid selectedId={selectedFontId} onPick={setFontId} />}
               {pickerTab === "style" && (
                 <>

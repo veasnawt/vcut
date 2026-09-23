@@ -1,10 +1,11 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import { More } from "@veasnawt/vicons";
 import type { Command } from "../commands/index.ts";
-import { BatchCommand, SetClipTransformCommand, SetClipTransformKeyframesCommand, SetTextCommand } from "../commands/index.ts";
+import { BatchCommand, SetClipFlipHorizontalCommand, SetClipMaskCommand, SetClipReverseCommand, SetClipTransformCommand, SetClipTransformKeyframesCommand, SetTextCommand } from "../commands/index.ts";
 import { findAsset, findClip } from "../project/createProject.ts";
-import type { ClipTransform } from "../project/types.ts";
+import { DEFAULT_CLIP_MASK, type ClipTransform } from "../project/types.ts";
 import type { AlignBox, AlignmentGuide } from "../playback/alignmentGuides.ts";
 import { computeAlignmentGuides } from "../playback/alignmentGuides.ts";
 import { clampPointToRect, computeTransformedBox, cropAfterEdgeDrag, rotatedPoint, type CropEdge } from "../playback/transformGeometry.ts";
@@ -20,6 +21,7 @@ import { AlignmentGuideOverlay } from "./AlignmentGuideOverlay.tsx";
 import { CanvasRotateHandleIcon } from "./CanvasRotateHandleIcon.tsx";
 import { usePinchToScale } from "./usePinchToScale.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
+import { useIsMobile } from "./useIsMobile.ts";
 
 /** How close (in on-screen CSS pixels, so it feels the same at any zoom) a dragged clip's edge/center
  *  must come to another clip's or the frame's before a guide line appears and the drag snaps to it —
@@ -64,6 +66,15 @@ function CropRotateIcon({ size = 15, className }: { size?: number; className?: s
       <path d="M17.5 22V8.5a2 2 0 0 0-2-2H2" />
       <path d="M20 7a7 7 0 0 0-7-5" />
       <polyline points="20 3 20 7 16 7" />
+    </svg>
+  );
+}
+
+function FlipHorizontalIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg aria-hidden width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3v18" strokeDasharray="2 2" />
+      <path d="m9 6-6 6 6 6V6Zm6 0 6 6-6 6V6Z" />
     </svg>
   );
 }
@@ -148,9 +159,12 @@ export function TransformHandles({
   const playhead = useEditorStore((s) => s.playhead);
   const run = useEditorStore((s) => s.run);
   const t = useTranslation();
+  const isMobile = useIsMobile();
 
   const [preview, setPreview] = useState<ClipTransform | null>(null);
   const [cropMode, setCropMode] = useState(false);
+  const [showClipOptions, setShowClipOptions] = useState(false);
+  const clipOptionsRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<ClipTransform | null>(null);
   const dragRef = useRef<{
     mode: DragMode;
@@ -250,7 +264,24 @@ export function TransformHandles({
 
   useEffect(() => {
     setCropMode(false);
+    setShowClipOptions(false);
   }, [resolved?.clipId]);
+
+  useEffect(() => {
+    if (!showClipOptions) return;
+    function onPointerDown(event: PointerEvent) {
+      if (!clipOptionsRef.current?.contains(event.target as Node)) setShowClipOptions(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setShowClipOptions(false);
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showClipOptions]);
 
   useEffect(() => {
     const openCrop = () => {
@@ -601,7 +632,10 @@ export function TransformHandles({
   const rotatePoint = clampPointToRect(rotateTruePoint, stageRect, HANDLE_SIZE / 2);
   const rotateHandleClamped = rotatePoint.x !== rotateTruePoint.x || rotatePoint.y !== rotateTruePoint.y;
   const stageWidth = stageRect.right - stageRect.left;
-  const dockWidth = cropMode ? Math.min(276, Math.max(56, stageWidth - 16)) : 62;
+  const selectedClip = findClip(project!, resolved.clipId)?.clip;
+  const selectedAsset = selectedClip ? findAsset(project!, selectedClip.assetId) : undefined;
+  const canFlipOrMask = selectedAsset?.kind === "video" || selectedAsset?.kind === "image";
+  const dockWidth = cropMode ? Math.min(276, Math.max(56, stageWidth - 16)) : canFlipOrMask ? 122 : 94;
   const dockHalf = dockWidth / 2;
   const canvasCenterX = (canvasRect.left + canvasRect.right) / 2;
   const dockX = Math.max(stageRect.left + dockHalf + 12, Math.min(stageRect.right - dockHalf - 12, canvasCenterX));
@@ -624,7 +658,6 @@ export function TransformHandles({
     { edge: "right", angle: 0, bar: "h-12 w-1", point: rotatedPoint(cssCenterX, cssCenterY, cssWidth / 2, 0, transform.rotationDeg) },
   ];
   const cropHandles = cropHandleDefinitions.map((handle) => ({ ...handle, cursor: resizeCursorForAngle(handle.angle + transform.rotationDeg), point: clampPointToRect(handle.point, stageRect, 16) }));
-  const selectedClip = findClip(project!, resolved.clipId)?.clip;
   const transformKeyframes = selectedClip?.transformKeyframes ?? [];
   const keyframeElapsed = playhead - resolved.timelineStart;
   const transformFps = resolved.sequence.fps;
@@ -711,15 +744,63 @@ export function TransformHandles({
               </button>
             </>
           ) : (
-            <button
-              type="button"
-              onClick={() => setCropMode(true)}
-              title={t("Crop & Rotate")}
-              aria-label={t("Crop & Rotate")}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-white/70 hover:bg-white/10 hover:text-white transition"
-            >
-              <CropRotateIcon size={14} />
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => { setShowClipOptions(false); setCropMode(true); }}
+                title={t("Crop & Rotate")}
+                aria-label={t("Crop & Rotate")}
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-white/70 transition hover:bg-white/10 hover:text-white"
+              >
+                <CropRotateIcon size={14} />
+              </button>
+              {canFlipOrMask && selectedClip && (
+                <button
+                  type="button"
+                  onClick={() => run(new SetClipFlipHorizontalCommand(selectedClip.id, !selectedClip.flipHorizontal))}
+                  title={t("Flip Horizontal")}
+                  aria-label={t("Flip Horizontal")}
+                  aria-pressed={selectedClip.flipHorizontal === true}
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition ${selectedClip.flipHorizontal ? "bg-sky-500/25 text-sky-200" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+                >
+                  <FlipHorizontalIcon size={15} />
+                </button>
+              )}
+              <div ref={clipOptionsRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowClipOptions((open) => !open)}
+                  title={t("Clip options")}
+                  aria-label={t("Clip options")}
+                  aria-expanded={showClipOptions}
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition ${showClipOptions ? "bg-white/15 text-white" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+                >
+                  <More size={16} />
+                </button>
+                {showClipOptions && selectedClip && (
+                  <div role="menu" aria-label={t("Clip options")} className="absolute bottom-full right-0 z-50 mb-2 w-48 rounded-lg border border-white/15 bg-[#181b22] p-1.5 text-xs shadow-2xl">
+                    {selectedAsset?.kind === "video" && (
+                      <button role="menuitemcheckbox" aria-checked={selectedClip.reverse === true} onClick={() => { run(new SetClipReverseCommand(selectedClip.id, !selectedClip.reverse)); setShowClipOptions(false); }} className="flex w-full items-center justify-between rounded px-2.5 py-2 text-left text-white/80 hover:bg-white/10 hover:text-white">
+                        {t("Reverse playback")}{selectedClip.reverse && <span className="text-sky-300">✓</span>}
+                      </button>
+                    )}
+                    {canFlipOrMask && (
+                      <button role="menuitem" onClick={() => { run(new SetClipMaskCommand(selectedClip.id, selectedClip.mask ? null : DEFAULT_CLIP_MASK)); setShowClipOptions(false); }} className="flex w-full items-center rounded px-2.5 py-2 text-left text-white/80 hover:bg-white/10 hover:text-white">
+                        {t(selectedClip.mask ? "Remove Mask" : "Add Mask")}
+                      </button>
+                    )}
+                    {selectedAsset?.kind === "video" && (
+                      <button role="menuitem" onClick={() => { useEditorStore.getState().requestInspectorTab("timing"); if (isMobile) useEditorStore.getState().setMobileSheet("inspector"); setShowClipOptions(false); }} className="flex w-full items-center rounded px-2.5 py-2 text-left text-white/80 hover:bg-white/10 hover:text-white">
+                        {t("Speed & Time Remapping")}
+                      </button>
+                    )}
+                    <button role="menuitem" onClick={() => { useEditorStore.getState().requestInspectorTab("transform"); if (isMobile) useEditorStore.getState().setMobileSheet("inspector"); setShowClipOptions(false); }} className="flex w-full items-center rounded px-2.5 py-2 text-left text-white/80 hover:bg-white/10 hover:text-white">
+                      {t("Properties")}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </div>
       )}

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Add } from "@veasnawt/vicons";
+import { Add, ChevronDown } from "@veasnawt/vicons";
 import { thumbnailUrl } from "../api/client.ts";
 import { AddTrackCommand, ReorderTrackCommand, SetClipTransitionCommand } from "../commands/index.ts";
 import { OUTRO_DURATION_SECONDS } from "../export/outro.ts";
@@ -126,7 +126,7 @@ function CurrentTime({ fps }: { fps: number }) {
   );
 }
 
-export function Timeline() {
+export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
   const t = useTranslation();
   const project = useEditorStore((s) => s.project);
   const projectId = useEditorStore((s) => s.projectId);
@@ -925,7 +925,12 @@ export function Timeline() {
   });
 
   return (
-    <section className="flex h-full min-h-0 flex-col border-t border-white/10 bg-[#0b0d12]">
+    <section className="relative flex h-full min-h-0 flex-col border-t border-white/10 bg-[#0b0d12]">
+      {onCollapse && (
+        <button type="button" onClick={onCollapse} aria-label={t("Collapse timeline")} title={t("Collapse timeline")} className="absolute right-2 top-0 z-40 flex h-[26px] w-7 items-center justify-center rounded text-white/55 transition hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300 lg:hidden">
+          <ChevronDown size={15} />
+        </button>
+      )}
       {/* Hidden entirely below `lg` now (was `flex flex-wrap` unconditionally) — the label, live
           position/duration readout, Set In/Out/Range, AND the zoom buttons all move elsewhere or
           disappear on a phone: the readout merges into the ruler itself (see the absolutely-positioned
@@ -991,6 +996,11 @@ export function Timeline() {
           )}
         </div>
         <div className="ml-auto flex items-center gap-1">
+          {onCollapse && (
+            <button type="button" onClick={onCollapse} aria-label={t("Collapse timeline")} title={t("Collapse timeline")} className="flex min-h-[26px] min-w-[26px] items-center justify-center rounded text-white/60 transition hover:bg-white/10 hover:text-white">
+              <ChevronDown size={15} />
+            </button>
+          )}
           {/* min-h/min-w 26px — same touch-target floor as TrackHeader's FlagButton (see its own
               comment: padding-only sizing measured as small as ~17×19px on a real mobile viewport). */}
           <button
