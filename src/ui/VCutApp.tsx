@@ -14,7 +14,6 @@ import {
   Delete,
   Document,
   Emoji,
-  Filter,
   Gauge,
   Grid,
   Headphone,
@@ -26,7 +25,6 @@ import {
   Split,
   Star,
   Text,
-  Transition,
   Video,
   Volume,
 } from "@veasnawt/vicons";
@@ -78,6 +76,7 @@ import { TemplateFillScreen } from "./TemplateFillScreen.tsx";
 import { TemplatePreviewScreen } from "./TemplatePreviewScreen.tsx";
 import { TextStylePickerMenu } from "./TextStylePickerMenu.tsx";
 import { TransitionPickerMenu } from "./TransitionPickerMenu.tsx";
+import { TransitionGlyph } from "./TransitionGlyph.tsx";
 import { UserMenu } from "./UserMenu.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 import { useIsMobile } from "./useIsMobile.ts";
@@ -488,7 +487,7 @@ function StatusBar({
               {
                 key: "transition",
                 label: t("Transition"),
-                icon: <Transition size={15} />,
+                icon: <TransitionGlyph size={15} />,
                 onClick: () => {
                   setTransitionPickerRequest(null);
                   setPickerAnchorSource("contextMenu");
@@ -502,7 +501,7 @@ function StatusBar({
               {
                 key: "effects",
                 label: t("Filters"),
-                icon: <Filter size={15} />,
+                icon: <Art size={15} />,
                 onClick: () => {
                   setPickerAnchorSource("contextMenu");
                   setShowEffectsMenu(true);
@@ -510,8 +509,8 @@ function StatusBar({
               },
               {
                 key: "pixelEffect",
-                label: t("Pixel Effects"),
-                icon: <Ai size={15} />,
+                label: t("Effects"),
+                icon: <Grid size={15} />,
                 onClick: () => {
                   setPickerAnchorSource("contextMenu");
                   setShowPixelEffectMenu(true);
@@ -1055,7 +1054,7 @@ function StatusBar({
                 setShowTransitionMenu((v) => !v);
               }}
             >
-              <Transition size={18} />
+              <TransitionGlyph size={18} />
             </ToolbarButton>
             {showTransitionMenu && foundForTransition && (
               <TransitionPickerMenu
@@ -1146,7 +1145,7 @@ function StatusBar({
                 setShowEffectsMenu((v) => !v);
               }}
             >
-              <Filter size={18} />
+              <Art size={18} />
             </ToolbarButton>
             {showEffectsMenu && foundForVideoEffects && (
               <EffectsPickerMenu
@@ -1159,15 +1158,15 @@ function StatusBar({
             )}
             <ToolbarButton
               ref={pixelEffectButtonRef}
-              title={t("Pixel Effects")}
-              label={t("Pixel FX")}
+              title={t("Effects")}
+              label={t("Effects")}
               active={pixelEffectActive}
               onClick={() => {
                 setPickerAnchorSource("button");
                 setShowPixelEffectMenu((v) => !v);
               }}
             >
-              <Ai size={18} />
+              <Grid size={18} />
             </ToolbarButton>
             {showPixelEffectMenu && foundForVideoEffects && (
               <PixelEffectPickerMenu

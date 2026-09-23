@@ -2,6 +2,7 @@
 
 import React, { useRef, useState } from "react";
 import { clampFrameDuration, timelineSpanPixels } from "../timeline/interaction.ts";
+import { TransitionGlyph } from "./TransitionGlyph.tsx";
 
 /** A junction control spans both neighbors. The centered strip represents the blend duration;
  *  it does not move either clip's cut or change the export's source-handle timing. */
@@ -99,27 +100,19 @@ export function TransitionJunction({
             <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
               {width >= 56 ? (
                 <div className="flex items-center gap-1.5 rounded-full border border-sky-400/40 bg-slate-950/90 px-2 py-0.5 shadow-sm">
-                  <svg viewBox="0 0 14 14" className="h-3 w-3 shrink-0 text-sky-300" fill="none">
-                    <rect x="1" y="2" width="7" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2" fill="currentColor" fillOpacity="0.25" />
-                    <rect x="6" y="4" width="7" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2" fill="currentColor" fillOpacity="0.6" />
-                  </svg>
+                  <TransitionGlyph size={12} className="shrink-0 text-sky-300" />
                   <span className="text-[10px] font-semibold leading-none tabular-nums text-white/95">{value.toFixed(1)}s</span>
                 </div>
               ) : (
                 <div className="flex h-5 w-5 items-center justify-center rounded-full border border-sky-400/40 bg-slate-950/90 shadow-sm">
-                  <svg viewBox="0 0 14 14" className="h-2.5 w-2.5 shrink-0 text-sky-300" fill="none">
-                    <rect x="1" y="2" width="7" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2" fill="currentColor" fillOpacity="0.25" />
-                    <rect x="6" y="4" width="7" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2" fill="currentColor" fillOpacity="0.6" />
-                  </svg>
+                  <TransitionGlyph size={10} className="shrink-0 text-sky-300" />
                 </div>
               )}
             </div>
           </>
         ) : (
           /* Inactive cut point button */
-          <svg aria-hidden viewBox="0 0 20 20" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.5">
-            <path d="M4 4v12M16 4v12M7 10h6M10 7v6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
+          <TransitionGlyph size={14} />
         )}
       </button>
       {active &&

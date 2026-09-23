@@ -2,6 +2,17 @@
 
 Updated: 2026-09-23 (Asia/Bangkok).
 
+## Post-release toolbar icon refinement - 2026-09-23
+
+- Transition now uses one shared overlapping-frames glyph in the toolbar, clip context menu, and
+  active/inactive timeline junctions (`src/ui/TransitionGlyph.tsx`).
+- Filters now uses the existing `Art` palette icon. The former Pixel FX tool now reads `Effects` in
+  the toolbar, context menu, tooltip, and picker accessibility label, and uses the existing `Grid`
+  icon instead of the unrelated AI icon.
+- `MISSING_VICONS.md` records the three purpose-built icons still wanted from `@veasnawt/vicons` and
+  their current fallbacks: `TransitionBlend`, `ImageFilters`, and `VisualEffects`.
+- Package and hosted-app TypeScript checks pass.
+
 ## Latest release: Shared tool panels and Script typography/animation - 2026-09-23
 
 ### Tool-panel UX

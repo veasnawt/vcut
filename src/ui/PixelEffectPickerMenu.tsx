@@ -79,7 +79,7 @@ export function PixelEffectPickerMenu({
     <div
       ref={menuRef}
       role="menu"
-      aria-label={t("Pixel Effects")}
+      aria-label={t("Effects")}
       style={{ position: "fixed", bottom, left, width: MENU_WIDTH }}
       className="z-50 rounded-lg border border-white/10 bg-[#181b22] p-2.5 shadow-2xl"
     >
