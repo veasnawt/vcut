@@ -1,8 +1,17 @@
 # VCut handover: Codex review for Claude
 
-Updated: 2026-09-23 (Asia/Bangkok).
+Updated: 2026-09-24 (Asia/Bangkok).
 
 ## Current handoff (takes precedence over the historical review below)
+
+### Desktop toolbar layout — 2026-09-24
+
+- Implemented the user's requested default Left tool rail for desktop (`>=1024px`) using the existing `StatusBar` actions. The old Bottom toolbar remains selectable through the header's Layout > Toolbar Position menu. The preference is local to the browser, survives refresh, and small screens always use Bottom. The Next and Vite entry documents apply a saved Bottom preference before hydration.
+- In Left mode, the existing Media panel starts collapsed and its rail button toggles it. Properties stays on the right and Timeline below; the preview's existing ResizeObserver handles layout changes. Existing picker menus open beside the rail, while context-anchored and Bottom-mode pickers retain their prior placement.
+- Main files: `src/ui/VCutApp.tsx`, `src/ui/editorToolbar.css`, `src/ui/toolbarPosition.ts`, `src/ui/verticalToolbarPopup.ts`, the affected `*PickerMenu.tsx` files, `studios/vcut/app/layout.tsx`, and `apps/mobile/index.html`. Tests: `tests/toolbarPosition.test.ts` and `scripts/toolbar-layout-check.cjs`.
+- Verified: all 1,141 VCut tests pass; package TypeScript, Studios production build, mobile strict build, desktop wrapper build, and an isolated real-browser layout check pass. The browser check was repeated after the final preference-state cleanup and covers desktop default, both switches, persistence/reload, project changes, Media panel and canvas resizing, selection/zoom preservation, picker placement, and mobile Bottom override. Run the browser script with `PLAYWRIGHT_MODULE` pointing to an installed `playwright-core` module; it uses Microsoft Edge by default.
+- Targeted host lint (`studios/vcut/app/layout.tsx`) passes. Applying the Studios ESLint configuration to package UI files reports existing React refs/effect rule violations across those files; the package has no ESLint config or local CLI. No lint rules or tests were weakened.
+- VCut implementation commit `7b38a48` and parent workspace commit `3a9eabb` were pushed with the user's explicit approval. Railway production deployment `4653d3f1-6d35-4f52-a4cd-1d61bec765dc` reached `SUCCESS` on 2026-09-24 (Asia/Bangkok). `https://vcut.io/` and `/edit` both return HTTP 200, and both live HTML responses contain the new toolbar preference bootstrap. The isolated browser interaction check was run locally against the same source; no physical-device test was performed for this layout.
 
 ### Canvas rotation handle and toolbar clarity — 2026-09-23
 
