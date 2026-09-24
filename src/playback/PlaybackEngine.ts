@@ -431,14 +431,21 @@ function compositeSoloReveal(
  *  `MAX_DRIFT_CORRECTION_RATE_DELTA`) can absorb even that startup-latency spike without ever reaching
  *  this threshold in ordinary use, breaking the cycle instead of just tuning how often it repeats. */
 const DRIFT_TOLERANCE = 1.5;
-/** How far a PAUSED element's frame may sit from the playhead before it's re-seeked, while
- *  `PlaybackEngine.setPreciseScrub` is on. `DRIFT_TOLERANCE` applies while paused too, so an ordinary
- *  paused scrub only moves the picture once the playhead has travelled 1.5s — fine for a drag, but the
- *  export dialog walks the playhead forward in small steps to follow the render, and measured, its
- *  preview changed once per 1.5s of video. Under half a frame at 24fps, so every step lands. Opt-in
- *  rather than the paused default: a paused seek briefly blanks the clip until it lands, and nothing
- *  else in the editor has asked for that trade. */
-const PRECISE_SCRUB_TOLERANCE = 0.02;
+/** How far a PAUSED element's frame may sit from the playhead before it's re-seeked. Deliberately a
+ *  completely different number from `DRIFT_TOLERANCE`, and deliberately NOT gated behind anything —
+ *  the two tolerances exist for unrelated problems. `DRIFT_TOLERANCE`'s own 1.5s is tuned around a
+ *  PLAYING element's startup-latency spike (see its own doc comment); a paused element isn't playing,
+ *  isn't buffering toward a moving target, and has none of that latency to absorb — it's just sitting
+ *  at a stale position. Reusing the large playing-only tolerance for the paused case meant frame-
+ *  stepping, scrubbing, and clicking the ruler routinely left the picture up to 1.5s stale — a real,
+ *  reported bug: split-at-playhead, trim, and any transform edit all depend on seeing the frame that's
+ *  actually at the playhead. Under half a frame at 24fps, so every small step lands; verified against
+ *  the export dialog's own fine-grained scrub, which already needed exactly this tolerance (this
+ *  constant used to be its own opt-in `PRECISE_SCRUB_TOLERANCE`, turned on only there — now this IS
+ *  the paused tolerance unconditionally, since there was never a real reason ordinary paused editing
+ *  should be any less accurate than export's own scrub preview). `holdLastCompleteFrame` (see its own
+ *  doc comment) is what keeps a seek at this tight a tolerance from flickering black on every step. */
+const PAUSED_SEEK_TOLERANCE = 0.02;
 /** Below this, drift is left alone entirely — small enough (one frame or so at 30fps) that neither a
  *  seek nor a rate nudge would be perceptible, and constantly fighting sub-frame jitter would just be
  *  wasted `playbackRate` churn for no audible benefit. Between this and `DRIFT_TOLERANCE`, `syncMedia`
@@ -1055,10 +1062,20 @@ export class PlaybackEngine {
    *  reports. */
   private drawIncomplete = false;
   private lastFrameComplete = true;
-  /** See `setPreciseScrub`. */
-  private preciseScrub = false;
-  /** Precise-scrub only: a copy of the last complete frame, painted back over any frame a seek leaves
-   *  partly black — see `holdLastCompleteFrame`. `null` whenever precise scrub is off. */
+  /** Set whenever this frame draws a `Clip.reverse` video — see `holdLastCompleteFrame`'s own doc
+   *  comment for why a discrete reseek needs this at all. A reversed clip has no native "play
+   *  backward": every frame is a fresh `element.currentTime =` seek (`syncMedia`'s own `reverse`
+   *  branch), which drops `readyState` below 2 for a beat exactly the same way a precise-scrub seek
+   *  does — `drawVideoClip`'s own readyState gate then skips drawing that clip entirely, leaving
+   *  `drawFrame`'s black clear-fill showing through as a real, confirmed flicker (measured directly:
+   *  the canvas alternated between real content and near-black roughly every other frame for about a
+   *  second at the start of reverse playback, before the browser's decoder caught up with the
+   *  seek pattern and settled). Reset at the top of every `drawFrame`, same as `drawIncomplete`. */
+  private reverseClipActiveThisFrame = false;
+  /** A copy of the last complete frame, painted back over any frame a seek leaves partly black — see
+   *  `holdLastCompleteFrame`. Kept fresh only while it's actually being used (whenever paused, or a
+   *  reversed clip is active — see `drawFrame`'s own call site); harmless if stale the rest of the
+   *  time, since nothing reads it outside that condition. */
   private scrubHoldCanvas: HTMLCanvasElement | null = null;
   private scrubHoldValid = false;
   /** Rolling tick intervals and `drawFrame` costs (ms), carried in stall reports — the preview is
@@ -1142,23 +1159,14 @@ export class PlaybackEngine {
     return this.lastFrameComplete;
   }
 
-  /** While on, a paused video is re-seeked as soon as its frame is off the playhead by more than
-   *  `PRECISE_SCRUB_TOLERANCE`, not only past `DRIFT_TOLERANCE` — see the former for why this is opt-in.
-   *  Playback is unaffected either way. Turned on by the export dialog only while it scrubs this
-   *  engine in step with a render, and off again when it stops. */
-  setPreciseScrub(on: boolean): void {
-    this.preciseScrub = on;
-    if (!on) {
-      this.scrubHoldCanvas = null;
-      this.scrubHoldValid = false;
-    }
-  }
 
-  /** Precise-scrub only. Every seek blanks its clip to black for the few frames until it lands (see
-   *  `drawVideoClip`'s readyState gate), and a precise scrub seeks several times a second — measured,
-   *  that left the preview black in well over half its frames, flickering. So each complete frame is
-   *  kept, and painted back over any frame that isn't: the picture holds on the last real frame until
-   *  the next one is ready. Works in raw backing-store pixels, independent of `drawFrame`'s transform. */
+  /** Called whenever paused (see `drawFrame`'s own call site) or a reversed clip is active. Every seek
+   *  blanks its clip to black for the few frames until it lands (see `drawVideoClip`'s readyState
+   *  gate), and `PAUSED_SEEK_TOLERANCE` means ordinary paused scrubbing/frame-stepping seeks several
+   *  times a second — measured, that left the preview black in well over half its frames, flickering.
+   *  So each complete frame is kept, and painted back over any frame that isn't: the picture holds on
+   *  the last real frame until the next one is ready. Works in raw backing-store pixels, independent
+   *  of `drawFrame`'s transform. */
   private holdLastCompleteFrame(context: CanvasRenderingContext2D): void {
     const canvas = context.canvas;
     const hold = (this.scrubHoldCanvas ??= document.createElement("canvas"));
@@ -1558,7 +1566,7 @@ export class PlaybackEngine {
       // last decodable frame in Safari/iOS and can briefly draw black, so stay a fraction of a frame
       // inside the source while retaining the same exported time mapping.
       const seekTime = Math.max(0, Math.min(sourceTime, Number.isFinite(element.duration) ? Math.max(0, element.duration - 1 / 120) : sourceTime));
-      if (!element.seeking && Math.abs(element.currentTime - seekTime) > PRECISE_SCRUB_TOLERANCE) {
+      if (!element.seeking && Math.abs(element.currentTime - seekTime) > PAUSED_SEEK_TOLERANCE) {
         element.currentTime = seekTime;
         this.mediaWaitingThisFrame = true;
       }
@@ -1642,8 +1650,10 @@ export class PlaybackEngine {
       sourceTime,
       playing,
       this.rateCorrection,
-      this.preciseScrub ? PRECISE_SCRUB_TOLERANCE : DRIFT_TOLERANCE
-      ,targetPlaybackRate
+      // Ignored by `planMediaSync` itself whenever `playing` is true (it always uses `DRIFT_TOLERANCE`
+      // then) — passed unconditionally rather than re-deriving that same branch here too.
+      PAUSED_SEEK_TOLERANCE,
+      targetPlaybackRate
     );
     // Rate BEFORE seek, never after: a rate change issued right behind a seek lands while that seek is
     // still in flight, which is exactly the interruption `planMediaSync` exists to stop.
@@ -1699,7 +1709,7 @@ export class PlaybackEngine {
         this.host.onTimeUpdate(total);
         this.host.onEnded();
         this.pauseAll();
-        this.drawFrame(project, context, total);
+        this.drawFrame(project, context, total, playing);
         return;
       }
       this.internalClockTime = time;
@@ -1726,7 +1736,7 @@ export class PlaybackEngine {
 
     this.mediaWaitingThisFrame = false;
     const drawStartedAt = performance.now();
-    this.drawFrame(project, context, time);
+    this.drawFrame(project, context, time, playing);
     if (playing) {
       pushRolling(this.drawCostsMs, performance.now() - drawStartedAt);
       if (delta > 0) pushRolling(this.frameIntervalsMs, delta * 1000);
@@ -1894,7 +1904,7 @@ export class PlaybackEngine {
     return end;
   }
 
-  private drawFrame(project: Project, context: CanvasRenderingContext2D, time: number): void {
+  private drawFrame(project: Project, context: CanvasRenderingContext2D, time: number, playing: boolean): void {
     const { width: frameWidth, height: frameHeight } = project.sequence;
     // Maps LOGICAL sequence-pixel coordinates — what every draw call below uses, since that's the
     // unit `ClipTransform.offsetX`, crop fractions, and text font sizes are all authored AND exported
@@ -1909,6 +1919,7 @@ export class PlaybackEngine {
     context.fillStyle = "#000";
     context.fillRect(0, 0, frameWidth, frameHeight);
     this.drawIncomplete = false;
+    this.reverseClipActiveThisFrame = false;
 
     // Computed once and reused by every `pauseInactive` call below, so a gap in the video track and a
     // clip actively playing agree on which audio-track elements are currently supposed to be making
@@ -1916,7 +1927,10 @@ export class PlaybackEngine {
     const activeAudioIds = this.activeAudioClips(project, time).map((c) => c.clip.id);
     this.drawVisualLayers(project, context, frameWidth, frameHeight, time, activeAudioIds);
     this.lastFrameComplete = !this.drawIncomplete;
-    if (this.preciseScrub) this.holdLastCompleteFrame(context);
+    // Whenever paused (frame-accurate seeking now always applies there, see `PAUSED_SEEK_TOLERANCE`'s
+    // own doc comment) or a reversed clip is active (see `reverseClipActiveThisFrame`'s own doc
+    // comment — that case applies during playback too).
+    if (!playing || this.reverseClipActiveThisFrame) this.holdLastCompleteFrame(context);
   }
 
   /** Draws ONE video track's own active clip — the entire per-clip body used to run
@@ -1996,6 +2010,7 @@ export class PlaybackEngine {
         const audioGain = resolveClipGain(clip, time - clip.timelineStart) * transitionGain;
         const audioMuted = (clip.mutedAudio ?? false) || track.muted;
         if (clip.reverse) {
+          this.reverseClipActiveThisFrame = true;
           this.audioMixEngine.syncVideoClipAudio(clip, element, 0, true);
           this.audioMixEngine.syncRetimedVideoClipAudio(clip, sourceTime, clipSpeedAtElapsed(clip, time - clip.timelineStart), audioGain, audioMuted, this.host.isPlaying());
         } else {
@@ -2238,6 +2253,7 @@ export class PlaybackEngine {
         const partnerGain = resolveClipGain(partner, clipDuration(partner) - duration / 2 + elapsed) * (1 - Math.min(1, elapsed / duration));
         const partnerMuted = (partner.mutedAudio ?? false) || trackMuted;
         if (partner.reverse) {
+          this.reverseClipActiveThisFrame = true;
           this.audioMixEngine.syncVideoClipAudio(partner, element, 0, true);
           this.audioMixEngine.syncRetimedVideoClipAudio(partner, sourceTime, clipSpeedAtElapsed(partner, clipDuration(partner) - duration / 2 + elapsed), partnerGain, partnerMuted, this.host.isPlaying());
         } else {

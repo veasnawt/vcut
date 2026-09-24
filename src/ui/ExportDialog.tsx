@@ -619,7 +619,9 @@ function useExportPreviewSync({
     if (!initial.project) return;
     const savedPlayhead = initial.playhead;
     initial.setPlaying(false);
-    initial.playbackEngine?.setPreciseScrub(true);
+    // No engine call needed to get frame-accurate paused seeking any more — that's the ordinary
+    // paused behavior now (see `PlaybackEngine.ts`'s `PAUSED_SEEK_TOLERANCE`'s own doc comment),
+    // not something this dialog has to opt into.
 
     const frameSeconds = 1 / (initial.project.sequence.fps || 30);
     const contentEnd = sequenceDuration(initial.project);
@@ -668,7 +670,6 @@ function useExportPreviewSync({
     return () => {
       cancelAnimationFrame(frame);
       const state = useEditorStore.getState();
-      state.playbackEngine?.setPreciseScrub(false);
       state.setPlaying(false);
       state.setPlayhead(savedPlayhead);
     };
