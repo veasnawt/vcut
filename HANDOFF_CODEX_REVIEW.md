@@ -11,6 +11,10 @@ Updated: 2026-09-24 (Asia/Bangkok).
 - Shortcuts is hidden on mobile while remaining pinned on desktop.
 - Main files: `src/ui/VCutApp.tsx`, `src/ui/editorToolbar.css`, `src/ui/ToolPanelDock.tsx`, the six picker menus, `src/ui/TextStylePresetGrid.tsx`, `src/i18n/translations.ts`, and `scripts/toolbar-layout-check.cjs`.
 - Verified: VCut TypeScript check, Studios and strict mobile production builds, isolated browser layout check, Android `assembleDebug`, and APK Signature Scheme v2 verification pass. Browser coverage checks panel collapse/height in Media and docked tool states, Properties selection and default height, all six picker close controls, Add Text grid height, and mobile Shortcuts hiding. iOS web assets/plugins synced; native compile still requires Xcode on macOS.
+- Git: source and handoff commit `539bdff` pushed to `veasnawt/vcut` main; workspace pointer commit `d9ed905` pushed to `veasnawt/veasna-os` main. Release details below are a follow-up handoff update.
+- Production: Railway project `vcut-io`, service `vcut`, deployment `98f70ef8-85f1-4566-a114-1e7e81b672a8` reached Online. Both `https://vcut.io/` and `https://vcut.io/edit` returned HTTP 200 after deployment.
+- Android debug APK: `apps/mobile/android/app/build/outputs/apk/debug/VCut-0.2.3-panel-update.apk` (200,812,709 bytes; SHA-256 `A61CD1ADDB72B43292D39DC60314B065B064BBC1F5E317095FB3947B1C34E337`). It was not installed on a physical device during this run.
+- Windows installer: `apps/vcut-desktop/release/VCut Setup 0.2.3-panel-update.exe` (232,540,195 bytes; SHA-256 `E14818E51E5F53570A775E847006305EF843EB7C65AAF016683AED584CC31E17`). NSIS archive integrity passed. The installer is unsigned and was not installed on a physical machine during this run.
 
 ### Editor space and canvas controls — 2026-09-24
 
