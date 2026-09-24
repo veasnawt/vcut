@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
-import { DOCKED_PICKER_STYLE, useToolPanelDock } from "./ToolPanelDock.tsx";
+import { DOCKED_PICKER_STYLE, PickerPanelHeader, useToolPanelDock } from "./ToolPanelDock.tsx";
 import { Ai, Backspace, Text, User } from "@veasnawt/vicons";
 import type { Asset, Clip } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
@@ -109,12 +109,11 @@ export function AiToolsPickerMenu({
   return createPortal(
     <div
       ref={menuRef}
+      data-has-panel-header
       style={{ bottom: `${pos.bottom}px`, left: `${pos.left}px`, width: `${MENU_WIDTH}px`, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH, 360), ...(dock ? DOCKED_PICKER_STYLE : {}) }}
       className="fixed z-50 rounded-xl border border-white/10 bg-[#12151c] p-1.5 shadow-2xl backdrop-blur-xl"
     >
-      <div className="px-2.5 py-1.5 border-b border-white/5 mb-1">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-white/40">{t("Smart & AI Tools")}</p>
-      </div>
+      <PickerPanelHeader title={t("AI Tools")} onClose={onClose} />
       <div className="space-y-0.5">
         {tools.map((tool) => (
           <button

@@ -10,6 +10,8 @@
  *  separate plural form the way the English source's `${n === 1 ? "" : "s"}` grammar does, so these
  *  collapse to one Khmer phrasing per message regardless of count. */
 export const KM_TRANSLATIONS: Record<string, string> = {
+  "Keep panel above timeline": "ទុកបន្ទះនៅលើខ្សែពេលវេលា",
+  "Extend panel to bottom": "ពង្រីកបន្ទះដល់ខាងក្រោម",
   "Keyboard shortcuts": "ផ្លូវកាត់ក្តារចុច",
   "More options": "ជម្រើសបន្ថែម",
   "Editor menu": "ម៉ឺនុយកម្មវិធីកែសម្រួល",

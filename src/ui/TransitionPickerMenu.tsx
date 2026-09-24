@@ -8,7 +8,7 @@ import type { TransitionType } from "../project/types.ts";
 import { TRANSITION_TYPE_LABEL, TRANSITION_TYPE_OPTIONS } from "../timeline/transitions.ts";
 import { TransitionPreviewTile } from "./TransitionPreviewTile.tsx";
 import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
-import { DOCKED_PICKER_STYLE, useToolPanelDock } from "./ToolPanelDock.tsx";
+import { DOCKED_PICKER_STYLE, PickerPanelHeader, useToolPanelDock } from "./ToolPanelDock.tsx";
 
 const MENU_WIDTH = 320;
 
@@ -174,11 +174,13 @@ export function TransitionPickerMenu({
   return createPortal(
     <div
       ref={menuRef}
+      data-has-panel-header
       role="menu"
       aria-label={t("Transition style")}
       style={{ position: "fixed", ...position, width: MENU_WIDTH, maxWidth: "calc(100vw - 16px)", ...(dock ? DOCKED_PICKER_STYLE : {}) }}
       className="z-50 max-h-[70vh] overflow-y-auto rounded-lg border border-white/10 bg-[#181b22] p-2 shadow-2xl"
     >
+      <PickerPanelHeader title={t("Transitions")} onClose={onClose} />
       <div className="mb-2 flex gap-1 rounded-md bg-white/5 p-0.5">
         {(["in", "out"] as const).map((m) => (
           <button

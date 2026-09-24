@@ -212,12 +212,14 @@ export function TextStylePresetGrid({
   onPreview,
   onPreviewEnd,
   className = "",
+  fillHeight = false,
 }: {
   selectedId?: string;
   onPick: (preset: TextStylePreset) => void;
   onPreview?: (preset: TextStylePreset) => void;
   onPreviewEnd?: () => void;
   className?: string;
+  fillHeight?: boolean;
 }) {
   const t = useTranslation();
   const [activeCategory, setActiveCategory] = useState<"all" | "favorites" | "recents" | PresetCategory>("all");
@@ -391,7 +393,7 @@ export function TextStylePresetGrid({
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-3 gap-2 max-h-[360px] overflow-y-auto pr-0.5">
+        <div className={`grid grid-cols-3 gap-2 overflow-y-auto pr-0.5 ${fillHeight ? "min-h-0 flex-1 content-start" : "max-h-[360px]"}`}>
           {filteredPresets.map((preset) => {
             const isFav = favorites.has(preset.id);
             const isSelected = selectedId === preset.id;

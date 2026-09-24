@@ -4,6 +4,14 @@ Updated: 2026-09-24 (Asia/Bangkok).
 
 ## Current handoff (takes precedence over the historical review below)
 
+### Shared editor panels and mobile Shortcuts — 2026-09-24
+
+- In desktop Left layout, Media and toolbar tools share one collapsible left panel. Its height toggle switches between spanning the preview and timeline rows and staying above the timeline. Properties starts full height, opens when a clip is selected, and hides when selection clears; users can still collapse or reopen it manually.
+- Add Text styles fill the available dock height and scroll inside it. Add Text, Background color, Transitions, Filters, Effects, and AI Tools have a visible title and close button in both docked and popup layouts. The generic dock close button stays hidden for these headed pickers.
+- Shortcuts is hidden on mobile while remaining pinned on desktop.
+- Main files: `src/ui/VCutApp.tsx`, `src/ui/editorToolbar.css`, `src/ui/ToolPanelDock.tsx`, the six picker menus, `src/ui/TextStylePresetGrid.tsx`, `src/i18n/translations.ts`, and `scripts/toolbar-layout-check.cjs`.
+- Verified: VCut TypeScript check, Studios and strict mobile production builds, isolated browser layout check, Android `assembleDebug`, and APK Signature Scheme v2 verification pass. Browser coverage checks panel collapse/height in Media and docked tool states, Properties selection and default height, all six picker close controls, Add Text grid height, and mobile Shortcuts hiding. iOS web assets/plugins synced; native compile still requires Xcode on macOS.
+
 ### Editor space and canvas controls — 2026-09-24
 
 - The header keeps Export visible and moves Account/Profile, Layout (with an editor-layout icon), Language, and Save as template into the top-right More menu. The Layout submenu still switches Left/Bottom and preserves the existing browser preference.

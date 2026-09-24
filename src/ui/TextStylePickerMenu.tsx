@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
-import { DOCKED_PICKER_STYLE, useToolPanelDock } from "./ToolPanelDock.tsx";
+import { DOCKED_PICKER_STYLE, PickerPanelHeader, useToolPanelDock } from "./ToolPanelDock.tsx";
 import { applyTextStylePreset } from "../project/textStylePresets.ts";
 import { DEFAULT_TEXT_STYLE, type TextStyle } from "../project/types.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -60,18 +60,20 @@ export function TextStylePickerMenu({ anchorRef, onPick, onClose }: { anchorRef:
   return createPortal(
     <div
       ref={menuRef}
+      data-has-panel-header
       role="menu"
       aria-label={t("Add text")}
       style={{ position: "fixed", bottom, left, width: MENU_WIDTH, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH), ...(dock ? DOCKED_PICKER_STYLE : {}) }}
-      className="z-50 rounded-lg border border-white/10 bg-[#181b22] p-2.5 shadow-2xl"
+      className={`z-50 rounded-lg border border-white/10 bg-[#181b22] p-2.5 shadow-2xl ${dock ? "flex min-h-0 flex-col" : ""}`}
     >
+      <PickerPanelHeader title={t("Add text")} onClose={onClose} />
       <button
         onClick={() => pick(DEFAULT_TEXT_STYLE)}
         className="mb-2 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/70 transition hover:bg-white/10 hover:text-white"
       >
         {t("Default")}
       </button>
-      <TextStylePresetGrid onPick={(preset) => pick(applyTextStylePreset(DEFAULT_TEXT_STYLE, preset))} />
+      <TextStylePresetGrid className={dock ? "min-h-0 flex-1" : ""} fillHeight={Boolean(dock)} onPick={(preset) => pick(applyTextStylePreset(DEFAULT_TEXT_STYLE, preset))} />
     </div>,
     dock ?? document.body
   );

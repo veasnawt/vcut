@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { verticalToolbarPopupStyle } from "./verticalToolbarPopup.ts";
-import { DOCKED_PICKER_STYLE, useToolPanelDock } from "./ToolPanelDock.tsx";
+import { DOCKED_PICKER_STYLE, PickerPanelHeader, useToolPanelDock } from "./ToolPanelDock.tsx";
 import { thumbnailUrl } from "../api/client.ts";
 import { SetClipPixelEffectCommand } from "../commands/index.ts";
 import type { Asset, Clip } from "../project/types.ts";
@@ -81,11 +81,13 @@ export function PixelEffectPickerMenu({
   return createPortal(
     <div
       ref={menuRef}
+      data-has-panel-header
       role="menu"
       aria-label={t("Effects")}
       style={{ position: "fixed", bottom, left, width: MENU_WIDTH, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH, 300), ...(dock ? DOCKED_PICKER_STYLE : {}) }}
       className="z-50 rounded-lg border border-white/10 bg-[#181b22] p-2.5 shadow-2xl"
     >
+      <PickerPanelHeader title={t("Effects")} onClose={onClose} />
       <div className="grid grid-cols-2 gap-1.5">
         {PIXEL_EFFECT_TYPE_OPTIONS.map((type) => (
           <button

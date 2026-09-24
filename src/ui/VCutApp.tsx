@@ -1337,7 +1337,7 @@ function StatusBar({
           <Save size={18} />
         </ToolbarButton>
       </div>
-      <div className="vcut-toolbar-shortcuts shrink-0">
+      <div className="vcut-toolbar-shortcuts hidden shrink-0 lg:block">
         <ToolbarButton
           title={t("Keyboard shortcuts")}
           label={t("Shortcuts")}
@@ -1347,7 +1347,7 @@ function StatusBar({
           <Key size={18} />
         </ToolbarButton>
       </div>
-      {showShortcuts && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
+      {showShortcuts && !isMobile && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
       {captionsDialog && <AutoCaptionsDialog clipIds={captionsDialog.clipIds} onClose={() => setCaptionsDialog(null)} />}
       {showVoiceRecord && <VoiceRecordModal onClose={() => setShowVoiceRecord(false)} />}
       {showTextImport && <TextToClipsDialog onClose={() => setShowTextImport(false)} />}
@@ -1515,6 +1515,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   const loadError = useEditorStore((s) => s.loadError);
   const loadErrorStatus = useEditorStore((s) => s.loadErrorStatus);
   const project = useEditorStore((s) => s.project);
+  const selectedClipIds = useEditorStore((s) => s.selectedClipIds);
   const language = useEditorStore((s) => s.language);
   const setLanguage = useEditorStore((s) => s.setLanguage);
   const t = useTranslation();
@@ -1624,22 +1625,31 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   const [desktopMediaOpen, setDesktopMediaOpen] = useState(false);
   const [toolDockElement, setToolDockElement] = useState<HTMLElement | null>(null);
   const [toolDockOpen, setToolDockOpen] = useState(false);
-  const [toolDockCollapsed, setToolDockCollapsed] = useState(false);
-  const [propertiesCollapsed, setPropertiesCollapsed] = useState(false);
-  const [propertiesFullHeight, setPropertiesFullHeight] = useState(false);
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
+  const [leftPanelFullHeight, setLeftPanelFullHeight] = useState(true);
+  const [propertiesCollapsed, setPropertiesCollapsed] = useState(true);
+  const [propertiesFullHeight, setPropertiesFullHeight] = useState(true);
   const desktopLeft = effectiveToolbarPosition(toolbarPosition, !isMobile) === "left";
+  const leftPanelOpen = desktopLeft && (desktopMediaOpen || toolDockOpen);
+  const leftPanelExpanded = leftPanelOpen && !leftPanelCollapsed;
   useEffect(() => {
     if (!toolDockElement) return;
     const update = () => {
       const open = toolDockElement.childElementCount > 0;
       setToolDockOpen(open);
-      if (open) setToolDockCollapsed(false);
+      if (open) {
+        setDesktopMediaOpen(false);
+        setLeftPanelCollapsed(false);
+      }
     };
     const observer = new MutationObserver(update);
     observer.observe(toolDockElement, { childList: true });
     update();
     return () => observer.disconnect();
   }, [toolDockElement]);
+  useEffect(() => {
+    setPropertiesCollapsed(selectedClipIds.length === 0);
+  }, [selectedClipIds]);
   useLayoutEffect(() => {
     document.documentElement.dataset.vcutToolbarPosition = toolbarPosition;
     window.dispatchEvent(new Event("vcut:toolbar-position-change"));
@@ -1791,6 +1801,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   // corrects both to their real clamped values synchronously after mount, before paint.
   const [mediaWidth, setMediaWidth] = useState(240);
   const [propertiesWidth, setPropertiesWidth] = useState(260);
+  const leftPanelWidth = toolDockOpen ? TOOL_DOCK_WIDTH : mediaWidth;
   // Read inside the resize-listener effect below, which (like `timelineHeight`'s own) stays mount-only
   // (`[]` deps) — a ref is what lets it see each width's LATEST value without re-subscribing the
   // `resize` listener on every drag pixel the way depending on the state directly would.
@@ -2214,7 +2225,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         </div>
       </header>
       {showSaveAsTemplate && <SaveAsTemplateDialog onClose={() => setShowSaveAsTemplate(false)} />}
-      <div className="vcut-editor-body min-h-0 min-w-0 flex-1" data-vcut-media-open={desktopMediaOpen} data-vcut-tool-dock-open={toolDockOpen} data-vcut-tool-dock-expanded={toolDockOpen && !toolDockCollapsed} data-vcut-properties-collapsed={propertiesCollapsed} data-vcut-properties-full-height={propertiesFullHeight}>
+      <div className="vcut-editor-body min-h-0 min-w-0 flex-1" data-vcut-media-open={desktopMediaOpen} data-vcut-tool-dock-open={toolDockOpen} data-vcut-left-panel-expanded={leftPanelExpanded} data-vcut-left-panel-full-height={leftPanelFullHeight} data-vcut-properties-collapsed={propertiesCollapsed} data-vcut-properties-full-height={propertiesFullHeight}>
 
       {/* Three panes at `lg`+ (1024px): an optional media panel, preview, and inspector,
           with the timeline across the bottom. The toolbar sits beside this workspace in Left mode.
@@ -2255,6 +2266,8 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
             // Timeline/every other sheet shares.
             gridTemplateRows: hidePreviewForMediaSheet ? "0px minmax(0,1fr)" : `minmax(0,1fr) ${visibleTimelineHeight}px`,
             "--vs-media-w": `${mediaWidth}px`,
+            "--vs-left-w": `${leftPanelExpanded ? leftPanelWidth : 0}px`,
+            "--vs-timeline-h": `${visibleTimelineHeight}px`,
             "--vs-props-w": `${propertiesCollapsed ? 0 : propertiesWidth}px`,
           } as React.CSSProperties
         }
@@ -2277,6 +2290,19 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           <div ref={setToolDockElement} className="vcut-tool-panel-root h-full min-h-0" />
           <button type="button" className="vcut-tool-dock-close" aria-label={t("Close")} onClick={() => window.dispatchEvent(new Event("vcut:close-tool-dock"))}>×</button>
         </div>
+        {leftPanelExpanded && (
+          <button
+            type="button"
+            className="vcut-left-height-toggle"
+            style={{ left: leftPanelWidth }}
+            title={t(leftPanelFullHeight ? "Keep panel above timeline" : "Extend panel to bottom")}
+            aria-label={t(leftPanelFullHeight ? "Keep panel above timeline" : "Extend panel to bottom")}
+            aria-pressed={leftPanelFullHeight}
+            onClick={() => setLeftPanelFullHeight((fullHeight) => !fullHeight)}
+          >
+            {leftPanelFullHeight ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          </button>
+        )}
         <div className="vcut-properties-panel relative hidden min-h-0 min-w-0 lg:col-start-3 lg:row-start-1 lg:block">
           {!isMobile && <Inspector />}
           {!isMobile && (
@@ -2351,7 +2377,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           aria-orientation="vertical"
           aria-label={t("Resize media panel")}
           className="vcut-media-resizer absolute inset-y-0 z-20 hidden w-2.5 -translate-x-1/2 cursor-col-resize touch-none lg:block"
-          style={{ left: mediaWidth }}
+          style={{ left: desktopLeft ? leftPanelWidth : mediaWidth }}
         />
         <div
           onMouseDown={beginPropertiesResize}
@@ -2375,16 +2401,17 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
             {propertiesCollapsed ? <ChevronLeft size={14} /> : <ChevronRight size={14} />}
           </button>
         )}
-        {desktopLeft && toolDockOpen && (
+        {leftPanelOpen && (
           <button
             type="button"
-            className={`vcut-tool-dock-toggle ${toolDockCollapsed ? "vcut-tool-dock-toggle-collapsed" : ""}`}
-            aria-label={t(toolDockCollapsed ? "Expand tool panel" : "Collapse tool panel")}
-            title={t(toolDockCollapsed ? "Expand tool panel" : "Collapse tool panel")}
-            aria-expanded={!toolDockCollapsed}
-            onClick={() => setToolDockCollapsed((collapsed) => !collapsed)}
+            className={`vcut-tool-dock-toggle ${leftPanelCollapsed ? "vcut-tool-dock-toggle-collapsed" : ""}`}
+            style={{ left: leftPanelCollapsed ? 10 : leftPanelWidth }}
+            aria-label={t(leftPanelCollapsed ? "Expand tool panel" : "Collapse tool panel")}
+            title={t(leftPanelCollapsed ? "Expand tool panel" : "Collapse tool panel")}
+            aria-expanded={!leftPanelCollapsed}
+            onClick={() => setLeftPanelCollapsed((collapsed) => !collapsed)}
           >
-            {toolDockCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+            {leftPanelCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
           </button>
         )}
       </div>
@@ -2394,7 +2421,7 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         setMobileSheet={setMobileSheet}
         toolbarPosition={toolbarPosition}
         desktopMediaOpen={desktopMediaOpen}
-        onToggleDesktopMedia={() => setDesktopMediaOpen((open) => toolDockOpen ? true : !open)}
+        onToggleDesktopMedia={() => { setDesktopMediaOpen((open) => toolDockOpen ? true : !open); setLeftPanelCollapsed(false); }}
         bottomPanel={bottomPanel}
         setBottomPanel={setBottomPanel}
         floatingPanel={floatState?.panel ?? null}
