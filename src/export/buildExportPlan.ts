@@ -881,8 +881,11 @@ function ffmpegColor(hex: string): string {
  *  key=value pairs appear in the filter string — `PlaybackEngine.drawText` draws in that same order
  *  for the same visual result. */
 function buildDrawTextStyleParams(style: TextStyle, textAlignSupported = true): string {
+  // `style.backgroundPadding ?? TEXT_BOX_PADDING` — matches `textLayout.ts`'s own preview box sizing
+  // exactly. This used the bare constant unconditionally until now, a real, confirmed bug: a custom
+  // `backgroundPadding` value was honored in the live preview but silently ignored in every export.
   const box = style.backgroundColor
-    ? `:box=1:boxcolor=${ffmpegColor(style.backgroundColor)}:boxborderw=${TEXT_BOX_PADDING}`
+    ? `:box=1:boxcolor=${ffmpegColor(style.backgroundColor)}:boxborderw=${n(style.backgroundPadding ?? TEXT_BOX_PADDING)}`
     : "";
   const border = style.strokeColor ? `:bordercolor=${ffmpegColor(style.strokeColor)}:borderw=${n(style.strokeWidth)}` : "";
   const shadow = style.shadowColor
@@ -1018,6 +1021,39 @@ export function containsKhmerScript(text: string): boolean {
     if (codePoint !== undefined && codePoint >= 0x1780 && codePoint <= 0x17ff) return true;
   }
   return false;
+}
+
+/** Whether `style` uses a preview feature FFmpeg's own text paths (`drawtext`, the libass
+ *  `subtitles=` filter) simply have no equivalent for — the same "route through the browser-rendered
+ *  image-overlay path instead" decision `containsKhmerScript` already makes for Khmer shaping, OR'd
+ *  alongside it at every call site rather than replacing it (two independent, unrelated reasons to
+ *  need the same fallback). Until this existed, EVERY one of these fields rendered correctly in the
+ *  live preview (`PlaybackEngine`'s canvas text drawing, `textLayout.ts`) and was silently DROPPED
+ *  from every real export, with no error — confirmed by grep: zero references to any of them anywhere
+ *  in this file's own `drawtext`-building code, before this function existed to redirect them.
+ *
+ *  Deliberately conservative (checks for "any real use," not "verified impossible in drawtext" per
+ *  field) — a few of these (`backgroundOpacity` via an 8-digit `boxcolor`, in particular) might be
+ *  natively expressible with real FFmpeg testing, but guessing at `drawtext` argument support without
+ *  verifying against the real binary is exactly the mistake this codebase's own `DEVELOPMENT.md`
+ *  warns against for FFmpeg expression syntax — the browser path is GUARANTEED correct (it draws
+ *  through the exact same code the preview does), so every field here defaults to it until a specific
+ *  one is verified worth a native implementation instead. `backgroundPadding` is deliberately NOT
+ *  included — see `buildDrawTextStyleParams`'s own fix, a plain `drawtext` argument, no browser
+ *  render needed for that one alone. */
+export function needsTextStyleBrowserRender(style: TextStyle): boolean {
+  return Boolean(
+    style.gradient ||
+      style.glowColor ||
+      (style.shadows && style.shadows.length > 0) ||
+      (style.shadowColor && style.shadowBlur && style.shadowBlur > 0) ||
+      (style.backgroundColor && style.backgroundCornerRadius && style.backgroundCornerRadius > 0) ||
+      (style.backgroundColor && style.backgroundOpacity !== undefined && style.backgroundOpacity < 1) ||
+      (style.letterSpacing && style.letterSpacing !== 0) ||
+      (style.textDecoration && style.textDecoration !== "none") ||
+      (style.opacity !== undefined && style.opacity < 1) ||
+      (style.blendMode && style.blendMode !== "source-over")
+  );
 }
 
 /** Builds one complete `.ass` subtitle document implementing `wordHighlight` — see
@@ -3441,25 +3477,28 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
             ? { duration: soloFadeOutDuration, extendsPastEnd: false }
             : undefined;
 
-      // A Khmer-script text clip (any `textAnimation`, including `wordHighlight`) renders through
-      // pre-rendered browser images instead of any FFmpeg-side text path — see `khmerTextRenderer.ts`'s
-      // own doc comment for why: every FFmpeg text path (`drawtext`, and the libass `subtitles=` filter
-      // this used to route Khmer through) fails to correctly stack certain subscript-consonant clusters,
-      // confirmed empirically. Checked FIRST, ahead of `wordHighlight`/rotated/plain, so a Khmer
-      // `wordHighlight` clip takes this path too rather than the ASS one below (kept only for non-Khmer
-      // `wordHighlight` now). Excludes keyframed style and crop — the render harness doesn't cover
-      // either yet, the same real, documented scope cut the old libass Khmer path also had — but NOT
-      // rotation: unlike the old path's unverified libass `\frz` sign convention, the harness draws
-      // through the exact same `drawAnimatedTextFrame` the preview uses, rotation included, so a
-      // rotated Khmer clip is fully supported here. `khmerTextWindowsFor` returns `undefined` for
-      // anything not pre-rendered (a non-Khmer clip, or a caller — `nativeExport.ts` — that doesn't
-      // support this path), falling through to the untouched paths below exactly like every other
+      // A Khmer-script text clip (any `textAnimation`, including `wordHighlight`), OR one using a
+      // preview style feature FFmpeg's own text paths have no equivalent for (`needsTextStyleBrowserRender`
+      // — gradient fill, glow, layered/blurred shadows, a rounded or translucent background box, letter
+      // spacing, text-decoration, clip opacity, a canvas blend mode), renders through pre-rendered
+      // browser images instead of any FFmpeg-side text path — see `khmerTextRenderer.ts`'s own doc
+      // comment for the Khmer half of this (every FFmpeg text path fails to correctly stack certain
+      // subscript-consonant clusters, confirmed empirically) and `needsTextStyleBrowserRender`'s own
+      // doc comment for the style half (those fields were silently DROPPED from every export before
+      // this existed, despite rendering correctly in the live preview). Checked FIRST, ahead of
+      // `wordHighlight`/rotated/plain, so either case takes this path too rather than the ASS one below
+      // (kept only for a clip that needs neither). Excludes keyframed style and crop — the render
+      // harness doesn't cover either yet, the same real, documented scope cut the old libass Khmer path
+      // also had — but NOT rotation: the harness draws through the exact same `drawAnimatedTextFrame`
+      // the preview uses, rotation included. `khmerTextWindowsFor` returns `undefined` for anything not
+      // pre-rendered (neither condition applies, or a caller — `nativeExport.ts` — that doesn't support
+      // this path at all), falling through to the untouched paths below exactly like every other
       // optional resolver here degrades when omitted.
       const clipTextContent = applyTextTransform(asset.textContent ?? "", asset.textStyle.textTransform);
       const khmerWindows =
         !hasTextStyleKeyframes(clip) &&
         !((clip.textCrop && !isIdentityTextCrop(clip.textCrop)) || hasTextCropKeyframes(clip)) &&
-        containsKhmerScript(clipTextContent)
+        (containsKhmerScript(clipTextContent) || needsTextStyleBrowserRender(asset.textStyle))
           ? options.khmerTextWindowsFor?.(clip)
           : undefined;
       if (khmerWindows && khmerWindows.length > 0) {

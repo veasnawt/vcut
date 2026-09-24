@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { buildExportPlan, ExportError } from "../src/export/buildExportPlan.ts";
+import { buildExportPlan, ExportError, needsTextStyleBrowserRender } from "../src/export/buildExportPlan.ts";
 import { clipEnd } from "../src/project/createProject.ts";
 import {
   addClip,
@@ -3345,4 +3345,101 @@ describe("drawtext compatibility for the mobile FFmpeg engine", () => {
       });
     }
   }
+});
+
+// Regression coverage for a real, confirmed bug: every one of these fields renders correctly in the
+// live preview (PlaybackEngine/textLayout.ts) but was silently DROPPED from every export, with no
+// error, because buildExportPlan's own drawtext-building code never referenced any of them at all —
+// confirmed by grep before this predicate (and the browser-render routing it drives) existed.
+describe("needsTextStyleBrowserRender", () => {
+  it("is false for the plain default style", () => {
+    assert.equal(needsTextStyleBrowserRender(DEFAULT_TEXT_STYLE), false);
+  });
+
+  it("is true for a gradient fill", () => {
+    const style = { ...DEFAULT_TEXT_STYLE, gradient: { type: "linear" as const, stops: [{ offset: 0, color: "#fff" }, { offset: 1, color: "#000" }] } };
+    assert.equal(needsTextStyleBrowserRender(style), true);
+  });
+
+  it("is true for a glow color", () => {
+    assert.equal(needsTextStyleBrowserRender({ ...DEFAULT_TEXT_STYLE, glowColor: "#ff00ff" }), true);
+  });
+
+  it("is true for layered shadows (the shadows array, distinct from the single legacy shadow)", () => {
+    const style = { ...DEFAULT_TEXT_STYLE, shadows: [{ color: "#000", offsetX: 2, offsetY: 2, blur: 4 }] };
+    assert.equal(needsTextStyleBrowserRender(style), true);
+  });
+
+  it("is true for a blurred single shadow, false for a plain hard-edged one (drawtext handles that natively)", () => {
+    const blurred = { ...DEFAULT_TEXT_STYLE, shadowColor: "#000000", shadowBlur: 6 };
+    const hardEdged = { ...DEFAULT_TEXT_STYLE, shadowColor: "#000000" };
+    assert.equal(needsTextStyleBrowserRender(blurred), true);
+    assert.equal(needsTextStyleBrowserRender(hardEdged), false);
+  });
+
+  it("is true for a rounded background box, false for a plain rectangular one", () => {
+    const rounded = { ...DEFAULT_TEXT_STYLE, backgroundColor: "#000000", backgroundCornerRadius: 8 };
+    const rectangular = { ...DEFAULT_TEXT_STYLE, backgroundColor: "#000000" };
+    assert.equal(needsTextStyleBrowserRender(rounded), true);
+    assert.equal(needsTextStyleBrowserRender(rectangular), false);
+  });
+
+  it("is true for a translucent background box, false for a fully opaque one", () => {
+    const translucent = { ...DEFAULT_TEXT_STYLE, backgroundColor: "#000000", backgroundOpacity: 0.5 };
+    const opaque = { ...DEFAULT_TEXT_STYLE, backgroundColor: "#000000", backgroundOpacity: 1 };
+    assert.equal(needsTextStyleBrowserRender(translucent), true);
+    assert.equal(needsTextStyleBrowserRender(opaque), false);
+  });
+
+  it("does NOT trigger for backgroundPadding alone -- that one's a plain drawtext argument now, no browser render needed", () => {
+    const style = { ...DEFAULT_TEXT_STYLE, backgroundColor: "#000000", backgroundPadding: 40 };
+    assert.equal(needsTextStyleBrowserRender(style), false);
+  });
+
+  it("is true for non-zero letter spacing", () => {
+    assert.equal(needsTextStyleBrowserRender({ ...DEFAULT_TEXT_STYLE, letterSpacing: 4 }), true);
+    assert.equal(needsTextStyleBrowserRender({ ...DEFAULT_TEXT_STYLE, letterSpacing: 0 }), false);
+  });
+
+  it("is true for underline/strikethrough, false for 'none'", () => {
+    assert.equal(needsTextStyleBrowserRender({ ...DEFAULT_TEXT_STYLE, textDecoration: "underline" }), true);
+    assert.equal(needsTextStyleBrowserRender({ ...DEFAULT_TEXT_STYLE, textDecoration: "line-through" }), true);
+    assert.equal(needsTextStyleBrowserRender({ ...DEFAULT_TEXT_STYLE, textDecoration: "none" }), false);
+  });
+
+  it("is true for reduced clip opacity, false for fully opaque or unset", () => {
+    assert.equal(needsTextStyleBrowserRender({ ...DEFAULT_TEXT_STYLE, opacity: 0.5 }), true);
+    assert.equal(needsTextStyleBrowserRender({ ...DEFAULT_TEXT_STYLE, opacity: 1 }), false);
+    assert.equal(needsTextStyleBrowserRender(DEFAULT_TEXT_STYLE), false);
+  });
+
+  it("is true for a real blend mode, false for 'source-over' or unset", () => {
+    assert.equal(needsTextStyleBrowserRender({ ...DEFAULT_TEXT_STYLE, blendMode: "screen" }), true);
+    assert.equal(needsTextStyleBrowserRender({ ...DEFAULT_TEXT_STYLE, blendMode: "source-over" }), false);
+  });
+});
+
+describe("buildExportPlan routes a styled (non-Khmer) text clip through the browser-render path", () => {
+  it("only when khmerTextWindowsFor actually supplies windows for it", () => {
+    let base = emptyProject([videoAsset(), textAsset("text1", "Hello")]);
+    base = addTrack(base, "text");
+    base = setTextAsset(base, "text1", "Hello", { ...DEFAULT_TEXT_STYLE, glowColor: "#ff00ff" });
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    project = addClip(project, textTrackId(project), "text1", 0);
+    const [textClip] = clipsOf(project, textTrackId(project));
+
+    const withWindows = buildExportPlan(project, {
+      ...options,
+      khmerTextWindowsFor: (clip) => (clip.id === textClip.id ? [{ startOffset: 0, endOffset: 2, imagePath: "/tmp/w0.png" }] : undefined),
+    });
+    // The window image is a separate `-i` argument, not part of the filter-graph string itself.
+    assert.ok(withWindows.args.includes("/tmp/w0.png"), "expects the pre-rendered window image to be used as a real FFmpeg input");
+    assert.ok(!filterGraph(withWindows.args).includes("drawtext="), "a glow-styled clip with windows supplied must not also fall through to drawtext");
+
+    // No khmerTextWindowsFor at all (e.g. nativeExport.ts, which doesn't support this path) -- falls
+    // through to plain drawtext, exactly like before this feature existed, rather than throwing.
+    const withoutWindows = buildExportPlan(project, options);
+    const graphWithout = filterGraph(withoutWindows.args);
+    assert.ok(graphWithout.includes("drawtext="), "with no windows supplied, a styled clip still falls through to drawtext rather than failing");
+  });
 });
