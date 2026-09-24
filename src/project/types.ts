@@ -555,6 +555,10 @@ export interface Keyframe<T> {
 export type TransformKeyframe = Keyframe<ClipTransform>;
 export type EffectsKeyframe = Keyframe<ClipEffects>;
 export type TextStyleKeyframe = Keyframe<TextStyle>;
+/** `Keyframe<T>`'s one instance where `T` is a plain `number` rather than a property-group object —
+ *  see `Clip.gainKeyframes`'s own doc comment for why gain doesn't need the object-shaped treatment
+ *  `TransformKeyframe`/`EffectsKeyframe` do. */
+export type GainKeyframe = Keyframe<number>;
 /** Held (never interpolated) between keyframes — see `Clip.colorGradingKeyframes`'s own doc comment for
  *  why smoothly cross-fading between two differently-shaped curves isn't attempted in v1. */
 export type ColorGradingKeyframe = Keyframe<ColorGrading>;
@@ -697,6 +701,13 @@ export interface Clip {
    *  separately from `ClipTransform.scale` so crop geometry, resize handles, and transform
    *  keyframes retain their existing positive-scale contract. */
   flipHorizontal?: boolean;
+  /** `flipHorizontal`'s own counterpart — mirrors the source around its visual HORIZONTAL axis
+   *  (top/bottom swap) instead of the vertical one. Same identity/independence/composition rules as
+   *  `flipHorizontal`: absent/false is the identity value, and a clip can have both flips active at
+   *  once (equivalent to a 180° rotation, but tracked as its own pair of flags rather than folded into
+   *  `ClipTransform.rotationDeg` — keeps "flip" and "rotate" independently toggleable/undoable, the
+   *  same reasoning `flipHorizontal` was already kept out of `ClipTransform.scale` for). */
+  flipVertical?: boolean;
   /** Plays a video clip's selected source window from `sourceOut` back to `sourceIn`. */
   reverse?: boolean;
   /** Constant playback multiplier. Absent is the identity value 1. */
@@ -840,8 +851,49 @@ export interface Clip {
    *  Routed through Web Audio (`AudioMixEngine`), not a `<video>`/`<audio>` element's native `.volume`
    *  (which the browser caps at 1) — so this can genuinely exceed 1 for real amplification, not just
    *  attenuation; see `setClipGain`'s own ceiling for the UI-facing bound. Absent means `1` (unchanged),
-   *  same "small JSON, cheap default path" reasoning as `transform`/`effects`. */
+   *  same "small JSON, cheap default path" reasoning as `transform`/`effects`. This is the KEYFRAMED
+   *  property's own base/identity value — see `gainKeyframes`' own doc comment for how the two
+   *  compose, the same "flat field is the fallback, keyframes array is what's actually read once
+   *  present" relationship `transform`/`transformKeyframes` already have. */
   gain?: number;
+  /** Stereo pan for this clip's OWN embedded audio, downstream of `gain` in the signal chain — the
+   *  exact per-clip counterpart of `Track.pan` (same equal-power law, same `AudioMixEngine`
+   *  `StereoPannerNode` mechanism, same `[-1,1]` range/`0`-is-center identity), just scoped to one
+   *  clip instead of a whole track; the two compose exactly the way `Clip.gain`/`Track.gain` already
+   *  do (see `AudioMixEngine`'s own per-clip-then-per-track node-chain comment). Video and audio
+   *  clips only — a text clip has no audio of its own to pan. Absent means `0` (center), same "small
+   *  JSON, cheap default path" reasoning as `gain`; the `[-1,1]` clamp `setClipPan` applies is the
+   *  same ordinary input-sanity bound `setTrackPan` uses. Deliberately NOT keyframed (unlike `gain`
+   *  below) — a listener rarely wants a clip's stereo position to move mid-clip the way its LOUDNESS
+   *  routinely does (duck under dialogue, fade in/out), and export has no established time-varying
+   *  stereo-balance primitive the way `volume`'s `eval=frame` gives gain (see `gainKeyframes`' own
+   *  doc comment) — a flat per-clip control is the honestly-scoped v1 here, not an oversight. */
+  pan?: number;
+  /** This clip's own `gain` KEYFRAMED over its duration — `Clip.transformKeyframes`' own doc comment's
+   *  "present+non-empty is what both renderers resolve, absent means not keyframed" contract, `T`
+   *  narrowed to a plain `number` here (not a property-GROUP object like `ClipTransform`/`ClipEffects`)
+   *  because gain genuinely IS just one scalar — there's no sibling field it would make sense to bundle
+   *  it with the way offsetX/offsetY/scale/rotationDeg belong together as one Transform. LERP-
+   *  interpolated between keyframes, like `TransformKeyframe` (a plain crossfade in volume between two
+   *  levels is exactly what "ramp the gain" should mean — unlike `ColorGradingKeyframe`'s HELD curves,
+   *  there's no "shape mismatch between two keyframes" problem for a single number). Falls back to
+   *  `clip.gain ?? 1` when absent/empty, the same zero-behavior-change-until-armed contract every other
+   *  keyframe field here has.
+   *
+   *  Export support is real but deliberately narrower than preview: `buildExportPlan.ts` renders this
+   *  as a genuine time-varying FFmpeg `volume=eval=frame` expression (piecewise-linear, mirroring
+   *  `resolveClipGain`'s own hold-before/lerp-between/hold-after shape exactly — see `gainFilter.ts`),
+   *  but ONLY for a clip playing at a constant rate. A clip with a non-trivial `speedCurve` already
+   *  routes its audio through a per-segment `atempo`+`concat` rebuild whose own local timeline is not
+   *  1:1 with clip-elapsed time partway through a slice (only at each slice's own start) — composing
+   *  that correctly with a keyframed gain sampled by real output-time is real, unsolved work, so that
+   *  one combination exports the clip's flat `gain` instead (keyframes ignored), a documented scope cut
+   *  matching this codebase's existing precedent for narrow, deliberately-unhandled interaction
+   *  combinations (see `zoomBlur`/`flashZoom`'s own solo-case history). Preview always renders the real
+   *  keyframed envelope regardless of speed curve — Web Audio's per-tick `AudioParam` update has no
+   *  equivalent "local time resets each slice" problem to begin with. Video/audio clips only, same
+   *  gating as `gain`/`pan`. */
+  gainKeyframes?: GainKeyframe[];
   /** A `LutAsset.id` from the project's own `luts` library — applied AFTER color grading (both
    *  preview's `PlaybackEngine.drawTransformed` and export's matching filter chain apply curves, then
    *  the LUT, on top of the same already-color-graded pixels), same "resolve to a real file only at

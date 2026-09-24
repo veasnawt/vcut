@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SetClipBlendModeCommand, SetClipFlipHorizontalCommand, SetClipMaskCommand, SetClipReverseCommand, SetClipSpeedCommand, SetClipTransformCommand } from "../src/commands/index.ts";
+import { SetClipBlendModeCommand, SetClipFlipHorizontalCommand, SetClipFlipVerticalCommand, SetClipMaskCommand, SetClipReverseCommand, SetClipSpeedCommand, SetClipTransformCommand } from "../src/commands/index.ts";
 import { buildExportPlan } from "../src/export/buildExportPlan.ts";
 import { clipDuration } from "../src/project/createProject.ts";
 import { deserializeProject, serializeProject } from "../src/project/serialize.ts";
@@ -43,6 +43,23 @@ describe("end-to-end clip editing tools", () => {
     assert.equal(deserializeProject(serializeProject(changed)).sequence.tracks[0].clips[0].flipHorizontal, true);
     assert.match(graph(changed), /hflip/);
     assert.equal(stack.undo(changed).sequence.tracks[0].clips[0].flipHorizontal, undefined);
+  });
+
+  it("flip vertical persists, undoes, and exports through vflip — independent of flip horizontal", () => {
+    const { project, clip } = oneClipProject();
+    const stack = new UndoStack();
+    const changed = stack.execute(project, new SetClipFlipVerticalCommand(clip.id, true));
+    assert.equal(deserializeProject(serializeProject(changed)).sequence.tracks[0].clips[0].flipVertical, true);
+    assert.match(graph(changed), /vflip/);
+    assert.equal(stack.undo(changed).sequence.tracks[0].clips[0].flipVertical, undefined);
+
+    // Both axes at once: composes into one flip stage that carries both filters, and the earlier
+    // `isPlain` fast-path guard (`buildExportPlan.ts`) doesn't silently short-circuit past either —
+    // the real regression this whole feature risked, since that guard used to check only
+    // `flipHorizontal`.
+    const both = stack.execute(stack.execute(project, new SetClipFlipHorizontalCommand(clip.id, true)), new SetClipFlipVerticalCommand(clip.id, true));
+    assert.match(graph(both), /hflip/);
+    assert.match(graph(both), /vflip/);
   });
 
   it("reverse maps preview time backward, persists, undoes, and reverses video plus audio export", () => {

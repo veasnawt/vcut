@@ -48,6 +48,7 @@ import { snapToFrame } from "../timeline/time.ts";
 import { findTransitionOut, findTransitionPartner } from "../timeline/transitions.ts";
 import { animationFrameIndex, animationLoopOffset } from "../project/stickers.ts";
 import { buildCurvesFilterFragment } from "./curvesFilter.ts";
+import { buildGainVolumeExpr } from "./gainFilter.ts";
 import type { KhmerTextWindow } from "./khmerTextRenderer.ts";
 import { buildPanFilterStage } from "./panFilter.ts";
 
@@ -499,11 +500,12 @@ function buildTransformFilters(params: {
   lutPath?: string;
   pixelEffect?: { type: PixelEffectType; speed?: number };
   flipHorizontal?: boolean;
+  flipVertical?: boolean;
   mask?: ClipMask;
   /** Continuous degrees expression in this filter's local `t`; used for rotation-only keyframes. */
   rotationExpressionDegrees?: string;
 }): string[] {
-  const { source, bg, outputLabel, transform, effects, width, height, fps, chromaKey, colorGrading, lutPath, pixelEffect, flipHorizontal, mask, rotationExpressionDegrees } = params;
+  const { source, bg, outputLabel, transform, effects, width, height, fps, chromaKey, colorGrading, lutPath, pixelEffect, flipHorizontal, flipVertical, mask, rotationExpressionDegrees } = params;
   const { crop } = transform;
   const clipLabel = `${outputLabel}_src`;
   const bgLabel = `${outputLabel}_bg`;
@@ -603,7 +605,7 @@ function buildTransformFilters(params: {
     const shift = Math.round(GLITCH_SHIFT_PX * speed) || GLITCH_SHIFT_PX;
     return `,rgbashift=rh=${shift}:bv=${-shift},noise=alls=${n(GLITCH_NOISE_AMOUNT)}:allf=t`;
   })();
-  const flipFilter = flipHorizontal ? ",hflip" : "";
+  const flipFilter = `${flipHorizontal ? ",hflip" : ""}${flipVertical ? ",vflip" : ""}`;
   const maskFilter = (() => {
     if (!mask) return "";
     const signed = mask.shape === "ellipse"
@@ -2044,6 +2046,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       !clip.lutId &&
       !clip.pixelEffect &&
       !clip.flipHorizontal &&
+      !clip.flipVertical &&
       !clip.mask;
 
     if (isPlain) {
@@ -2085,6 +2088,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId) : undefined,
           pixelEffect: clip.pixelEffect,
           flipHorizontal: clip.flipHorizontal,
+          flipVertical: clip.flipVertical,
           mask: clip.mask,
         })
       );
@@ -2164,6 +2168,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId) : undefined,
           pixelEffect: clip.pixelEffect,
           flipHorizontal: clip.flipHorizontal,
+          flipVertical: clip.flipVertical,
           mask: clip.mask,
           rotationExpressionDegrees: rotationKeyframeExpression(clip, elapsedAtSegmentStart),
         })
@@ -2247,6 +2252,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId) : undefined,
           pixelEffect: clip.pixelEffect,
           flipHorizontal: clip.flipHorizontal,
+          flipVertical: clip.flipVertical,
           mask: clip.mask,
         })
       );
@@ -2308,7 +2314,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         mediaRetime.set(audioSourceIndex, { clip, elapsedStart: Math.max(0, elapsedAtSegmentStart), timelineDuration: sliceDuration, sourceDuration: sourceReadDuration });
       }
     }
-    pushClipAudioFilters(needsAudioSource, audioSourceIndex, audioLabel, sliceDuration, clip.gain ?? 1, fadeIn, fadeOut, padToDuration, clip);
+    pushClipAudioFilters(needsAudioSource, audioSourceIndex, audioLabel, sliceDuration, clip.gain ?? 1, fadeIn, fadeOut, padToDuration, clip, elapsedAtSegmentStart);
   }
 
   // Pushes one source's own audio — resampled straight through (with an optional `volume=` stage —
@@ -2324,7 +2330,14 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     fadeIn?: number,
     fadeOut?: number,
     padToDuration = false,
-    clip?: Clip
+    clip?: Clip,
+    // Clip-window-relative seconds this SLICE's own local `t=0` (right after the `asetpts=PTS-
+    // STARTPTS` stage below) corresponds to — see `buildGainVolumeExpr`'s own doc comment for exactly
+    // what this needs to be and why. Every caller already computes this same value for
+    // `pushKeyframedClipVideoFilters`/`clipProgressAtElapsed` — it's simply threaded one step further
+    // here. Meaningless (unused) when `clip.gainKeyframes` is absent, so `0` is a safe default for
+    // every existing caller that has no reason to pass anything else.
+    elapsedAtSegmentStart = 0
   ): void {
     // Silence has nothing to fade (an `afade` on a silent source is a pure no-op), so `fadeIn`/
     // `fadeOut` only ever matter on the `hasAudio` branch — same reasoning `gain`'s own "meaningless
@@ -2340,6 +2353,19 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       // `volume=1.000000` is a harmless no-op filter-graph-wise, but skipping it keeps the untouched
       // (overwhelmingly common) case's generated args byte-for-byte identical to before this feature.
       const volumeStage = gain !== 1 ? `,volume=${n(gain)}` : "";
+      // A genuine time-varying volume envelope, used ONLY by the plain (non-speed-curve) branch below
+      // — see `Clip.gainKeyframes`'s own doc comment for why the speed-curve/piecewise-concat branch
+      // above this one deliberately keeps the flat `volumeStage` instead. `eval=frame` re-evaluates
+      // `volume`'s own expression every audio frame instead of once at filter init (FFmpeg's default).
+      const dynamicVolumeStage =
+        clip?.gainKeyframes && clip.gainKeyframes.length > 0
+          ? `,volume=eval=frame:volume='${buildGainVolumeExpr(clip.gainKeyframes, elapsedAtSegmentStart, n)}'`
+          : volumeStage;
+      // `Clip.pan`'s own per-clip stereo position — static (not time-varying, see its own doc comment
+      // for why), so the exact same `buildPanFilterStage` a TRACK's own pan already uses at export
+      // works unchanged here, just fed `clip.pan` instead of `track.pan`.
+      const panFilterStage = clip ? buildPanFilterStage(clip.pan ?? 0, n) : null;
+      const panStage = panFilterStage ? `,${panFilterStage}` : "";
       // `padToDuration`: an outgoing transition partner's audio can run out before the blend does
       // (its source ends — see `pushVideoSourceInput`); `acrossfade` needs the full length.
       const padStage = padToDuration ? `,apad=whole_dur=${t(sliceDuration)}` : "";
@@ -2385,7 +2411,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           );
           pieces.push(`[${piece}]`);
         }
-        const suffix = `${volumeStage}${fadeStage}${padStage}`;
+        const suffix = `${volumeStage}${panStage}${fadeStage}${padStage}`;
         filters.push(`${pieces.join("")}concat=n=${pieces.length}:v=0:a=1${suffix}[${outputLabel}]`);
         return;
       }
@@ -2395,7 +2421,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       }
       const atempoStage = atempoStages.length ? `${atempoStages.join(",")},` : "";
       filters.push(
-        `[${videoIndex}:a]${trimStage}${delayStage}${reverseStage}${atempoStage}aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${volumeStage}${fadeStage}${padStage}[${outputLabel}]`
+        `[${videoIndex}:a]${trimStage}${delayStage}${reverseStage}${atempoStage}aresample=48000,aformat=channel_layouts=stereo,asetpts=PTS-STARTPTS${dynamicVolumeStage}${panStage}${fadeStage}${padStage}[${outputLabel}]`
       );
     } else {
       pushSilentAudio(sliceDuration, outputLabel);
@@ -3056,7 +3082,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
             segment.fadeIn,
             segment.fadeOut,
             false,
-            segment.clip
+            segment.clip,
+            segment.elapsedStart
           );
         }
       } else if (segment.kind === "transition") {
@@ -3101,7 +3128,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
             undefined,
             undefined,
             true,
-            segment.from.clip
+            segment.from.clip,
+            fromElapsedAtSegmentStart
           );
         }
 
@@ -3116,7 +3144,18 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           }
           const toIndex = inputIndex++;
           pushClipVideoFilters(segment.to.clip, toIndex, toVideoLabel, D, transparent);
-          pushClipAudioFilters(segment.to.hasAudio && !segment.to.clip.mutedAudio && !track.muted, toIndex, toAudioLabel, D, segment.to.clip.gain ?? 1, undefined, undefined, false, segment.to.clip);
+          pushClipAudioFilters(
+            segment.to.hasAudio && !segment.to.clip.mutedAudio && !track.muted,
+            toIndex,
+            toAudioLabel,
+            D,
+            segment.to.clip.gain ?? 1,
+            undefined,
+            undefined,
+            false,
+            segment.to.clip,
+            toElapsedAtSegmentStart
+          );
         }
 
         // `segment.to.clip` is the INCOMING side — `transitionIn` describes the blend FROM its partner
@@ -3192,7 +3231,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           segment.fadeIn,
           segment.fadeOut,
           false,
-          segment.clip
+          segment.clip,
+          segment.elapsedStart
         );
       } else if (segment.kind === "transition") {
         const D = segment.duration;
@@ -3202,6 +3242,10 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         const fromSourceIn = segment.from.sourceIn ?? (segment.from.clip.sourceOut - halfD);
         const toSourceIn = segment.to.sourceIn ?? (segment.to.clip.sourceIn - halfD);
 
+        // Same clip-window-relative offset `buildTrackStreams`' own transition branch computes for the
+        // video-track case — see `buildGainVolumeExpr`'s own doc comment for why this is what a
+        // keyframed gain expression needs to line up against.
+        const fromElapsedAtSegmentStart = segment.from.elapsedStart ?? (fromSourceIn - segment.from.clip.sourceIn);
         // The outgoing clip carries on across the centered junction.
         inputs.push("-ss", t(fromSourceIn), "-t", t(D), "-i", segment.from.path);
         const fromIndex = inputIndex++;
@@ -3214,7 +3258,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           undefined,
           undefined,
           true,
-          segment.from.clip
+          segment.from.clip,
+          fromElapsedAtSegmentStart
         );
 
         const toIndex = inputIndex++;
@@ -3226,7 +3271,19 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
         } else {
           inputs.push("-ss", t(toSourceIn), "-t", t(D), "-i", segment.to.path);
         }
-        pushClipAudioFilters(segment.to.hasAudio && !segment.to.clip.mutedAudio, toIndex, toAudioLabel, D, (segment.to.clip.gain ?? 1) * (track.gain ?? 1), undefined, undefined, false, segment.to.clip);
+        const toElapsedAtSegmentStart = segment.to.elapsedStart ?? (toSourceIn - segment.to.clip.sourceIn);
+        pushClipAudioFilters(
+          segment.to.hasAudio && !segment.to.clip.mutedAudio,
+          toIndex,
+          toAudioLabel,
+          D,
+          (segment.to.clip.gain ?? 1) * (track.gain ?? 1),
+          undefined,
+          undefined,
+          false,
+          segment.to.clip,
+          toElapsedAtSegmentStart
+        );
 
         filters.push(`[${fromAudioLabel}][${toAudioLabel}]acrossfade=d=${t(D)}[${audioLabel}]`);
       } else {

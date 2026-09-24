@@ -3,9 +3,9 @@
 import React, { useEffect, useRef, useState } from "react";
 import { More } from "@veasnawt/vicons";
 import type { Command } from "../commands/index.ts";
-import { BatchCommand, SetClipFlipHorizontalCommand, SetClipMaskCommand, SetClipReverseCommand, SetClipTransformCommand, SetClipTransformKeyframesCommand, SetTextCommand } from "../commands/index.ts";
+import { BatchCommand, SetClipFlipHorizontalCommand, SetClipFlipVerticalCommand, SetClipMaskCommand, SetClipReverseCommand, SetClipTransformCommand, SetClipTransformKeyframesCommand, SetTextCommand } from "../commands/index.ts";
 import { findAsset, findClip } from "../project/createProject.ts";
-import { DEFAULT_CLIP_MASK, type ClipTransform } from "../project/types.ts";
+import { DEFAULT_CLIP_MASK, type ClipMask, type ClipTransform } from "../project/types.ts";
 import type { AlignBox, AlignmentGuide } from "../playback/alignmentGuides.ts";
 import { computeAlignmentGuides } from "../playback/alignmentGuides.ts";
 import { clampPointToRect, computeTransformedBox, cropAfterEdgeDrag, rotatedPoint, type CropEdge } from "../playback/transformGeometry.ts";
@@ -70,11 +70,41 @@ function CropRotateIcon({ size = 15, className }: { size?: number; className?: s
   );
 }
 
-function FlipHorizontalIcon({ size = 15 }: { size?: number }) {
+export function FlipHorizontalIcon({ size = 15 }: { size?: number }) {
   return (
     <svg aria-hidden width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 3v18" strokeDasharray="2 2" />
       <path d="m9 6-6 6 6 6V6Zm6 0 6 6-6 6V6Z" />
+    </svg>
+  );
+}
+
+/** `FlipHorizontalIcon`'s own 90°-rotated counterpart — the exact same dashed-mirror-line-plus-two-
+ *  opposing-triangles glyph, transposed (x/y swapped) so the mirror line reads horizontal and the
+ *  triangles point up/down instead of left/right, matching `flipVertical`'s own axis. */
+export function FlipVerticalIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg aria-hidden width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 12h18" strokeDasharray="2 2" />
+      <path d="m6 9 6-6 6 6H6Zm0 6 6 6 6-6H6Z" />
+    </svg>
+  );
+}
+
+/** Shared by the canvas dock's own shape toggle (below) and `Inspector.tsx`'s Mask panel, so both
+ *  read as the same control rather than two visually-unrelated ways to pick the same thing. */
+export function MaskRectangleIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg aria-hidden width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="3" y="5" width="18" height="14" rx="1.5" />
+    </svg>
+  );
+}
+
+export function MaskEllipseIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg aria-hidden width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <ellipse cx="12" cy="12" rx="9" ry="7" />
     </svg>
   );
 }
@@ -163,6 +193,9 @@ export function TransformHandles({
 
   const [preview, setPreview] = useState<ClipTransform | null>(null);
   const [cropMode, setCropMode] = useState(false);
+  const [maskMode, setMaskMode] = useState(false);
+  const [maskPreview, setMaskPreview] = useState<ClipMask | null>(null);
+  const maskPreviewRef = useRef<ClipMask | null>(null);
   const [showClipOptions, setShowClipOptions] = useState(false);
   const clipOptionsRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<ClipTransform | null>(null);
@@ -264,6 +297,7 @@ export function TransformHandles({
 
   useEffect(() => {
     setCropMode(false);
+    setMaskMode(false);
     setShowClipOptions(false);
   }, [resolved?.clipId]);
 
@@ -290,6 +324,25 @@ export function TransformHandles({
     window.addEventListener("vcut:open-crop-preview", openCrop);
     return () => window.removeEventListener("vcut:open-crop-preview", openCrop);
   }, []);
+
+  /** `vcut:open-crop-preview`'s own counterpart for Mask — see `Inspector.tsx`'s "Edit mask on
+   *  preview" button, the identical trigger `openCrop` above already establishes the pattern for. */
+  useEffect(() => {
+    const openMask = () => {
+      if (resolvedRef.current) setMaskMode(true);
+    };
+    window.addEventListener("vcut:open-mask-preview", openMask);
+    return () => window.removeEventListener("vcut:open-mask-preview", openMask);
+  }, []);
+
+  useEffect(() => {
+    if (!maskMode) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setMaskMode(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [maskMode]);
 
   useEffect(() => {
     onToolSpaceChange?.(!!resolved);
@@ -589,6 +642,64 @@ export function TransformHandles({
     const removeListeners = addDragListeners(onMove, onUp);
   }
 
+  /** Moves or resizes a clip's own `ClipMask` on the canvas — the mask counterpart of `beginCropDrag`,
+   *  but structurally simpler: the mask shape renders as a plain CSS-percentage child INSIDE the same
+   *  rotated `box` container the crop thirds-grid already sits in (see that grid's own comment), so
+   *  its SCREEN position is already correct for free — rotation only has to be undone for the DRAG
+   *  DELTA itself, converting a screen-space pointer movement into the container's own local (pre-
+   *  rotation) axes via `rotatedPoint`'s inverse (negating `rotationDeg` turns its local→screen
+   *  mapping into screen→local). `corner` absent means a MOVE (drag the shape's own body); present
+   *  means a RESIZE from a specific corner, symmetric around the current center (dragging a corner
+   *  outward grows `width`/`height` by twice the local delta, same "resize from center" a
+   *  radius/vignette control naturally reads as — `ClipMask` has no independent per-edge fields the
+   *  way `ClipTransform.crop` does, so there's no fixed-opposite-edge alternative to begin with). */
+  function updateMaskPreview(next: ClipMask | null) {
+    maskPreviewRef.current = next;
+    setMaskPreview(next);
+    useEditorStore.getState().setLivePreviewOverrides(next ? [{ clipId: resolved!.clipId, mask: next }] : []);
+  }
+
+  function beginMaskDrag(startEvent: React.MouseEvent | React.TouchEvent, originMask: ClipMask, corner?: { x: 0 | 1; y: 0 | 1 }): void {
+    startEvent.stopPropagation();
+    preventDefaultIfMouse(startEvent);
+    const start = clientPoint(startEvent);
+    const rotationDeg = transform.rotationDeg;
+    let moved = false;
+
+    function onMove(moveEvent: MouseEvent | TouchEvent): void {
+      const point = clientPoint(moveEvent);
+      const dxScreen = point.x - start.x;
+      const dyScreen = point.y - start.y;
+      if (!moved && Math.hypot(dxScreen, dyScreen) < DRAG_THRESHOLD) return;
+      moved = true;
+      const local = rotatedPoint(0, 0, dxScreen, dyScreen, -rotationDeg);
+      const dx = cssWidth > 0 ? local.x / cssWidth : 0;
+      const dy = cssHeight > 0 ? local.y / cssHeight : 0;
+      const next = corner
+        ? {
+            ...originMask,
+            width: Math.min(1, Math.max(0.01, originMask.width + dx * (corner.x === 1 ? 2 : -2))),
+            height: Math.min(1, Math.max(0.01, originMask.height + dy * (corner.y === 1 ? 2 : -2))),
+          }
+        : { ...originMask, centerX: Math.min(1, Math.max(0, originMask.centerX + dx)), centerY: Math.min(1, Math.max(0, originMask.centerY + dy)) };
+      updateMaskPreview(next);
+      if ("cancelable" in moveEvent && moveEvent.cancelable) moveEvent.preventDefault();
+    }
+
+    function onUp(): void {
+      removeListeners();
+      const final = maskPreviewRef.current;
+      updateMaskPreview(null);
+      // A drag that never crossed `DRAG_THRESHOLD` (a plain click) leaves the mask untouched, same as
+      // `beginCropDrag`'s own `if (!moved || !final) return` — no accidental no-op undo entry for a
+      // click that landed on a handle without dragging it.
+      if (!moved || !final) return;
+      run(new SetClipMaskCommand(resolved!.clipId, final));
+    }
+
+    const removeListeners = addDragListeners(onMove, onUp);
+  }
+
   function beginRotationRulerDrag(startEvent: React.MouseEvent | React.TouchEvent) {
     startEvent.stopPropagation();
     preventDefaultIfMouse(startEvent);
@@ -635,7 +746,7 @@ export function TransformHandles({
   const selectedClip = findClip(project!, resolved.clipId)?.clip;
   const selectedAsset = selectedClip ? findAsset(project!, selectedClip.assetId) : undefined;
   const canFlipOrMask = selectedAsset?.kind === "video" || selectedAsset?.kind === "image";
-  const dockWidth = cropMode ? Math.min(276, Math.max(56, stageWidth - 16)) : canFlipOrMask ? 122 : 94;
+  const dockWidth = cropMode ? Math.min(276, Math.max(56, stageWidth - 16)) : maskMode ? 178 : canFlipOrMask ? 150 : 94;
   const dockHalf = dockWidth / 2;
   const canvasCenterX = (canvasRect.left + canvasRect.right) / 2;
   const dockX = Math.max(stageRect.left + dockHalf + 12, Math.min(stageRect.right - dockHalf - 12, canvasCenterX));
@@ -743,6 +854,42 @@ export function TransformHandles({
                 {t("Done")}
               </button>
             </>
+          ) : maskMode && selectedClip?.mask ? (
+            <>
+              <button
+                type="button"
+                onClick={() => run(new SetClipMaskCommand(selectedClip.id, { ...selectedClip.mask!, shape: "rectangle" }))}
+                title={t("Rectangle")}
+                aria-label={t("Rectangle")}
+                aria-pressed={selectedClip.mask.shape === "rectangle"}
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition ${selectedClip.mask.shape === "rectangle" ? "bg-sky-500/25 text-sky-200" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+              >
+                <MaskRectangleIcon size={13} />
+              </button>
+              <button
+                type="button"
+                onClick={() => run(new SetClipMaskCommand(selectedClip.id, { ...selectedClip.mask!, shape: "ellipse" }))}
+                title={t("Ellipse")}
+                aria-label={t("Ellipse")}
+                aria-pressed={selectedClip.mask.shape === "ellipse"}
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition ${selectedClip.mask.shape === "ellipse" ? "bg-sky-500/25 text-sky-200" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+              >
+                <MaskEllipseIcon size={13} />
+              </button>
+              <button
+                type="button"
+                onClick={() => run(new SetClipMaskCommand(selectedClip.id, { ...selectedClip.mask!, invert: !selectedClip.mask!.invert }))}
+                title={t("Invert Mask")}
+                aria-label={t("Invert Mask")}
+                aria-pressed={selectedClip.mask.invert === true}
+                className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition ${selectedClip.mask.invert ? "bg-sky-500/25 text-sky-200" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+              >
+                <svg aria-hidden width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="2" width="20" height="20" rx="1.5" /><circle cx="12" cy="12" r="5" fill="currentColor" stroke="none" /></svg>
+              </button>
+              <button type="button" onClick={() => setMaskMode(false)} className="rounded bg-sky-500 px-2 py-1 font-medium text-white hover:bg-sky-400">
+                {t("Done")}
+              </button>
+            </>
           ) : (
             <>
               <button
@@ -755,16 +902,28 @@ export function TransformHandles({
                 <CropRotateIcon size={14} />
               </button>
               {canFlipOrMask && selectedClip && (
-                <button
-                  type="button"
-                  onClick={() => run(new SetClipFlipHorizontalCommand(selectedClip.id, !selectedClip.flipHorizontal))}
-                  title={t("Flip Horizontal")}
-                  aria-label={t("Flip Horizontal")}
-                  aria-pressed={selectedClip.flipHorizontal === true}
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition ${selectedClip.flipHorizontal ? "bg-sky-500/25 text-sky-200" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
-                >
-                  <FlipHorizontalIcon size={15} />
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={() => run(new SetClipFlipHorizontalCommand(selectedClip.id, !selectedClip.flipHorizontal))}
+                    title={t("Flip Horizontal")}
+                    aria-label={t("Flip Horizontal")}
+                    aria-pressed={selectedClip.flipHorizontal === true}
+                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition ${selectedClip.flipHorizontal ? "bg-sky-500/25 text-sky-200" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+                  >
+                    <FlipHorizontalIcon size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => run(new SetClipFlipVerticalCommand(selectedClip.id, !selectedClip.flipVertical))}
+                    title={t("Flip Vertical")}
+                    aria-label={t("Flip Vertical")}
+                    aria-pressed={selectedClip.flipVertical === true}
+                    className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition ${selectedClip.flipVertical ? "bg-sky-500/25 text-sky-200" : "text-white/70 hover:bg-white/10 hover:text-white"}`}
+                  >
+                    <FlipVerticalIcon size={15} />
+                  </button>
+                </>
               )}
               <div ref={clipOptionsRef} className="relative">
                 <button
@@ -785,7 +944,25 @@ export function TransformHandles({
                       </button>
                     )}
                     {canFlipOrMask && (
-                      <button role="menuitem" onClick={() => { run(new SetClipMaskCommand(selectedClip.id, selectedClip.mask ? null : DEFAULT_CLIP_MASK)); setShowClipOptions(false); }} className="flex w-full items-center rounded px-2.5 py-2 text-left text-white/80 hover:bg-white/10 hover:text-white">
+                      <button
+                        role="menuitem"
+                        onClick={() => {
+                          // Adding a mask jumps straight into on-canvas editing — a freshly-added
+                          // mask starts centered/full-size (see `DEFAULT_CLIP_MASK`), visually
+                          // identical to no mask at all, so landing anywhere else would leave someone
+                          // staring at an apparently-unchanged frame with no indication anything
+                          // happened. Removing one has nothing left to edit, so it just closes the
+                          // menu, same as every other toggle here.
+                          if (selectedClip.mask) {
+                            run(new SetClipMaskCommand(selectedClip.id, null));
+                          } else {
+                            run(new SetClipMaskCommand(selectedClip.id, DEFAULT_CLIP_MASK));
+                            setMaskMode(true);
+                          }
+                          setShowClipOptions(false);
+                        }}
+                        className="flex w-full items-center rounded px-2.5 py-2 text-left text-white/80 hover:bg-white/10 hover:text-white"
+                      >
                         {t(selectedClip.mask ? "Remove Mask" : "Add Mask")}
                       </button>
                     )}
@@ -841,12 +1018,12 @@ export function TransformHandles({
         }}
       >
       <div
-        role={cropMode ? undefined : "button"}
-        tabIndex={cropMode ? -1 : 0}
+        role={cropMode || maskMode ? undefined : "button"}
+        tabIndex={cropMode || maskMode ? -1 : 0}
         aria-label={t("Move clip")}
-        onMouseDown={cropMode ? undefined : (e) => beginDrag(e, "move")}
-        onTouchStart={cropMode ? undefined : (e) => beginDrag(e, "move")}
-        className={`absolute inset-0 touch-none border-2 ${cropMode ? "pointer-events-none border-white" : "pointer-events-auto cursor-move border-sky-400/80"}`}
+        onMouseDown={cropMode || maskMode ? undefined : (e) => beginDrag(e, "move")}
+        onTouchStart={cropMode || maskMode ? undefined : (e) => beginDrag(e, "move")}
+        className={`absolute inset-0 touch-none border-2 ${cropMode || maskMode ? "pointer-events-none border-white" : "pointer-events-auto cursor-move border-sky-400/80"}`}
       />
 
       {cropMode && (
@@ -858,7 +1035,69 @@ export function TransformHandles({
         </>
       )}
 
-      {!cropMode && !isGroupSelection && !rotateHandleClamped && (
+      {/* Mask editing — a plain CSS-percentage child of this SAME rotated box, exactly like the crop
+          thirds-grid just above: `ClipMask.centerX/centerY/width/height` are already fractions of
+          this box's own visible area (see `applyClipMask`'s own doc comment), so no coordinate
+          conversion is needed to PLACE it — only `beginMaskDrag`'s drag DELTA needs the inverse-
+          rotation, since the pointer itself still moves in plain screen space. */}
+      {maskMode && (maskPreview ?? selectedClip?.mask) && (() => {
+        const mask = maskPreview ?? selectedClip!.mask!;
+        const left = (mask.centerX - mask.width / 2) * 100;
+        const top = (mask.centerY - mask.height / 2) * 100;
+        const corners: { x: 0 | 1; y: 0 | 1; cursor: string }[] = [
+          { x: 0, y: 0, cursor: "nwse-resize" },
+          { x: 1, y: 0, cursor: "nesw-resize" },
+          { x: 0, y: 1, cursor: "nesw-resize" },
+          { x: 1, y: 1, cursor: "nwse-resize" },
+        ];
+        return (
+          <>
+            <div
+              role="button"
+              tabIndex={0}
+              aria-label={t("Move mask")}
+              onMouseDown={(e) => beginMaskDrag(e, mask)}
+              onTouchStart={(e) => beginMaskDrag(e, mask)}
+              style={{
+                position: "absolute",
+                left: `${left}%`,
+                top: `${top}%`,
+                width: `${mask.width * 100}%`,
+                height: `${mask.height * 100}%`,
+                borderRadius: mask.shape === "ellipse" ? "50%" : 0,
+              }}
+              className="pointer-events-auto touch-none cursor-move border-2 border-dashed border-amber-300/90 bg-amber-300/5"
+            />
+            {corners.map(({ x, y, cursor }) => (
+              <div
+                key={`${x}-${y}`}
+                role="slider"
+                tabIndex={0}
+                aria-label={t("Resize mask")}
+                onMouseDown={(e) => beginMaskDrag(e, mask, { x, y })}
+                onTouchStart={(e) => beginMaskDrag(e, mask, { x, y })}
+                style={{
+                  position: "absolute",
+                  left: `${left + x * mask.width * 100}%`,
+                  top: `${top + y * mask.height * 100}%`,
+                  width: HANDLE_SIZE,
+                  height: HANDLE_SIZE,
+                  transform: "translate(-50%, -50%)",
+                  cursor,
+                }}
+                className="pointer-events-auto touch-none flex items-center justify-center outline-none"
+              >
+                <span
+                  style={{ width: HANDLE_DOT_SIZE, height: HANDLE_DOT_SIZE }}
+                  className="rounded-full bg-amber-300 shadow-[0_0_0_1px_rgba(0,0,0,0.55)]"
+                />
+              </div>
+            ))}
+          </>
+        );
+      })()}
+
+      {!cropMode && !maskMode && !isGroupSelection && !rotateHandleClamped && (
         <div
           aria-hidden
           style={{ left: "50%", top: -ROTATE_HANDLE_OFFSET, height: ROTATE_HANDLE_OFFSET }}
@@ -906,7 +1145,7 @@ export function TransformHandles({
           so each one's CLAMPED position can be expressed in plain screen coordinates — a rotated
           parent's `left: X%` can only ever place a point along ITS OWN (possibly off-screen) rotated
           axis, never clamped to the axis-aligned visible frame. */}
-      {!isGroupSelection && !cropMode && (
+      {!isGroupSelection && !cropMode && !maskMode && (
         <>
           {cornerHandles.map(({ x, y, cursor, label, point }) => (
             <div

@@ -4,7 +4,7 @@ import type { ChromaKeySettings, Clip, ClipEffects, ClipMask, ClipTransform, Col
 import { isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
 import { applyColorGrading, buildCurveLut, composeLuts } from "../timeline/colorCurves.ts";
-import { resolveClipColorGrading, resolveClipEffects, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
+import { resolveClipColorGrading, resolveClipEffects, resolveClipGain, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
 import { applyLut3D, parseCubeLut } from "../timeline/lut.ts";
 import type { Lut3D } from "../timeline/lut.ts";
 import { applyGlitch, applyGlitchCut, applyHorizontalBlur, applyWaterRipple, FLASH_ZOOM_PEAK, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
@@ -1861,14 +1861,22 @@ export class PlaybackEngine {
 
       const { gain, partner } = resolveAudioTransitionGain(track, clip, time);
       // Scheduled to run on past the out-point when the next clip blends out of this one, so the
-      // audio flows straight into the blend (see `transitionPartnerSourceTime`).
-      results.push({ trackId: track.id, clip, sourceTime, gain: (clip.gain ?? 1) * gain, sourceEnd: clip.sourceOut + transitionTailExtension(track, clip) });
+      // audio flows straight into the blend (see `transitionPartnerSourceTime`). `resolveClipGain`
+      // (not the bare `clip.gain ?? 1` this used to read) is what makes `gainKeyframes` do anything in
+      // live preview — see its own doc comment.
+      results.push({
+        trackId: track.id,
+        clip,
+        sourceTime,
+        gain: resolveClipGain(clip, time - clip.timelineStart) * gain,
+        sourceEnd: clip.sourceOut + transitionTailExtension(track, clip),
+      });
       if (partner) {
         results.push({
           trackId: track.id,
           clip: partner.clip,
           sourceTime: partner.sourceTime,
-          gain: (partner.clip.gain ?? 1) * partner.gain,
+          gain: resolveClipGain(partner.clip, time - partner.clip.timelineStart) * partner.gain,
           sourceEnd: partner.clip.sourceOut + transitionTailExtension(track, partner.clip),
         });
       }
@@ -1985,7 +1993,7 @@ export class PlaybackEngine {
         // `AudioMixEngine` as a second simultaneously-active source here — see `drawTransitionPartner`'s
         // own comment on why the partner's audio is deliberately not synced.
         const { gain: transitionGain } = resolveAudioTransitionGain(track, clip, time);
-        const audioGain = (clip.gain ?? 1) * transitionGain;
+        const audioGain = resolveClipGain(clip, time - clip.timelineStart) * transitionGain;
         const audioMuted = (clip.mutedAudio ?? false) || track.muted;
         if (clip.reverse) {
           this.audioMixEngine.syncVideoClipAudio(clip, element, 0, true);
@@ -2077,7 +2085,8 @@ export class PlaybackEngine {
           clip.pixelEffect,
           elapsed,
           clip.flipHorizontal,
-          mask
+          mask,
+          clip.flipVertical
         );
         compositeTransitionFrame(
           context,
@@ -2116,7 +2125,8 @@ export class PlaybackEngine {
             clip.pixelEffect,
             elapsed,
             clip.flipHorizontal,
-            mask
+            mask,
+            clip.flipVertical
           );
         },
         { windowElapsed: activeTransition.elapsed, windowDuration: activeTransition.duration, clipElapsed: elapsed, fadingOut: false }
@@ -2148,7 +2158,8 @@ export class PlaybackEngine {
             clip.pixelEffect,
             elapsed,
             clip.flipHorizontal,
-            mask
+            mask,
+            clip.flipVertical
           );
         },
         {
@@ -2161,7 +2172,7 @@ export class PlaybackEngine {
       return;
     }
 
-    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed, clip.flipHorizontal, mask);
+    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed, clip.flipHorizontal, mask, clip.flipVertical);
   }
 
   /** Draws and plays the outgoing clip's source handle during a blend, holding its final frame at EOF.
@@ -2224,7 +2235,7 @@ export class PlaybackEngine {
           clipSpeedAtElapsed(partner, clipDuration(partner) - duration / 2 + elapsed),
           partner.reverse === true
         );
-        const partnerGain = (partner.gain ?? 1) * (1 - Math.min(1, elapsed / duration));
+        const partnerGain = resolveClipGain(partner, clipDuration(partner) - duration / 2 + elapsed) * (1 - Math.min(1, elapsed / duration));
         const partnerMuted = (partner.mutedAudio ?? false) || trackMuted;
         if (partner.reverse) {
           this.audioMixEngine.syncVideoClipAudio(partner, element, 0, true);
@@ -2249,7 +2260,7 @@ export class PlaybackEngine {
     const transform = resolveClipTransform(partner, partnerElapsed);
     const effects = resolveClipEffects(partner, partnerElapsed);
     const colorGrading = resolveClipColorGrading(partner, partnerElapsed);
-    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, partner.chromaKey, colorGrading, partner.id, partner.lutId, partner.pixelEffect, partnerElapsed, partner.flipHorizontal, partner.mask);
+    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, partner.chromaKey, colorGrading, partner.id, partner.lutId, partner.pixelEffect, partnerElapsed, partner.flipHorizontal, partner.mask, partner.flipVertical);
     return true;
   }
 
@@ -2283,7 +2294,8 @@ export class PlaybackEngine {
     pixelEffect?: Clip["pixelEffect"],
     elapsedSeconds = 0,
     flipHorizontal = false,
-    mask?: ClipMask
+    mask?: ClipMask,
+    flipVertical = false
   ): void {
     const box = computeTransformedBox(sourceWidth, sourceHeight, frameWidth, frameHeight, transform);
     if (!box) return;
@@ -2367,7 +2379,7 @@ export class PlaybackEngine {
     context.globalAlpha = effects.opacity * alphaMultiplier;
     context.translate(box.centerX, box.centerY);
     if (transform.rotationDeg !== 0) context.rotate((transform.rotationDeg * Math.PI) / 180);
-    if (flipHorizontal) context.scale(-1, 1);
+    if (flipHorizontal || flipVertical) context.scale(flipHorizontal ? -1 : 1, flipVertical ? -1 : 1);
     context.drawImage(
       source,
       box.cropX,

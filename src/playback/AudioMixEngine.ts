@@ -43,6 +43,10 @@ const BUFFER_CACHE_LIMIT = 12;
 interface TrackClipNode {
   source: AudioBufferSourceNode;
   gainNode: GainNode;
+  /** Downstream of `gainNode`, upstream of the shared per-track chain (or `masterGain` directly for
+   *  the retimed/reversed video-audio path, which reuses this same interface) — see `Clip.pan`'s own
+   *  doc comment for why this sits at the CLIP level, one below the track's own `StereoPannerNode`. */
+  panNode: StereoPannerNode;
   contextTimeAtStart: number;
   sourceTimeAtStart: number;
 }
@@ -50,6 +54,8 @@ interface TrackClipNode {
 interface VideoClipNode {
   mediaSource: MediaElementAudioSourceNode;
   gainNode: GainNode;
+  /** `TrackClipNode.panNode`'s own counterpart for a forward-playing video clip's embedded audio. */
+  panNode: StereoPannerNode;
 }
 
 /** Owns the entire Web Audio mixing graph for the live preview — see this feature's own plan
@@ -93,6 +99,8 @@ interface ElementClipNode {
   element: HTMLAudioElement;
   source: MediaElementAudioSourceNode;
   gainNode: GainNode;
+  /** `TrackClipNode.panNode`'s own counterpart for the `<audio>`-element fallback path. */
+  panNode: StereoPannerNode;
   playPending: boolean;
   /** Set only for a `play()` refused by autoplay policy (`NotAllowedError`) — nothing short of a new
    *  gesture changes that answer, so `syncElementClip` stops retrying until the next Play tap. */
@@ -453,6 +461,7 @@ export class AudioMixEngine {
       // applied downstream by the shared per-track node this clip's own node connects through (see
       // `startTrackClip`), so `setTrackGain` can move the whole track without touching any clip node.
       existing.gainNode.gain.setTargetAtTime(gain, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
+      existing.panNode.pan.setTargetAtTime(clip.pan ?? 0, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
     }
   }
 
@@ -465,6 +474,7 @@ export class AudioMixEngine {
       const node = this.elementClipFor(trackId, clip);
       if (!node) continue;
       node.gainNode.gain.value = gain;
+      node.panNode.pan.value = clip.pan ?? 0;
       if (node.element.readyState >= 1) node.element.currentTime = sourceTime;
       node.playError = undefined;
       node.retryPlayAt = undefined;
@@ -482,6 +492,7 @@ export class AudioMixEngine {
     const node = this.elementClipFor(trackId, clip);
     if (!node) return;
     node.gainNode.gain.setTargetAtTime(gain, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
+    node.panNode.pan.setTargetAtTime(clip.pan ?? 0, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
     const element = node.element;
     if (holdMediaAtEnd(element, sourceTime)) return;
     if (element.readyState >= 1 && !element.seeking && Math.abs(element.currentTime - sourceTime) > ELEMENT_DRIFT_TOLERANCE) {
@@ -498,7 +509,8 @@ export class AudioMixEngine {
     if (existing && existing.assetId === clip.assetId) {
       if (existing.trackId !== trackId) {
         existing.gainNode.disconnect();
-        existing.gainNode.connect(this.getOrCreateTrackChain(trackId).gain);
+        existing.panNode.disconnect();
+        existing.gainNode.connect(existing.panNode).connect(this.getOrCreateTrackChain(trackId).gain);
         existing.trackId = trackId;
       }
       return existing;
@@ -511,8 +523,9 @@ export class AudioMixEngine {
     element.src = url;
     const source = this.audioContext.createMediaElementSource(element);
     const gainNode = this.audioContext.createGain();
-    source.connect(gainNode).connect(this.getOrCreateTrackChain(trackId).gain);
-    const node: ElementClipNode = { assetId: clip.assetId, trackId, element, source, gainNode, playPending: false, playAttempts: 0, seeks: 0 };
+    const panNode = this.audioContext.createStereoPanner();
+    source.connect(gainNode).connect(panNode).connect(this.getOrCreateTrackChain(trackId).gain);
+    const node: ElementClipNode = { assetId: clip.assetId, trackId, element, source, gainNode, panNode, playPending: false, playAttempts: 0, seeks: 0 };
     this.elementClipNodes.set(clip.id, node);
     return node;
   }
@@ -545,6 +558,7 @@ export class AudioMixEngine {
     node.element.load();
     node.source.disconnect();
     node.gainNode.disconnect();
+    node.panNode.disconnect();
     this.elementClipNodes.delete(clipId);
   }
 
@@ -569,13 +583,16 @@ export class AudioMixEngine {
         source.buffer = buffer;
         const gainNode = this.audioContext.createGain();
         gainNode.gain.value = gain;
+        const panNode = this.audioContext.createStereoPanner();
+        panNode.pan.value = clip.pan ?? 0;
         // Through the track's own shared gain→pan→analyser chain, not straight to masterGain — see
-        // `getOrCreateTrackChain`'s own doc comment for why.
-        source.connect(gainNode).connect(this.getOrCreateTrackChain(trackId).gain);
+        // `getOrCreateTrackChain`'s own doc comment for why. `panNode` sits between this clip's own
+        // gain and that shared chain — see `Clip.pan`'s own doc comment.
+        source.connect(gainNode).connect(panNode).connect(this.getOrCreateTrackChain(trackId).gain);
 
         const contextTimeAtStart = this.audioContext.currentTime;
         source.start(contextTimeAtStart, offset, remaining);
-        this.trackClipNodes.set(clip.id, { source, gainNode, contextTimeAtStart, sourceTimeAtStart: offset });
+        this.trackClipNodes.set(clip.id, { source, gainNode, panNode, contextTimeAtStart, sourceTimeAtStart: offset });
         this.trackClipStarts.set(clip.id, (this.trackClipStarts.get(clip.id) ?? 0) + 1);
 
         source.onended = () => {
@@ -599,6 +616,7 @@ export class AudioMixEngine {
     }
     node.source.disconnect();
     node.gainNode.disconnect();
+    node.panNode.disconnect();
     this.trackClipNodes.delete(clipId);
   }
 
@@ -615,11 +633,13 @@ export class AudioMixEngine {
       // pool uses) guarantees it only ever runs once per element/clip pairing.
       const mediaSource = this.audioContext.createMediaElementSource(element);
       const gainNode = this.audioContext.createGain();
-      mediaSource.connect(gainNode).connect(this.masterGain);
-      node = { mediaSource, gainNode };
+      const panNode = this.audioContext.createStereoPanner();
+      mediaSource.connect(gainNode).connect(panNode).connect(this.masterGain);
+      node = { mediaSource, gainNode, panNode };
       this.videoClipNodes.set(clip.id, node);
     }
     node.gainNode.gain.setTargetAtTime(muted ? 0 : gain, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
+    node.panNode.pan.setTargetAtTime(clip.pan ?? 0, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
   }
 
   /** Reverse playback cannot come from an HTMLMediaElement (negative playbackRate is unsupported),
@@ -631,6 +651,7 @@ export class AudioMixEngine {
         try { existing.source.stop(); } catch {}
         existing.source.disconnect();
         existing.gainNode.disconnect();
+        existing.panNode.disconnect();
         this.retimedVideoClipNodes.delete(clip.id);
       }
       return;
@@ -640,12 +661,14 @@ export class AudioMixEngine {
       const expected = existing.sourceTimeAtStart + (this.audioContext.currentTime - existing.contextTimeAtStart) * existing.source.playbackRate.value;
       if (!detectRealSeek(expected, target, SEEK_DETECTION_TOLERANCE)) {
         existing.gainNode.gain.setTargetAtTime(gain, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
+        existing.panNode.pan.setTargetAtTime(clip.pan ?? 0, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
         existing.source.playbackRate.setTargetAtTime(speed, this.audioContext.currentTime, GAIN_SMOOTHING_TIME_CONSTANT);
         return;
       }
       try { existing.source.stop(); } catch {}
       existing.source.disconnect();
       existing.gainNode.disconnect();
+      existing.panNode.disconnect();
       this.retimedVideoClipNodes.delete(clip.id);
     }
     const url = this.getMediaUrl(clip.assetId);
@@ -672,10 +695,12 @@ export class AudioMixEngine {
       source.playbackRate.value = speed;
       const gainNode = this.audioContext.createGain();
       gainNode.gain.value = gain;
-      source.connect(gainNode).connect(this.masterGain);
+      const panNode = this.audioContext.createStereoPanner();
+      panNode.pan.value = clip.pan ?? 0;
+      source.connect(gainNode).connect(panNode).connect(this.masterGain);
       const contextTimeAtStart = this.audioContext.currentTime;
       source.start(contextTimeAtStart, offset, Math.min(remainingSource, buffer.duration - offset));
-      const node = { source, gainNode, contextTimeAtStart, sourceTimeAtStart: clip.reverse ? -sourceTime : sourceTime };
+      const node = { source, gainNode, panNode, contextTimeAtStart, sourceTimeAtStart: clip.reverse ? -sourceTime : sourceTime };
       this.retimedVideoClipNodes.set(clip.id, node);
       source.onended = () => {
         if (this.retimedVideoClipNodes.get(clip.id)?.source === source) this.retimedVideoClipNodes.delete(clip.id);
@@ -711,6 +736,7 @@ export class AudioMixEngine {
     if (!node) return;
     node.mediaSource.disconnect();
     node.gainNode.disconnect();
+    node.panNode.disconnect();
     this.videoClipNodes.delete(clipId);
   }
 
@@ -823,6 +849,7 @@ export class AudioMixEngine {
       try { node.source.stop(); } catch {}
       node.source.disconnect();
       node.gainNode.disconnect();
+      node.panNode.disconnect();
       this.retimedVideoClipNodes.delete(clipId);
     }
     for (const node of this.trackGainNodes.values()) node.disconnect();

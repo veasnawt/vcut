@@ -1,10 +1,14 @@
 import { newId } from "../project/createProject.ts";
-import type { Clip, ClipEffects, ClipTransform, ColorGrading, ColorGradingKeyframe, EffectsKeyframe, Keyframe, TextCrop, TextCropKeyframe, TextStyle, TransformKeyframe } from "../project/types.ts";
+import type { Clip, ClipEffects, ClipTransform, ColorGrading, ColorGradingKeyframe, EffectsKeyframe, GainKeyframe, Keyframe, TextCrop, TextCropKeyframe, TextStyle, TransformKeyframe } from "../project/types.ts";
 import { IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../project/types.ts";
 import { frameDuration, snapToFrame } from "./time.ts";
 
 export function hasTransformKeyframes(clip: Clip): boolean {
   return (clip.transformKeyframes?.length ?? 0) > 0;
+}
+
+export function hasGainKeyframes(clip: Clip): boolean {
+  return (clip.gainKeyframes?.length ?? 0) > 0;
 }
 
 export function hasEffectsKeyframes(clip: Clip): boolean {
@@ -142,6 +146,18 @@ export function resolveClipTransform(clip: Clip, elapsedSeconds: number): ClipTr
   return "value" in result ? result.value : lerpTransform(result.a.value, result.b.value, result.progress);
 }
 
+/** `clip`'s effective `gain` at `elapsedSeconds` — `resolveClipTransform`'s own counterpart for the
+ *  one `number`-valued keyframe track (see `GainKeyframe`'s own doc comment). Falls back to
+ *  `clip.gain ?? 1` when `gainKeyframes` is absent/empty, same zero-behavior-change contract every
+ *  other resolver here has. Uses `lerp` directly (no per-field wrapper needed, unlike
+ *  `lerpTransform`/`lerpEffects`) since a single number has nothing else to interpolate alongside it. */
+export function resolveClipGain(clip: Clip, elapsedSeconds: number): number {
+  const kfs = clip.gainKeyframes;
+  if (!kfs || kfs.length === 0) return clip.gain ?? 1;
+  const result = bracket(kfs, elapsedSeconds);
+  return "value" in result ? result.value : lerp(result.a.value, result.b.value, result.progress);
+}
+
 /** `clip`'s effective Effects at `elapsedSeconds` — `resolveClipTransform`'s own counterpart. */
 export function resolveClipEffects(clip: Clip, elapsedSeconds: number): ClipEffects {
   const kfs = clip.effectsKeyframes;
@@ -217,4 +233,4 @@ export function upsertKeyframe<T>(keyframes: Keyframe<T>[], atSeconds: number, n
   return [...keyframes, inserted].sort((a, b) => a.time - b.time);
 }
 
-export type { ColorGradingKeyframe, EffectsKeyframe, Keyframe, TextCropKeyframe, TransformKeyframe };
+export type { ColorGradingKeyframe, EffectsKeyframe, GainKeyframe, Keyframe, TextCropKeyframe, TransformKeyframe };

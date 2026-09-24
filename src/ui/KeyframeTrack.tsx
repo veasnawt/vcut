@@ -9,6 +9,8 @@ import {
   SetClipColorGradingKeyframesCommand,
   SetClipEffectsCommand,
   SetClipEffectsKeyframesCommand,
+  SetClipGainCommand,
+  SetClipGainKeyframesCommand,
   SetClipTextCropCommand,
   SetClipTextCropKeyframesCommand,
   SetClipTransformCommand,
@@ -24,11 +26,13 @@ import { useTranslation } from "../i18n/useTranslation.ts";
 import {
   hasColorGradingKeyframes,
   hasEffectsKeyframes,
+  hasGainKeyframes,
   hasTextCropKeyframes,
   hasTextStyleKeyframes,
   hasTransformKeyframes,
   resolveClipColorGrading,
   resolveClipEffects,
+  resolveClipGain,
   resolveClipTransform,
   resolveTextCrop,
   resolveTextStyle,
@@ -38,7 +42,7 @@ import { frameDuration, snapToFrame } from "../timeline/time.ts";
 
 interface Props {
   clip: Clip;
-  property: "transform" | "effects" | "colorGrading" | "textStyle" | "textCrop";
+  property: "transform" | "effects" | "gain" | "colorGrading" | "textStyle" | "textCrop";
   /** The CURRENT playhead position, in the SAME absolute-timeline seconds `clip.timelineStart` is —
    *  converted to clip-window-relative time internally, matching every other consumer of `Keyframe.time`. */
   playhead: number;
@@ -70,6 +74,8 @@ export function KeyframeTrack({ clip, property, playhead, fps, run, textAsset }:
       ? clip.transformKeyframes
       : property === "effects"
       ? clip.effectsKeyframes
+      : property === "gain"
+      ? clip.gainKeyframes
       : property === "colorGrading"
       ? clip.colorGradingKeyframes
       : property === "textCrop"
@@ -80,6 +86,8 @@ export function KeyframeTrack({ clip, property, playhead, fps, run, textAsset }:
       ? hasTransformKeyframes(clip)
       : property === "effects"
       ? hasEffectsKeyframes(clip)
+      : property === "gain"
+      ? hasGainKeyframes(clip)
       : property === "colorGrading"
       ? hasColorGradingKeyframes(clip)
       : property === "textCrop"
@@ -97,6 +105,8 @@ export function KeyframeTrack({ clip, property, playhead, fps, run, textAsset }:
       run(new SetClipTransformKeyframesCommand(clip.id, next as Clip["transformKeyframes"]));
     } else if (property === "effects") {
       run(new SetClipEffectsKeyframesCommand(clip.id, next as Clip["effectsKeyframes"]));
+    } else if (property === "gain") {
+      run(new SetClipGainKeyframesCommand(clip.id, next as Clip["gainKeyframes"]));
     } else if (property === "colorGrading") {
       run(new SetClipColorGradingKeyframesCommand(clip.id, next as Clip["colorGradingKeyframes"]));
     } else if (property === "textCrop") {
@@ -117,6 +127,9 @@ export function KeyframeTrack({ clip, property, playhead, fps, run, textAsset }:
       } else if (property === "effects") {
         const baked = resolveClipEffects(clip, clampedElapsed);
         run(new BatchCommand(t("Disable Effects Keyframes"), [new SetClipEffectsKeyframesCommand(clip.id, null), new SetClipEffectsCommand(clip.id, baked)]));
+      } else if (property === "gain") {
+        const baked = resolveClipGain(clip, clampedElapsed);
+        run(new BatchCommand(t("Disable Volume Keyframes"), [new SetClipGainKeyframesCommand(clip.id, null), new SetClipGainCommand(clip.id, baked)]));
       } else if (property === "colorGrading") {
         const baked = resolveClipColorGrading(clip, clampedElapsed);
         run(
@@ -151,6 +164,8 @@ export function KeyframeTrack({ clip, property, playhead, fps, run, textAsset }:
         dispatchKeyframes([{ id, time, value: clip.transform ?? IDENTITY_TRANSFORM }]);
       } else if (property === "effects") {
         dispatchKeyframes([{ id, time, value: clip.effects ?? IDENTITY_EFFECTS }]);
+      } else if (property === "gain") {
+        dispatchKeyframes([{ id, time, value: clip.gain ?? 1 }]);
       } else if (property === "colorGrading") {
         dispatchKeyframes([{ id, time, value: clip.colorGrading ?? IDENTITY_COLOR_GRADING }]);
       } else if (property === "textCrop") {
@@ -171,6 +186,8 @@ export function KeyframeTrack({ clip, property, playhead, fps, run, textAsset }:
         ? resolveClipTransform(clip, clampedElapsed)
         : property === "effects"
         ? resolveClipEffects(clip, clampedElapsed)
+        : property === "gain"
+        ? resolveClipGain(clip, clampedElapsed)
         : property === "colorGrading"
         ? resolveClipColorGrading(clip, clampedElapsed)
         : property === "textCrop"

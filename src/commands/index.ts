@@ -19,10 +19,13 @@ import {
   setClipEffectsKeyframes,
   setClipBlendMode,
   setClipFlipHorizontal,
+  setClipFlipVertical,
   setClipMask,
   setClipReverse,
   setClipSpeed,
   setClipGain,
+  setClipGainKeyframes,
+  setClipPan,
   setClipLut,
   setClipMuted,
   setClipTextCrop,
@@ -791,6 +794,33 @@ export class SetClipFlipHorizontalCommand implements Command {
   }
 }
 
+/** `SetClipFlipHorizontalCommand`'s own counterpart for the vertical mirror. */
+export class SetClipFlipVerticalCommand implements Command {
+  label = "Flip Vertical";
+  private applied = false;
+  private previous = false;
+  private clipId: string;
+  private enabled: boolean;
+
+  constructor(clipId: string, enabled: boolean) {
+    this.clipId = clipId;
+    this.enabled = enabled;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = found.clip.flipVertical === true;
+    this.applied = true;
+    return setClipFlipVertical(project, this.clipId, this.enabled);
+  }
+
+  revert(project: Project): Project {
+    if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipFlipVertical(project, this.clipId, this.previous);
+  }
+}
+
 export class SetClipBlendModeCommand implements Command {
   label = "Change Blend Mode";
   private applied = false;
@@ -1096,6 +1126,34 @@ export class SetClipEffectsKeyframesCommand implements Command {
   revert(project: Project): Project {
     if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
     return setClipEffectsKeyframes(project, this.clipId, this.previous);
+  }
+}
+
+/** `SetClipTransformKeyframesCommand`'s own counterpart for `Clip.gainKeyframes` — identical shape. */
+export class SetClipGainKeyframesCommand implements Command {
+  label = "Set Volume Keyframes";
+  private applied = false;
+  private previous: Clip["gainKeyframes"] | null = null;
+
+  private clipId: string;
+  private keyframes: Clip["gainKeyframes"] | null;
+
+  constructor(clipId: string, keyframes: Clip["gainKeyframes"] | null) {
+    this.clipId = clipId;
+    this.keyframes = keyframes;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = found.clip.gainKeyframes ?? null;
+    this.applied = true;
+    return setClipGainKeyframes(project, this.clipId, this.keyframes);
+  }
+
+  revert(project: Project): Project {
+    if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipGainKeyframes(project, this.clipId, this.previous);
   }
 }
 
@@ -1406,6 +1464,33 @@ export class SetClipGainCommand implements Command {
   revert(project: Project): Project {
     if (this.previous === null) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
     return setClipGain(project, this.clipId, this.previous);
+  }
+}
+
+/** `SetClipGainCommand`'s own counterpart for `Clip.pan` — same trivial exact inverse, `previous`
+ *  defaulting to `0` (center, absent field) when captured. */
+export class SetClipPanCommand implements Command {
+  label = "Adjust Clip Pan";
+  private previous: number | null = null;
+
+  private clipId: string;
+  private pan: number;
+
+  constructor(clipId: string, pan: number) {
+    this.clipId = clipId;
+    this.pan = pan;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = found.clip.pan ?? 0;
+    return setClipPan(project, this.clipId, this.pan);
+  }
+
+  revert(project: Project): Project {
+    if (this.previous === null) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipPan(project, this.clipId, this.previous);
   }
 }
 

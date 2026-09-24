@@ -61,7 +61,7 @@ function clipTimelineWindow(
   if (curve) next.speedCurve = curve;
   else delete next.speedCurve;
 
-  for (const key of ["transformKeyframes", "effectsKeyframes", "colorGradingKeyframes"] as const) {
+  for (const key of ["transformKeyframes", "effectsKeyframes", "colorGradingKeyframes", "gainKeyframes"] as const) {
     const frames = clip[key];
     if (!frames) continue;
     const selected = frames
@@ -318,7 +318,7 @@ export function trimClip(project: Project, clipId: string, edge: "in" | "out", t
     if (asset?.kind === "video" && (clip.reverse || clip.speedCurve || Math.abs((clip.speed ?? 1) - 1) > 1e-6)) {
       const oldDuration = clipDuration(clip);
       const trimKeyframes = (removed: number, nextDuration: number) => {
-        for (const key of ["transformKeyframes", "effectsKeyframes", "colorGradingKeyframes"] as const) {
+        for (const key of ["transformKeyframes", "effectsKeyframes", "colorGradingKeyframes", "gainKeyframes"] as const) {
           const frames = clip[key];
           if (!frames) continue;
           const next = frames
@@ -835,6 +835,19 @@ export function setClipFlipHorizontal(project: Project, clipId: string, enabled:
   });
 }
 
+/** `setClipFlipHorizontal`'s own counterpart for the vertical mirror — see `Clip.flipVertical`'s own
+ *  doc comment. Independent of `flipHorizontal`: a clip can be flipped on both axes at once (the same
+ *  as a 180° rotation composed with neither, or either alone). */
+export function setClipFlipVertical(project: Project, clipId: string, enabled: boolean): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    if (enabled) found.clip.flipVertical = true;
+    else delete found.clip.flipVertical;
+  });
+}
+
 /** Sets how an image/video clip composites with visual tracks below it. Normal is represented by an
  * absent field, following the model's existing compact identity-value convention. */
 export function setClipBlendMode(project: Project, clipId: string, blendMode: ClipBlendMode): Project {
@@ -904,7 +917,7 @@ export function setClipSpeed(project: Project, clipId: string, speed: number, cu
     else delete found.clip.speedCurve;
     const newDuration = clipDuration(found.clip);
     const ratio = oldDuration > 1e-9 ? newDuration / oldDuration : 1;
-    for (const key of ["transformKeyframes", "effectsKeyframes", "colorGradingKeyframes"] as const) {
+    for (const key of ["transformKeyframes", "effectsKeyframes", "colorGradingKeyframes", "gainKeyframes"] as const) {
       const frames = found.clip[key];
       if (frames) for (const frame of frames) frame.time = Math.min(newDuration, Math.max(0, frame.time * ratio));
     }
@@ -1174,6 +1187,26 @@ export function setClipEffectsKeyframes(project: Project, clipId: string, keyfra
   });
 }
 
+/** Mirrors `setClipEffectsKeyframes`, for `Clip.gainKeyframes` — `[0,4]` clamp on each keyframe's
+ *  `value`, the same bound `setClipGain` applies to the unkeyframed field (consistently at both parse
+ *  and write time, deliberately not repeating `Clip.gain`'s own pre-existing `[0,1]`-parse/`[0,4]`-
+ *  write inconsistency on this brand new field — see `serialize.ts`'s own parse-side comment). */
+export function setClipGainKeyframes(project: Project, clipId: string, keyframes: Clip["gainKeyframes"] | null): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    if (!keyframes || keyframes.length === 0) {
+      delete found.clip.gainKeyframes;
+      return;
+    }
+    const duration = clipDuration(found.clip);
+    found.clip.gainKeyframes = keyframes
+      .map((k) => ({ id: k.id, time: Math.min(duration, Math.max(0, k.time)), value: Math.min(4, Math.max(0, k.value)) }))
+      .sort((a, b) => a.time - b.time);
+  });
+}
+
 /** Same clamps `setTextAsset` applies to a static `TextStyle` — reused here so a keyframed value can
  *  never smuggle in an out-of-range font size/stroke width/line height that direct editing would have
  *  rejected. `fontSize`/`strokeWidth`/`lineHeightMultiplier` are the only TextStyle fields with a
@@ -1342,6 +1375,23 @@ export function setClipGain(project: Project, clipId: string, gain: number): Pro
       delete found.clip.gain;
     } else {
       found.clip.gain = clamped;
+    }
+  });
+}
+
+/** Sets a clip's own stereo pan (see `Clip.pan`'s own doc comment) — same `[-1,1]`/delete-at-`0` shape
+ *  `setTrackPan` uses, but gated on `found.track.locked` the way `setClipGain` is: a CLIP-level edit,
+ *  unlike a track's own mixer fader/pan (which aren't timeline edits `locked` is meant to guard). */
+export function setClipPan(project: Project, clipId: string, pan: number): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    const clamped = Math.min(1, Math.max(-1, pan));
+    if (clamped === 0) {
+      delete found.clip.pan;
+    } else {
+      found.clip.pan = clamped;
     }
   });
 }

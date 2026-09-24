@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { createClip } from "../src/project/createProject.ts";
 import { IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../src/project/types.ts";
-import type { Clip, ClipTransform, ColorGradingKeyframe, EffectsKeyframe, TextCropKeyframe, TransformKeyframe } from "../src/project/types.ts";
-import { hasColorGradingKeyframes, hasEffectsKeyframes, hasTextCropKeyframes, hasTransformKeyframes, resolveClipColorGrading, resolveClipEffects, resolveClipTransform, resolveTextCrop, upsertKeyframe } from "../src/timeline/keyframes.ts";
+import type { Clip, ClipTransform, ColorGradingKeyframe, EffectsKeyframe, GainKeyframe, TextCropKeyframe, TransformKeyframe } from "../src/project/types.ts";
+import { hasColorGradingKeyframes, hasEffectsKeyframes, hasGainKeyframes, hasTextCropKeyframes, hasTransformKeyframes, resolveClipColorGrading, resolveClipEffects, resolveClipGain, resolveClipTransform, resolveTextCrop, upsertKeyframe } from "../src/timeline/keyframes.ts";
 
 function clip(overrides: Partial<Clip> = {}): Clip {
   return { ...createClip({ assetId: "asset1", sourceIn: 0, sourceOut: 10, timelineStart: 0 }), ...overrides };
@@ -176,6 +176,47 @@ describe("hasTransformKeyframes / hasEffectsKeyframes / hasColorGradingKeyframes
     assert.equal(hasTextCropKeyframes(clip()), false);
     assert.equal(hasTextCropKeyframes(clip({ textCropKeyframes: [] })), false);
     assert.equal(hasTextCropKeyframes(clip({ textCropKeyframes: [{ id: "kf1", time: 0, value: IDENTITY_TEXT_CROP }] })), true);
+  });
+});
+
+describe("resolveClipGain", () => {
+  it("falls back to clip.gain, then 1, when no keyframes exist", () => {
+    assert.equal(resolveClipGain(clip({ gain: 2 }), 3), 2);
+    assert.equal(resolveClipGain(clip(), 3), 1);
+  });
+
+  it("two keyframes interpolate linearly at the exact midpoint (a duck/fade)", () => {
+    const kfs: GainKeyframe[] = [
+      { id: "kf1", time: 0, value: 1 },
+      { id: "kf2", time: 2, value: 0 },
+    ];
+    const c = clip({ gainKeyframes: kfs });
+    assert.equal(resolveClipGain(c, 1), 0.5);
+    assert.equal(resolveClipGain(c, 0), 1);
+    assert.equal(resolveClipGain(c, 2), 0);
+  });
+
+  it("holds the nearest keyframe's value outside the keyframed range", () => {
+    const kfs: GainKeyframe[] = [
+      { id: "kf1", time: 1, value: 0.2 },
+      { id: "kf2", time: 3, value: 1 },
+    ];
+    const c = clip({ gainKeyframes: kfs });
+    assert.equal(resolveClipGain(c, 0), 0.2);
+    assert.equal(resolveClipGain(c, 10), 1);
+  });
+
+  it("ignores clip.gain entirely once keyframes exist — keyframes are the whole story, not a patch", () => {
+    const c = clip({ gain: 4, gainKeyframes: [{ id: "kf1", time: 0, value: 1 }] });
+    assert.equal(resolveClipGain(c, 5), 1);
+  });
+});
+
+describe("hasGainKeyframes", () => {
+  it("false for absent or empty, true once at least one keyframe exists", () => {
+    assert.equal(hasGainKeyframes(clip()), false);
+    assert.equal(hasGainKeyframes(clip({ gainKeyframes: [] })), false);
+    assert.equal(hasGainKeyframes(clip({ gainKeyframes: [{ id: "kf1", time: 0, value: 1 }] })), true);
   });
 });
 

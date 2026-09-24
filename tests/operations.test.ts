@@ -16,6 +16,8 @@ import {
   setClipPixelEffect,
   setClipEffectsKeyframes,
   setClipGain,
+  setClipGainKeyframes,
+  setClipPan,
   setClipMuted,
   setClipTextCrop,
   setClipTextCropKeyframes,
@@ -1377,6 +1379,109 @@ describe("setClipGain", () => {
   it("rejects an unknown clip", () => {
     const project = emptyProject();
     assert.throws(() => setClipGain(project, "missing", 0.5), EditError);
+  });
+});
+
+describe("setClipPan", () => {
+  it("stores a real pan value", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+
+    const adjusted = setClipPan(project, clip.id, -0.5);
+
+    assert.ok(closeTo(clipsOf(adjusted, videoTrackId(adjusted))[0].pan!, -0.5));
+  });
+
+  it("clamps to -1..1", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+
+    const tooHigh = setClipPan(project, clip.id, 5);
+    const tooLow = setClipPan(project, clip.id, -5);
+
+    assert.ok(closeTo(clipsOf(tooHigh, videoTrackId(tooHigh))[0].pan!, 1));
+    assert.ok(closeTo(clipsOf(tooLow, videoTrackId(tooLow))[0].pan!, -1));
+  });
+
+  it("setting pan back to 0 (center) deletes the field entirely rather than storing 0", () => {
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    project = setClipPan(project, clip.id, 0.4);
+
+    const reset = setClipPan(project, clip.id, 0);
+
+    assert.equal(clipsOf(reset, videoTrackId(reset))[0].pan, undefined);
+    assert.ok(!("pan" in clipsOf(reset, videoTrackId(reset))[0]));
+  });
+
+  it("refuses to adjust pan on a locked track", () => {
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    project = setTrackFlag(project, videoTrackId(project), "locked", true);
+
+    assert.throws(() => setClipPan(project, clip.id, 0.5), EditError);
+  });
+
+  it("rejects an unknown clip", () => {
+    const project = emptyProject();
+    assert.throws(() => setClipPan(project, "missing", 0.5), EditError);
+  });
+});
+
+describe("setClipGainKeyframes", () => {
+  it("stores a sorted, clamped keyframe array on the clip", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+
+    const result = setClipGainKeyframes(project, clip.id, [
+      { id: "b", time: 5, value: 0 },
+      { id: "a", time: 1, value: 1 },
+    ]);
+    const [stored] = clipsOf(result, videoTrackId(result));
+
+    assert.deepEqual(
+      stored.gainKeyframes?.map((k) => [k.id, k.time]),
+      [
+        ["a", 1],
+        ["b", 5],
+      ]
+    );
+  });
+
+  it("clamps each keyframe's own value the same way setClipGain does", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+
+    const result = setClipGainKeyframes(project, clip.id, [{ id: "a", time: 0, value: 50 }]);
+    const [stored] = clipsOf(result, videoTrackId(result));
+
+    assert.ok(closeTo(stored.gainKeyframes![0].value, 4));
+  });
+
+  it("null/empty deletes the field entirely", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+
+    const armed = setClipGainKeyframes(project, clip.id, [{ id: "a", time: 0, value: 1 }]);
+    const disarmed = setClipGainKeyframes(armed, clip.id, null);
+
+    assert.equal(clipsOf(disarmed, videoTrackId(disarmed))[0].gainKeyframes, undefined);
+  });
+
+  it("refuses to set keyframes on a locked track", () => {
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    project = setTrackFlag(project, videoTrackId(project), "locked", true);
+
+    assert.throws(() => setClipGainKeyframes(project, clip.id, [{ id: "a", time: 0, value: 1 }]), EditError);
   });
 });
 

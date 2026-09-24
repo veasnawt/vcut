@@ -428,6 +428,26 @@ function parseEffectsKeyframes(raw: unknown): Clip["effectsKeyframes"] {
   return parsed.length > 0 ? parsed : undefined;
 }
 
+/** Mirrors `parseEffectsKeyframes`, for `Clip.gainKeyframes` — `value` is a plain finite `number`
+ *  here (see `GainKeyframe`'s own doc comment), not an object, so this validates/clamps it directly
+ *  instead of delegating to a `parseClipX` helper. `[0,4]` clamp, consistently at both parse and write
+ *  time (see `setClipGainKeyframes`'s own comment on why this brand new field doesn't repeat
+ *  `Clip.gain`'s own pre-existing parse/write clamp mismatch). */
+function parseGainKeyframes(raw: unknown): Clip["gainKeyframes"] {
+  if (!Array.isArray(raw)) return undefined;
+  const parsed = raw
+    .map((entry): NonNullable<Clip["gainKeyframes"]>[number] | undefined => {
+      if (!entry || typeof entry !== "object") return undefined;
+      const r = entry as Record<string, unknown>;
+      if (typeof r.time !== "number" || !Number.isFinite(r.time)) return undefined;
+      if (typeof r.value !== "number" || !Number.isFinite(r.value)) return undefined;
+      return { id: str(r.id, "keyframe id", newId("kf")), time: r.time, value: Math.min(4, Math.max(0, r.value)) };
+    })
+    .filter((k): k is NonNullable<Clip["gainKeyframes"]>[number] => k !== undefined)
+    .sort((a, b) => a.time - b.time);
+  return parsed.length > 0 ? parsed : undefined;
+}
+
 /** Same field-by-field fallback spirit as `parseTextStyle`, applied to one `ColorCurve`: a malformed
  *  individual point is dropped (never drops the whole curve for one bad point), and the whole curve
  *  falls back to `IDENTITY_CURVE` only if fewer than 2 valid points survive — a curve needs at least its
@@ -667,6 +687,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
   const textCrop = parseTextCrop(raw.textCrop);
   const transformKeyframes = parseTransformKeyframes(raw.transformKeyframes);
   const effectsKeyframes = parseEffectsKeyframes(raw.effectsKeyframes);
+  const gainKeyframes = parseGainKeyframes(raw.gainKeyframes);
   const colorGradingKeyframes = parseColorGradingKeyframes(raw.colorGradingKeyframes);
   const textStyleKeyframes = parseTextStyleKeyframes(raw.textStyleKeyframes);
   const textCropKeyframes = parseTextCropKeyframes(raw.textCropKeyframes);
@@ -679,6 +700,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
     sourceOut,
     timelineStart: Math.max(0, num(raw.timelineStart, "clip position")),
     ...(raw.flipHorizontal === true ? { flipHorizontal: true } : null),
+    ...(raw.flipVertical === true ? { flipVertical: true } : null),
     ...(raw.reverse === true ? { reverse: true } : null),
     ...(typeof raw.speed === "number" && Number.isFinite(raw.speed) && Math.abs(clampClipSpeed(raw.speed) - 1) > 1e-6
       ? { speed: clampClipSpeed(raw.speed) }
@@ -709,6 +731,11 @@ function parseClip(raw: Record<string, unknown>): Clip {
     ...(typeof raw.gain === "number" && Number.isFinite(raw.gain) && raw.gain !== 1
       ? { gain: Math.min(1, Math.max(0, raw.gain)) }
       : null),
+    // Same `[-1,1]` clamp `setClipPan`/`setTrackPan` use at write time.
+    ...(typeof raw.pan === "number" && Number.isFinite(raw.pan) && raw.pan !== 0
+      ? { pan: Math.min(1, Math.max(-1, raw.pan)) }
+      : null),
+    ...(gainKeyframes ? { gainKeyframes } : null),
   };
 }
 

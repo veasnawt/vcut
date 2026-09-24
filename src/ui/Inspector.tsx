@@ -32,9 +32,12 @@ import {
   SetClipEffectsCommand,
   SetClipEffectsKeyframesCommand,
   SetClipFlipHorizontalCommand,
+  SetClipFlipVerticalCommand,
   SetClipReverseCommand,
   SetClipSpeedCommand,
   SetClipGainCommand,
+  SetClipGainKeyframesCommand,
+  SetClipPanCommand,
   SetClipLutCommand,
   SetClipMaskCommand,
   SetClipMutedCommand,
@@ -62,11 +65,13 @@ import { DEFAULT_WORD_HIGHLIGHT_COLOR } from "../timeline/textAnimation.ts";
 import {
   hasColorGradingKeyframes,
   hasEffectsKeyframes,
+  hasGainKeyframes,
   hasTextCropKeyframes,
   hasTextStyleKeyframes,
   hasTransformKeyframes,
   resolveClipColorGrading,
   resolveClipEffects,
+  resolveClipGain,
   resolveClipTransform,
   resolveTextCrop,
   resolveTextStyle,
@@ -82,9 +87,11 @@ import { CurveEditor } from "./CurveEditor.tsx";
 import { Dropdown, type DropdownOption } from "./Dropdown.tsx";
 import { FontGridPicker } from "./FontGridPicker.tsx";
 import { defaultFontIdFor, FontPickerGrid } from "./FontPickerGrid.tsx";
+import { FlipHorizontalIcon, FlipVerticalIcon, MaskEllipseIcon, MaskRectangleIcon } from "./TransformHandles.tsx";
 import { KeyframeTrack } from "./KeyframeTrack.tsx";
 import { NumberField } from "./NumberField.tsx";
 import { PickerTabs } from "./PickerTabs.tsx";
+import { SpeedCurveEditor } from "./SpeedCurveEditor.tsx";
 import { TextAnimationPickerGrid } from "./TextAnimationPickerGrid.tsx";
 import { TextStylePresetGrid } from "./TextStylePresetGrid.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
@@ -1303,6 +1310,19 @@ export function Inspector() {
     clearPreview();
   }
 
+  /** Same auto-key pattern as `patchTransform`/`patchEffects`, for `Clip.gain` instead — `gain` itself
+   *  is already the whole (scalar, not object) value, so there's no `patch`/spread to merge, just the
+   *  keyframed-vs-static branch. */
+  function setGain(clipId: string, gain: number) {
+    const clip = found?.clip;
+    if (clip && hasGainKeyframes(clip)) {
+      const elapsed = playhead - clip.timelineStart;
+      run(new SetClipGainKeyframesCommand(clipId, upsertKeyframe(clip.gainKeyframes!, elapsed, gain, fps)));
+    } else {
+      run(new SetClipGainCommand(clipId, gain));
+    }
+  }
+
   /** Same pattern as `previewTransform`, for `ClipEffects` instead. */
   function previewEffects(clipId: string, patch: Partial<ClipEffects>) {
     const clip = found?.clip;
@@ -2209,18 +2229,41 @@ export function Inspector() {
                                   className="w-28 text-[11px]"
                                 />
                               </div>
-                              <button
-                                type="button"
-                                aria-pressed={clip.flipHorizontal === true}
-                                onClick={() => run(new SetClipFlipHorizontalCommand(clip.id, !clip.flipHorizontal))}
-                                className={`mt-2 w-full rounded py-1.5 text-[12px] font-medium transition ${
-                                  clip.flipHorizontal
-                                    ? "bg-sky-500 text-white hover:bg-sky-400"
-                                    : "bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
-                                }`}
-                              >
-                                {t("Flip Horizontal")}
-                              </button>
+                              <div className="mt-3 border-t border-white/[0.06] pt-3">
+                                <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-white/30">
+                                  {t("Flip")}
+                                </p>
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  <button
+                                    type="button"
+                                    aria-pressed={clip.flipHorizontal === true}
+                                    onClick={() => run(new SetClipFlipHorizontalCommand(clip.id, !clip.flipHorizontal))}
+                                    title={t("Mirror left-right")}
+                                    className={`flex items-center justify-center gap-1.5 rounded py-1.5 text-[12px] font-medium transition ${
+                                      clip.flipHorizontal
+                                        ? "bg-sky-500 text-white hover:bg-sky-400"
+                                        : "bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
+                                    }`}
+                                  >
+                                    <FlipHorizontalIcon size={14} />
+                                    {t("Horizontal")}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    aria-pressed={clip.flipVertical === true}
+                                    onClick={() => run(new SetClipFlipVerticalCommand(clip.id, !clip.flipVertical))}
+                                    title={t("Mirror top-bottom")}
+                                    className={`flex items-center justify-center gap-1.5 rounded py-1.5 text-[12px] font-medium transition ${
+                                      clip.flipVertical
+                                        ? "bg-sky-500 text-white hover:bg-sky-400"
+                                        : "bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
+                                    }`}
+                                  >
+                                    <FlipVerticalIcon size={14} />
+                                    {t("Vertical")}
+                                  </button>
+                                </div>
+                              </div>
                             </>
                           )}
                           <p className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-wide text-white/30">
@@ -2272,7 +2315,10 @@ export function Inspector() {
                           {!clip.mask ? (
                             <button
                               type="button"
-                              onClick={() => run(new SetClipMaskCommand(clip.id, DEFAULT_CLIP_MASK))}
+                              onClick={() => {
+                                run(new SetClipMaskCommand(clip.id, DEFAULT_CLIP_MASK));
+                                window.dispatchEvent(new CustomEvent("vcut:open-mask-preview"));
+                              }}
                               className="w-full rounded bg-white/5 py-1.5 text-[12px] text-white/70 transition hover:bg-white/10 hover:text-white"
                             >
                               {t("Add Mask")}
@@ -2280,53 +2326,143 @@ export function Inspector() {
                           ) : (
                             <div className="space-y-2 rounded border border-white/10 bg-black/15 p-2">
                               <div className="grid grid-cols-2 gap-1">
-                                {(["rectangle", "ellipse"] as const).map((shape) => (
+                                {([
+                                  ["rectangle", MaskRectangleIcon],
+                                  ["ellipse", MaskEllipseIcon],
+                                ] as const).map(([shape, Icon]) => (
                                   <button
                                     key={shape}
                                     type="button"
                                     onClick={() => run(new SetClipMaskCommand(clip.id, { ...clip.mask!, shape }))}
-                                    className={`rounded py-1.5 text-[11px] capitalize transition ${clip.mask?.shape === shape ? "bg-sky-500 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"}`}
+                                    aria-pressed={clip.mask?.shape === shape}
+                                    className={`flex items-center justify-center gap-1.5 rounded py-1.5 text-[11px] capitalize transition ${clip.mask?.shape === shape ? "bg-sky-500 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"}`}
                                   >
+                                    <Icon size={13} />
                                     {t(shape[0].toUpperCase() + shape.slice(1))}
                                   </button>
                                 ))}
                               </div>
-                              {([
-                                ["Center X", "centerX"], ["Center Y", "centerY"], ["Width", "width"],
-                                ["Height", "height"], ["Feather", "feather"],
-                              ] as const).map(([label, key]) => (
-                                <NumberField
-                                  key={key}
-                                  label={t(label)}
-                                  value={clip.mask![key]}
-                                  suffix="%"
-                                  step={1}
-                                  min={key === "width" || key === "height" ? 1 : 0}
-                                  max={key === "feather" ? 50 : 100}
-                                  toDisplay={(v) => v * 100}
-                                  fromDisplay={(v) => v / 100}
-                                  onPreview={(value) => previewMask(clip.id, { [key]: value })}
-                                  onCommit={(value) => {
-                                    run(new SetClipMaskCommand(clip.id, { ...clip.mask!, [key]: value }));
-                                    clearPreview();
-                                  }}
-                                />
-                              ))}
                               <button
                                 type="button"
-                                aria-pressed={clip.mask.invert}
-                                onClick={() => run(new SetClipMaskCommand(clip.id, { ...clip.mask!, invert: !clip.mask!.invert }))}
-                                className={`w-full rounded py-1.5 text-[11px] transition ${clip.mask.invert ? "bg-sky-500 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"}`}
+                                onClick={() => window.dispatchEvent(new CustomEvent("vcut:open-mask-preview"))}
+                                className="w-full rounded bg-sky-500/15 py-1.5 text-[12px] font-medium text-sky-300 transition hover:bg-sky-500/25 hover:text-white"
                               >
-                                {t("Invert Mask")}
+                                {t("Edit mask on preview")}
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => run(new SetClipMaskCommand(clip.id, null))}
-                                className="w-full rounded bg-white/5 py-1.5 text-[11px] text-white/60 transition hover:bg-red-500/20 hover:text-red-300"
-                              >
-                                {t("Remove Mask")}
-                              </button>
+                              <p className="mb-0.5 mt-1 text-[10px] font-semibold uppercase tracking-wide text-white/25">
+                                {t("Position")}
+                              </p>
+                              <div className="flex gap-2">
+                                <div className="flex-1">
+                                  <NumberField
+                                    label="X"
+                                    value={clip.mask.centerX}
+                                    suffix="%"
+                                    step={1}
+                                    min={0}
+                                    max={100}
+                                    compact
+                                    toDisplay={(v) => v * 100}
+                                    fromDisplay={(v) => v / 100}
+                                    onPreview={(value) => previewMask(clip.id, { centerX: value })}
+                                    onCommit={(value) => {
+                                      run(new SetClipMaskCommand(clip.id, { ...clip.mask!, centerX: value }));
+                                      clearPreview();
+                                    }}
+                                  />
+                                </div>
+                                <div className="flex-1">
+                                  <NumberField
+                                    label="Y"
+                                    value={clip.mask.centerY}
+                                    suffix="%"
+                                    step={1}
+                                    min={0}
+                                    max={100}
+                                    compact
+                                    toDisplay={(v) => v * 100}
+                                    fromDisplay={(v) => v / 100}
+                                    onPreview={(value) => previewMask(clip.id, { centerY: value })}
+                                    onCommit={(value) => {
+                                      run(new SetClipMaskCommand(clip.id, { ...clip.mask!, centerY: value }));
+                                      clearPreview();
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                              <p className="mb-0.5 mt-1 text-[10px] font-semibold uppercase tracking-wide text-white/25">
+                                {t("Size")}
+                              </p>
+                              <div className="flex gap-2">
+                                <div className="flex-1">
+                                  <NumberField
+                                    label={t("Width")}
+                                    value={clip.mask.width}
+                                    suffix="%"
+                                    step={1}
+                                    min={1}
+                                    max={100}
+                                    compact
+                                    toDisplay={(v) => v * 100}
+                                    fromDisplay={(v) => v / 100}
+                                    onPreview={(value) => previewMask(clip.id, { width: value })}
+                                    onCommit={(value) => {
+                                      run(new SetClipMaskCommand(clip.id, { ...clip.mask!, width: value }));
+                                      clearPreview();
+                                    }}
+                                  />
+                                </div>
+                                <div className="flex-1">
+                                  <NumberField
+                                    label={t("Height")}
+                                    value={clip.mask.height}
+                                    suffix="%"
+                                    step={1}
+                                    min={1}
+                                    max={100}
+                                    compact
+                                    toDisplay={(v) => v * 100}
+                                    fromDisplay={(v) => v / 100}
+                                    onPreview={(value) => previewMask(clip.id, { height: value })}
+                                    onCommit={(value) => {
+                                      run(new SetClipMaskCommand(clip.id, { ...clip.mask!, height: value }));
+                                      clearPreview();
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                              <NumberField
+                                label={t("Feather")}
+                                value={clip.mask.feather}
+                                suffix="%"
+                                step={1}
+                                min={0}
+                                max={50}
+                                toDisplay={(v) => v * 100}
+                                fromDisplay={(v) => v / 100}
+                                onPreview={(value) => previewMask(clip.id, { feather: value })}
+                                onCommit={(value) => {
+                                  run(new SetClipMaskCommand(clip.id, { ...clip.mask!, feather: value }));
+                                  clearPreview();
+                                }}
+                              />
+                              <div className="grid grid-cols-2 gap-1">
+                                <button
+                                  type="button"
+                                  aria-pressed={clip.mask.invert}
+                                  onClick={() => run(new SetClipMaskCommand(clip.id, { ...clip.mask!, invert: !clip.mask!.invert }))}
+                                  className={`rounded py-1.5 text-[11px] transition ${clip.mask.invert ? "bg-sky-500 text-white" : "bg-white/5 text-white/60 hover:bg-white/10"}`}
+                                >
+                                  {t("Invert")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => run(new SetClipMaskCommand(clip.id, null))}
+                                  className="rounded bg-white/5 py-1.5 text-[11px] text-white/60 transition hover:bg-red-500/20 hover:text-red-300"
+                                >
+                                  {t("Remove")}
+                                </button>
+                              </div>
                             </div>
                           )}
                           {clip.transform && (
@@ -2373,15 +2509,40 @@ export function Inspector() {
                       </button>
                     </div>
                     {!clip.speedCurve ? (
-                      <NumberField
-                        label={t("Playback speed")}
-                        value={clip.speed ?? 1}
-                        suffix="x"
-                        step={0.1}
-                        min={0.1}
-                        max={8}
-                        onCommit={(value) => run(new SetClipSpeedCommand(clip.id, value, null))}
-                      />
+                      <>
+                        {/* Quick presets — the same tap-a-chip pattern the Curve tab's own Montage/
+                            Hero/Ramp Up/Ramp Down row already uses, so a constant-speed change (by far
+                            the more common case) doesn't need typing/dragging for the values people
+                            reach for most: slow-mo, normal, and the common fast multiples. */}
+                        <div className="mt-2 grid grid-cols-5 gap-1">
+                          {[0.25, 0.5, 1, 2, 4].map((preset) => (
+                            <button
+                              key={preset}
+                              type="button"
+                              aria-pressed={Math.abs((clip.speed ?? 1) - preset) < 1e-9}
+                              onClick={() => run(new SetClipSpeedCommand(clip.id, preset, null))}
+                              className={`rounded py-1.5 text-[11px] font-medium transition ${
+                                Math.abs((clip.speed ?? 1) - preset) < 1e-9
+                                  ? "bg-amber-500 text-black"
+                                  : "bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
+                              }`}
+                            >
+                              {preset}x
+                            </button>
+                          ))}
+                        </div>
+                        <div className="mt-2">
+                          <NumberField
+                            label={t("Playback speed")}
+                            value={clip.speed ?? 1}
+                            suffix="x"
+                            step={0.1}
+                            min={0.1}
+                            max={8}
+                            onCommit={(value) => run(new SetClipSpeedCommand(clip.id, value, null))}
+                          />
+                        </div>
+                      </>
                     ) : (
                       <>
                         <div className="mt-2 grid grid-cols-2 gap-1">
@@ -2401,7 +2562,16 @@ export function Inspector() {
                             </button>
                           ))}
                         </div>
-                        <p className="mb-1 mt-3 text-[11px] text-white/40">{t("Curve points")}</p>
+                        {/* A visual graph replaces the old plain number grid as the PRIMARY way to
+                            shape a curve — drag a point to feel out a ramp instead of guessing
+                            numbers, matching the Color Grading tab's own `CurveEditor`. The precise
+                            per-point fields below stay for anyone who wants an EXACT value (a clean
+                            "2x", not whatever a drag lands on) rather than choosing between the two. */}
+                        <SpeedCurveEditor
+                          points={clip.speedCurve}
+                          onCommit={(points) => run(new SetClipSpeedCommand(clip.id, 1, points))}
+                        />
+                        <p className="mb-1 mt-1 text-[11px] text-white/40">{t("Fine-tune")}</p>
                         <div className="grid grid-cols-2 gap-x-3">
                           {clip.speedCurve.map((point, index) => (
                             <NumberField
@@ -2939,16 +3109,30 @@ export function Inspector() {
                         through `AudioMixEngine`'s Web Audio graph rather than a plain element's native
                         `.volume`, so real amplification (not just attenuation) is genuinely possible;
                         see `setClipGain`'s own comment for why 400 specifically. */}
+                    <KeyframeTrack clip={clip} property="gain" playhead={playhead} fps={fps} run={run} />
                     <NumberField
                       label={t("Volume")}
-                      value={clip.gain ?? 1}
+                      value={resolveClipGain(clip, playhead - clip.timelineStart)}
                       suffix="%"
                       step={5}
                       min={0}
                       max={400}
                       toDisplay={(v) => v * 100}
                       fromDisplay={(v) => v / 100}
-                      onCommit={(v) => run(new SetClipGainCommand(clip.id, v))}
+                      onCommit={(v) => setGain(clip.id, v)}
+                    />
+                    {/* `Clip.pan`'s own doc comment explains why this is deliberately NOT keyframed the
+                        way Volume just above is — a flat per-clip control, same `[-1,1]` range and
+                        equal-power algorithm `Track.pan`'s own Mixer knob already uses. */}
+                    <NumberField
+                      label={t("Pan")}
+                      value={clip.pan ?? 0}
+                      step={5}
+                      min={-100}
+                      max={100}
+                      toDisplay={(v) => v * 100}
+                      fromDisplay={(v) => v / 100}
+                      onCommit={(v) => run(new SetClipPanCommand(clip.id, v))}
                     />
                   </CollapsibleSection>
                 )}
