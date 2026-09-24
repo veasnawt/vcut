@@ -958,16 +958,17 @@ export async function importCustomSfx(projectId: string, file: File): Promise<Cu
 }
 
 /** Removes one "My Sounds" library entry — `sfxId`-keyed, matching `sfx/route.ts`'s own `DELETE`
- *  handler exactly (it looks the entry up by id to find its own `relPath` server-side, the same
- *  "id in, full updated project back out" shape `deleteLut` uses). */
-export async function deleteCustomSfx(projectId: string, sfx: CustomSfxAsset): Promise<Project> {
+ *  handler exactly (it looks the entry up by id to find its own `relPath` server-side). Resolves once
+ *  the file is actually gone; does NOT hand back an updated `Project` — see `deleteLut`'s own doc
+ *  comment for why the caller must apply this removal to its own current in-memory project instead
+ *  of trusting a server-returned one. */
+export async function deleteCustomSfx(projectId: string, sfx: CustomSfxAsset): Promise<void> {
   // Unreachable in practice today — `importCustomSfx` already refuses on native, so there's never a
   // "My Sounds" entry to remove there — but throws rather than silently no-opping for the same
   // "surface the real reason, don't pretend it worked" consistency `importLut`/`importCustomFont` give.
   if (isNative) throw new ApiRequestError("Removing sound effects isn't available on this device yet.", 501, "sfx-unavailable");
   const params = new URLSearchParams({ projectId, sfxId: sfx.id });
-  const body = await unwrap<{ project: Project }>(await apiFetch(`${BASE}/sfx?${params}`, { method: "DELETE" }));
-  return body.project;
+  await unwrap<{ ok: boolean }>(await apiFetch(`${BASE}/sfx?${params}`, { method: "DELETE" }));
 }
 
 /** URL for one entry in the project's own LUT library (`project.luts`) — a fetchable `.cube` text file,
@@ -994,14 +995,21 @@ export async function importLut(projectId: string, file: File): Promise<LutAsset
   return body.lut;
 }
 
-/** Removes a LUT from the project's library and cascades the clear across every clip that referenced it
- *  — `lut/route.ts`'s own `DELETE` does the cascade server-side and hands back the fully-updated
- *  project, so the caller swaps it straight in rather than reconciling clip-level `lutId`s itself. */
-export async function deleteLut(projectId: string, lutId: string): Promise<Project> {
+/** Removes a LUT from the project's library — `lut/route.ts`'s own `DELETE` deletes the file and
+ *  keeps its own on-disk copy of the project consistent (dropping the `LutAsset` entry and cascading
+ *  the `lutId` clear across every clip that referenced it), but does NOT hand back an updated
+ *  `Project`. An earlier version of both this function and that route did — a server-computed result
+ *  sounds like the more trustworthy one to apply, but the route's own `project` is a snapshot read
+ *  fresh off disk at request time, which is routinely STALER than the calling tab's real in-memory
+ *  state (autosave is debounced ~1.5s — `editorStore.ts`'s own `AUTOSAVE_DELAY_MS`). Swapping that
+ *  snapshot in wholesale silently discarded whatever the user had edited since their last autosave,
+ *  on every single delete — not a race, not an edge case. The caller applies this same removal (and,
+ *  for a LUT specifically, the same `removeLutReferences` cascade) to its OWN current in-memory
+ *  project instead (`editorStore.ts`'s `removeLut`) — this call now only confirms the file is gone. */
+export async function deleteLut(projectId: string, lutId: string): Promise<void> {
   if (isNative) throw new ApiRequestError("Removing LUTs isn't available on this device yet.", 501, "lut-unavailable");
   const params = new URLSearchParams({ projectId, lutId });
-  const body = await unwrap<{ project: Project }>(await apiFetch(`${BASE}/lut?${params}`, { method: "DELETE" }));
-  return body.project;
+  await unwrap<{ ok: boolean }>(await apiFetch(`${BASE}/lut?${params}`, { method: "DELETE" }));
 }
 
 /** URL for one entry in the project's own custom-font library (`project.customFonts`) — same
@@ -1028,14 +1036,13 @@ export async function importCustomFont(projectId: string, file: File): Promise<C
 
 /** Removes one custom-font library entry — same `id`-keyed delete shape `fonts/route.ts`'s own
  *  `DELETE` expects (a custom font needs no clip-level cascade — see that route's own doc comment for
- *  why `fontById`'s existing fallback already covers it). Returns the server's own updated `Project`,
- *  same "client applies what the server actually persisted, never a local guess" shape `deleteLut`
- *  already uses — the route already computes and returns exactly this. */
-export async function deleteCustomFont(projectId: string, font: CustomFontAsset): Promise<Project> {
+ *  why `fontById`'s existing fallback already covers it). Does NOT hand back an updated `Project` —
+ *  see `deleteLut`'s own doc comment for why the caller applies this removal to its own current
+ *  in-memory project instead of trusting a server-returned one. */
+export async function deleteCustomFont(projectId: string, font: CustomFontAsset): Promise<void> {
   if (isNative) throw new ApiRequestError("Removing fonts isn't available on this device yet.", 501, "font-unavailable");
   const params = new URLSearchParams({ projectId, fontId: font.id });
-  const body = await unwrap<{ project: Project }>(await apiFetch(`${BASE}/fonts?${params}`, { method: "DELETE" }));
-  return body.project;
+  await unwrap<{ ok: boolean }>(await apiFetch(`${BASE}/fonts?${params}`, { method: "DELETE" }));
 }
 
 export interface ExportStarted {

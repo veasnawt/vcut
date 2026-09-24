@@ -10,9 +10,11 @@ import {
   moveClip,
   removeTrack,
   reorderTrack,
+  removeLutReferences,
   setClipColorGrading,
   setClipColorGradingKeyframes,
   setClipEffects,
+  setClipLut,
   setClipPixelEffect,
   setClipEffectsKeyframes,
   setClipGain,
@@ -1695,5 +1697,44 @@ describe("setTextAsset", () => {
 
     assert.equal(updated.assets[0].textStyle?.shadowOffsetX, 5000);
     assert.equal(updated.assets[0].textStyle?.shadowOffsetY, -5000);
+  });
+});
+
+// Both `lut/route.ts`'s own `DELETE` handler AND `editorStore.ts`'s `removeLut` now run this exact
+// same cascade — the server against its (potentially stale) on-disk project, the client against its
+// own current in-memory one, precisely so a LUT delete can never leave a clip pointing at a file
+// that no longer exists regardless of which copy actually persists first. Neither of those two real
+// callers had any test coverage of this pure function before, on either side.
+describe("removeLutReferences", () => {
+  it("clears lutId from every clip that referenced the removed LUT", () => {
+    const base = emptyProject();
+    const withClip = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(withClip, videoTrackId(withClip));
+    const project = setClipLut(withClip, clip.id, "lut1");
+    assert.equal(clipsOf(project, videoTrackId(project))[0].lutId, "lut1");
+
+    const cleared = removeLutReferences(project, "lut1");
+
+    assert.equal(clipsOf(cleared, videoTrackId(cleared))[0].lutId, undefined);
+  });
+
+  it("leaves a clip referencing a DIFFERENT lut untouched", () => {
+    const base = emptyProject();
+    const withClip = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(withClip, videoTrackId(withClip));
+    const project = setClipLut(withClip, clip.id, "lut1");
+
+    const cleared = removeLutReferences(project, "some-other-lut");
+
+    assert.equal(clipsOf(cleared, videoTrackId(cleared))[0].lutId, "lut1");
+  });
+
+  it("is a no-op on a clip with no lutId at all — never adds the field", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+
+    const cleared = removeLutReferences(project, "lut1");
+
+    assert.equal("lutId" in clipsOf(cleared, videoTrackId(cleared))[0], false);
   });
 });

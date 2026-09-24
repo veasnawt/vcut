@@ -873,6 +873,28 @@ describe("buildExportPlan with a clip LUT", () => {
 
     assert.ok(!graph.includes("lut3d="));
   });
+
+  // Regression test for a real, confirmed bug: the `/luts/lut1.cube` fixture every other test in
+  // this block uses has no drive-letter colon in it, so it couldn't distinguish an escaped path
+  // from an unescaped one — every one of those tests still passed while a real Windows absolute
+  // path (`C:\...`) silently broke FFmpeg's own filtergraph parser the moment the graph was spilled
+  // to a `-filter_complex_script` file (see `buildExportPlan.ts`'s own comment on this exact line).
+  // Proven live: a real export with a LUT applied failed outright until `lutPath` was routed through
+  // the same `ffmpegPath()` escaping every other file path in this function already uses.
+  it("escapes a Windows drive-letter path's colon (real bug: unescaped ':' broke the filtergraph parser)", () => {
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    project = setClipLut(project, clip.id, "lut1");
+    const windowsOptions = { ...options, lutPathFor: () => "C:\\Users\\test\\My Docs\\lut1.cube" };
+
+    const graph = filterGraph(buildExportPlan(project, windowsOptions).args);
+
+    assert.ok(
+      graph.includes("lut3d=file='C\\:/Users/test/My Docs/lut1.cube':interp=tetrahedral"),
+      `expected an escaped drive-letter colon in: ${graph.slice(graph.indexOf("lut3d="), graph.indexOf("lut3d=") + 80)}`
+    );
+  });
 });
 
 describe("buildExportPlan with a clip pixel effect", () => {

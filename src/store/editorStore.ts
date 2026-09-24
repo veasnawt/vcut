@@ -34,7 +34,7 @@ import type { Asset, Clip, Project, TextStyle } from "../project/types.ts";
 import { IDENTITY_TRANSFORM } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
 import { clampTimelineZoom, DEFAULT_TIMELINE_PIXELS_PER_SECOND } from "../timeline/interaction.ts";
-import { defaultClipDuration, EditError, trackKindForAsset } from "../timeline/operations.ts";
+import { defaultClipDuration, EditError, removeLutReferences, trackKindForAsset } from "../timeline/operations.ts";
 import { clipAtTime, nonOverlappingPointStart, nonOverlappingStart } from "../timeline/queries.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { UndoStack } from "../undo/UndoStack.ts";
@@ -1661,8 +1661,13 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const sfx = project.customSfx.find((s) => s.id === id);
       if (!sfx) return;
       try {
-        const updated = await api.deleteCustomSfx(projectId, sfx);
-        applyProject(updated);
+        await api.deleteCustomSfx(projectId, sfx);
+        // Applied to the CURRENT in-memory project, not a server-returned one — see `deleteCustomSfx`'s
+        // own doc comment for why: the server's own copy is a disk snapshot that can be staler than
+        // whatever's been edited here since the last autosave. Same shape `removeMedia` already uses
+        // for the identical reason.
+        const current = get().project;
+        if (current) applyProject({ ...current, customSfx: current.customSfx.filter((s) => s.id !== id) });
         get().setStatus(translateText(get().language, "Removed {name}", { name: sfx.label }));
       } catch (err) {
         const message = err instanceof Error ? err.message : "Could not remove that sound effect";
@@ -1693,8 +1698,15 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const lut = project.luts.find((l) => l.id === id);
       if (!lut) return;
       try {
-        const updated = await api.deleteLut(projectId, id);
-        applyProject(updated);
+        await api.deleteLut(projectId, id);
+        // Applied to the CURRENT in-memory project, not a server-returned one — see `deleteLut`'s own
+        // doc comment for why. `removeLutReferences` is the exact same pure cascade the server's own
+        // route runs against its (potentially staler) disk copy, run here against the real live state.
+        const current = get().project;
+        if (current) {
+          const cascaded = removeLutReferences(current, id);
+          applyProject({ ...cascaded, luts: cascaded.luts.filter((l) => l.id !== id) });
+        }
         get().setStatus(translateText(get().language, "Removed {name}", { name: lut.name }));
       } catch (err) {
         const message = err instanceof Error ? err.message : "Could not remove that LUT";
@@ -1725,8 +1737,13 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const font = project.customFonts.find((f) => f.id === id);
       if (!font) return;
       try {
-        const updated = await api.deleteCustomFont(projectId, font);
-        applyProject(updated);
+        await api.deleteCustomFont(projectId, font);
+        // Applied to the CURRENT in-memory project, not a server-returned one — see
+        // `deleteCustomFont`'s own doc comment for why. No clip-level cascade needed here (same
+        // reasoning the server route's own doc comment gives — `fontById`'s fallback already covers
+        // a stale `fontFamily` reference gracefully).
+        const current = get().project;
+        if (current) applyProject({ ...current, customFonts: current.customFonts.filter((f) => f.id !== id) });
         get().setStatus(translateText(get().language, "Removed {name}", { name: font.name }));
       } catch (err) {
         const message = err instanceof Error ? err.message : "Could not remove that font";

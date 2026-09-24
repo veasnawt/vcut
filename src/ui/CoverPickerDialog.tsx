@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Add, Close } from "@veasnawt/vicons";
-import { filmstripUrl, mediaUrl, sfxAssetUrl, stickerSpriteUrl, thumbnailUrl } from "../api/client.ts";
+import { filmstripUrl, lutUrl, mediaUrl, sfxAssetUrl, stickerSpriteUrl, thumbnailUrl } from "../api/client.ts";
 import { SetExportCoverCommand } from "../commands/index.ts";
 import { clipDuration, findAsset, sequenceDuration } from "../project/createProject.ts";
 import type { Asset, Clip } from "../project/types.ts";
@@ -111,7 +111,10 @@ export function CoverPickerDialog({ onClose }: { onClose: () => void }) {
         const state = useEditorStore.getState();
         const lut = state.project?.luts.find((l) => l.id === lutId);
         if (!lut || !state.projectId) return null;
-        return mediaUrl(state.projectId, lut.relPath);
+        // Same real, confirmed bug `Preview.tsx`'s own `lutUrlFor` had (see its doc comment) — bare
+        // `mediaUrl()` omits `kind=lut`, so the server looks in the wrong directory and 404s. Uses
+        // the dedicated `lutUrl` helper instead, which already tagged this correctly.
+        return lutUrl(state.projectId, lut);
       },
     });
     engineRef.current = engine;

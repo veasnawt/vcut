@@ -2,7 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Maximize, Pause, Play, Redo, SkipBack, SkipForward, StepBack, StepForward, Undo } from "@veasnawt/vicons";
-import { mediaUrl, outroAssetUrl, sfxAssetUrl, stickerSpriteUrl } from "../api/client.ts";
+import { lutUrl, mediaUrl, outroAssetUrl, sfxAssetUrl, stickerSpriteUrl } from "../api/client.ts";
 import { reportError } from "../api/crashLog.ts";
 import { sequenceDuration } from "../project/createProject.ts";
 import { buildComposePreviewProject } from "../playback/composePreview.ts";
@@ -265,7 +265,14 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
         const state = useEditorStore.getState();
         const lut = state.project?.luts.find((l) => l.id === lutId);
         if (!lut || !state.projectId) return null;
-        return mediaUrl(state.projectId, lut.relPath);
+        // A real, confirmed bug: this called bare `mediaUrl()`, which omits the `kind=lut` tag
+        // `media/raw/route.ts` needs to look in `paths.lutsDir` rather than the ordinary media
+        // directory — a LUT's file never lives there, so every fetch 404'd, forever (`resolveLut`'s
+        // own `.catch` just drops the cache entry and retries on the next frame, with nothing
+        // surfaced to the user). No live preview ever actually applied a LUT until this was fixed to
+        // use the dedicated `lutUrl` helper, which already existed and already tagged this correctly
+        // — it just was never actually called from here.
+        return lutUrl(state.projectId, lut);
       },
     });
     engineRef.current = engine;

@@ -48,6 +48,7 @@ import { snapToFrame } from "../timeline/time.ts";
 import { findTransitionOut, findTransitionPartner } from "../timeline/transitions.ts";
 import { animationFrameIndex, animationLoopOffset } from "../project/stickers.ts";
 import { buildCurvesFilterFragment } from "./curvesFilter.ts";
+import { buildLut3DFilterFragment } from "./lutFilter.ts";
 import { buildGainVolumeExpr } from "./gainFilter.ts";
 import type { KhmerTextWindow } from "./khmerTextRenderer.ts";
 import { buildPanFilterStage } from "./panFilter.ts";
@@ -572,7 +573,18 @@ function buildTransformFilters(params: {
   // Applied right after curves, before geometry — matches `PlaybackEngine.drawTransformed`'s own
   // post-color-grading/pre-geometry placement for its LUT pass. `interp=tetrahedral` matches the
   // interpolation quality `Lut3DEngine`'s own preview LUT sampling already uses.
-  const lutFilter = lutPath ? `,lut3d=file='${lutPath}':interp=tetrahedral` : "";
+  // `buildLut3DFilterFragment` + `ffmpegPath`, not a hand-rolled `'${lutPath}'` — a real, confirmed
+  // bug: an unescaped Windows drive letter's `:` inside this filter's `file=` value made FFmpeg's own
+  // filtergraph parser choke once the graph was spilled to a `-filter_complex_script` file
+  // (`_lib/ffmpeg.ts`'s `spillFilterComplexToScript`, which ALWAYS applies — see that function's own
+  // doc comment): a real export with a LUT applied failed outright with "Unable to parse option value"
+  // every time, on every platform whose absolute paths contain a drive letter. Every other file path
+  // this function embeds (font files, text files, the fonts directory) already goes through this same
+  // escaping. `buildLut3DFilterFragment` itself already existed with exactly this contract
+  // (`escapedLutPath` — its own doc comment says the caller escapes it) but was never actually called
+  // from here; this was a second, independent copy of the same one-line filter string, unescaped and
+  // silently drifted from it.
+  const lutFilter = lutPath ? `,${buildLut3DFilterFragment(ffmpegPath(lutPath))}` : "";
   // Applied right after the LUT stage, still before geometry — a spatial displacement needs to see the
   // clip's own native pixels, same reasoning `PlaybackEngine.drawTransformed` runs `applyGlitch`/
   // `applyWaterRipple` LAST among its color/grade passes, before the geometric transform. Only one of
