@@ -15,6 +15,17 @@ export interface EffectPreset {
   values: Partial<ClipEffects>;
 }
 
+/** Blur strengths (sequence pixels, the same unit as the Inspector's Blur slider) for the two presets
+ *  that blur. Were 3 and 2 — a real, reported "the blur doesn't work on Dreamy and Soft Focus": measured
+ *  directly in the live preview, blur 2 and 3 on a 1080-wide sequence change the frame by an average of
+ *  ~0.2 and ~0.6 out of 255 (imperceptible), because the preview used to EXAGGERATE blur 2-3x (it ignored
+ *  the canvas's own device scale) and these were tuned against that; once the preview was corrected to
+ *  match export (`deviceScaleOf`), they silently became invisible. Both renderers agree now, so these
+ *  are picked to be visibly soft at real sequence resolution — still just starting points, fully
+ *  adjustable with the slider afterward. */
+export const PRESET_BLUR_SOFT = 8;
+export const PRESET_BLUR_DREAMY = 6;
+
 export const EFFECT_PRESETS: EffectPreset[] = [
   { id: "vivid", label: "Vivid", values: { brightness: 0.03, contrast: 1.15, saturation: 1.4 } },
   { id: "punchy", label: "Punchy", values: { contrast: 1.3, saturation: 1.3 } },
@@ -23,7 +34,7 @@ export const EFFECT_PRESETS: EffectPreset[] = [
   { id: "faded", label: "Faded", values: { brightness: 0.08, contrast: 0.75, saturation: 0.7 } },
   { id: "moody", label: "Moody", values: { brightness: -0.08, contrast: 1.2, saturation: 0.65 } },
   { id: "bright-airy", label: "Bright & Airy", values: { brightness: 0.15, contrast: 0.95, saturation: 0.9 } },
-  { id: "soft-focus", label: "Soft Focus", values: { brightness: 0.05, blur: 3 } },
+  { id: "soft-focus", label: "Soft Focus", values: { brightness: 0.05, blur: PRESET_BLUR_SOFT } },
   // Four more, each covering a combination none of the eight above actually reaches: Noir goes far
   // more desaturated than anything else here (the lowest existing saturation, Muted's, is still 0.55);
   // Crisp is the only preset that leaves saturation completely untouched — a pure contrast/brightness
@@ -34,5 +45,5 @@ export const EFFECT_PRESETS: EffectPreset[] = [
   { id: "noir", label: "Noir", values: { contrast: 1.3, saturation: 0.15 } },
   { id: "crisp", label: "Crisp", values: { contrast: 1.2, brightness: 0.02 } },
   { id: "flat", label: "Flat", values: { contrast: 0.65, saturation: 0.85 } },
-  { id: "dreamy", label: "Dreamy", values: { brightness: 0.12, contrast: 0.85, blur: 2 } },
+  { id: "dreamy", label: "Dreamy", values: { brightness: 0.12, contrast: 0.85, blur: PRESET_BLUR_DREAMY } },
 ];

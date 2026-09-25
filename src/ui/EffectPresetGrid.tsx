@@ -34,6 +34,13 @@ function matchesPreset(current: ClipEffects, preset: Partial<ClipEffects>): bool
   );
 }
 
+/** How much of a preset's blur (sequence pixels) a swatch tile shows. A tile is ~50-60px wide while the
+ *  sequence it represents is ~1080px, so drawing the raw blur value on it (what this did) blurred the
+ *  swatch ~20x harder, relative to its size, than applying the preset blurs the real frame — Soft Focus
+ *  looked heavily blurred in the grid and then barely changed anything once applied. Scaled to the tile
+ *  instead so what the swatch shows is what you get. */
+const SWATCH_BLUR_SCALE = 0.06;
+
 export function EffectPresetGrid({
   thumbnailUrl,
   currentEffects,
@@ -76,7 +83,7 @@ export function EffectPresetGrid({
               style={{
                 height: swatchHeight,
                 background: thumbnailUrl ? `center / cover no-repeat url(${thumbnailUrl})` : "linear-gradient(135deg, #f59e0b, #6366f1, #10b981)",
-                filter: buildCanvasFilterString({ ...IDENTITY_EFFECTS, ...preset.values }),
+                filter: buildCanvasFilterString({ ...IDENTITY_EFFECTS, ...preset.values }, SWATCH_BLUR_SCALE),
               }}
               className={`w-full rounded border ${active ? "border-sky-400" : "border-white/10"}`}
             />
