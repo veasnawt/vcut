@@ -1,4 +1,5 @@
 import type { ClipEffects } from "./types.ts";
+import { IDENTITY_EFFECTS } from "./types.ts";
 
 /** A quick-apply combination of `ClipEffects`' own existing sliders (brightness/contrast/saturation/
  *  blur) — deliberately NOT a new pixel-level filter type: this app's `ClipEffects` has no notion of
@@ -47,3 +48,29 @@ export const EFFECT_PRESETS: EffectPreset[] = [
   { id: "flat", label: "Flat", values: { contrast: 0.65, saturation: 0.85 } },
   { id: "dreamy", label: "Dreamy", values: { brightness: 0.12, contrast: 0.85, blur: PRESET_BLUR_DREAMY } },
 ];
+
+/** The four look fields a preset owns — everything in `ClipEffects` except `opacity`, which is an
+ *  independent choice no preset overrides (see `EffectPreset`'s own doc comment). */
+export type PresetLook = Pick<ClipEffects, "brightness" | "contrast" | "saturation" | "blur">;
+
+/** What applying `preset` must WRITE: every look field, with anything the preset doesn't mention reset
+ *  to its identity value — a preset is a WHOLE look, not a patch. Passing `preset.values` straight to
+ *  the "merge onto the clip's current effects" edit path (what the grid used to do) left whatever the
+ *  PREVIOUS preset set and this one doesn't: pick Soft Focus (blur), then Vivid (no blur), and the clip
+ *  stayed blurred — same for a leftover brightness or contrast. Never includes `opacity`, so it's
+ *  preserved. */
+export function presetLook(values: Partial<ClipEffects>): PresetLook {
+  const resolved = { ...IDENTITY_EFFECTS, ...values };
+  return { brightness: resolved.brightness, contrast: resolved.contrast, saturation: resolved.saturation, blur: resolved.blur };
+}
+
+/** Whether `current` is exactly this preset's look (opacity ignored — presets never touch it, so a
+ *  clip faded to 50% is still "on" whichever preset it has). Full-object equality on the four look
+ *  fields, not just the ones the preset happens to set: a hand-tweaked unrelated field means it's no
+ *  longer really that preset. */
+export function presetMatches(current: ClipEffects, values: Partial<ClipEffects>): boolean {
+  const look = presetLook(values);
+  return (
+    current.brightness === look.brightness && current.contrast === look.contrast && current.saturation === look.saturation && current.blur === look.blur
+  );
+}
