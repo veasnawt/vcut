@@ -96,6 +96,14 @@ export interface PendingTemplatePick {
   file?: File;
 }
 
+/** A hovered picker tile's animation, shown on the composer's phantom clip in place of the chosen one for the
+ *  duration of the hover. `null` for a side means "hovering None" (that side shows no animation). */
+export interface ComposeHoverPreview {
+  animation?: Clip["textAnimation"] | null;
+  animationIn?: Clip["textAnimationIn"] | null;
+  animationOut?: Clip["textAnimationOut"] | null;
+}
+
 export interface EditorState {
   projectId: string | null;
   project: Project | null;
@@ -411,7 +419,7 @@ export interface EditorState {
    *  keeping it as the input's own local state, so `Preview`'s `getProject()` can read it back and
    *  render a live phantom clip on the canvas while composing, before anything real exists to render.
    *  Starts `""` the instant composing is armed (see `setComposeText`). */
-  composeText: { style: TextStyle; trackId?: string; content: string; animation?: Clip["textAnimation"]; animationIn?: Clip["textAnimationIn"]; animationOut?: Clip["textAnimationOut"] } | null;
+  composeText: { style: TextStyle; trackId?: string; content: string; animation?: Clip["textAnimation"]; animationIn?: Clip["textAnimationIn"]; animationOut?: Clip["textAnimationOut"]; hover?: ComposeHoverPreview } | null;
   /** Arms composing with a style (and, from an empty track's own "+" button, a specific `trackId`) —
    *  `content` always starts empty here; `setComposeTextContent` is what tracks it live afterward. */
   setComposeText: (compose: { style: TextStyle; trackId?: string }) => void;
@@ -422,6 +430,9 @@ export interface EditorState {
    *  the phantom clip the same way `setComposeTextStyle` is. */
   setComposeTextAnimation: (animation: Clip["textAnimation"] | null) => void;
   /** Same, for the entrance (`"in"`) / exit (`"out"`) animation. */
+  /** Temporarily previews an animation on the phantom clip (a picker tile under the pointer) WITHOUT choosing
+   *  it; `null` clears. Never committed with the clip. */
+  setComposeTextHover: (hover: ComposeHoverPreview | null) => void;
   setComposeTextInOut: (which: "in" | "out", animation: Clip["textAnimationIn"] | null) => void;
   /** Live-updates the draft text while composing — see `composeText.content`'s own doc comment for why
    *  this lives in the store rather than as `NewTextComposer`'s own local input state. No-op if nothing
@@ -1172,6 +1183,13 @@ export const useEditorStore = create<EditorState>((set, get) => {
         if (!state.composeText) return {};
         const { animation: _previous, ...rest } = state.composeText;
         return { composeText: animation ? { ...rest, animation } : rest };
+      });
+    },
+    setComposeTextHover(hover) {
+      set((state) => {
+        if (!state.composeText) return {};
+        const { hover: _previous, ...rest } = state.composeText;
+        return { composeText: hover ? { ...rest, hover } : rest };
       });
     },
     setComposeTextInOut(which, animation) {

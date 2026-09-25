@@ -20,7 +20,7 @@ const TABS: { id: ComposerTab; label: string }[] = [
 ];
 /** Height of the Style/Font/Animation panel under the input — fixed so switching tabs never makes the bar
  *  jump, and short enough that the canvas above stays visible: seeing the text change live is the point. */
-const PANEL_HEIGHT = 232;
+const PANEL_HEIGHT = "clamp(232px, 36vh, 340px)";
 
 /** Where a NEW text clip's content gets typed, entirely BEFORE anything exists on the timeline — see
  *  `editorStore.ts`'s own `composeText` doc comment for why this has to be a standalone flow rather
@@ -44,6 +44,7 @@ export function NewTextComposer() {
   const setComposeTextStyle = useEditorStore((s) => s.setComposeTextStyle);
   const setComposeTextAnimation = useEditorStore((s) => s.setComposeTextAnimation);
   const setComposeTextInOut = useEditorStore((s) => s.setComposeTextInOut);
+  const setComposeTextHover = useEditorStore((s) => s.setComposeTextHover);
   const customFonts = useEditorStore((s) => s.project?.customFonts ?? []);
   const commitComposedText = useEditorStore((s) => s.commitComposedText);
   const cancelComposeText = useEditorStore((s) => s.cancelComposeText);
@@ -63,6 +64,7 @@ export function NewTextComposer() {
 
   function selectTab(next: ComposerTab) {
     setTab(next);
+    setComposeTextHover(null);
     // Leaving the keyboard tab dismisses the on-screen keyboard so the panel isn't hidden behind it;
     // coming back re-focuses the input. (No-ops on desktop, where there's no keyboard to hide.)
     if (next === "keyboard") inputRef.current?.focus();
@@ -174,6 +176,7 @@ export function NewTextComposer() {
                 onPickIn={(next) => setComposeTextInOut("in", next)}
                 currentOut={composeText.animationOut}
                 onPickOut={(next) => setComposeTextInOut("out", next)}
+                onHover={setComposeTextHover}
               />
             )}
           </div>

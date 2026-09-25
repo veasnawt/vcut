@@ -6,8 +6,8 @@ import type { TextInOutType } from "../project/types.ts";
 
 const TILE_WIDTH = 84;
 const TILE_HEIGHT = 48;
-const SAMPLE_TEXT = "Text";
-const FONT_SIZE = 15;
+const SAMPLE_TEXT = "ABC123";
+const FONT_SIZE = 13;
 const BASE_COLOR = "#38bdf8";
 /** One preview loop: the animation plays, the text rests, then it repeats — long enough to read the motion
  *  and short enough that the tile keeps demonstrating it. */

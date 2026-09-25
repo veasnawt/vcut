@@ -3,6 +3,9 @@ import type { Project } from "../project/types.ts";
 import { defaultClipDuration } from "../timeline/operations.ts";
 import type { EditorState } from "../store/editorStore.ts";
 
+/** How long one loop of the phantom's animation preview lasts. */
+const COMPOSE_PREVIEW_CYCLE_SECONDS = 2.6;
+
 /** Lets `Preview`'s canvas show what a new text clip will actually look like WHILE it's still being
  *  typed in `NewTextComposer` — before anything real exists to select/render. Rather than teach the
  *  renderer a second, parallel "phantom clip" code path, this builds a throwaway `Project` — the real
@@ -29,12 +32,19 @@ export function buildComposePreviewProject(
   // however far through its own duration `nowSeconds` says we are, so the (paused) playhead lands
   // that far into it and the entrance, the loop and the exit all play over and over as you compose.
   // Static drafts keep the exact old placement.
-  const animated = Boolean(composeText.animation || composeText.animationIn || composeText.animationOut);
-  const loopOffset = animated && nowSeconds !== undefined && duration > 0 ? nowSeconds % duration : 0;
-  const clip = createClip({ assetId: asset.id, sourceIn: 0, sourceOut: duration, timelineStart: Math.max(0, playhead) - loopOffset });
-  if (composeText.animation) clip.textAnimation = composeText.animation;
-  if (composeText.animationIn) clip.textAnimationIn = composeText.animationIn;
-  if (composeText.animationOut) clip.textAnimationOut = composeText.animationOut;
+  const animated = Boolean(composeText.animation || composeText.animationIn || composeText.animationOut || (composeText.hover && (composeText.hover.animation || composeText.hover.animationIn || composeText.hover.animationOut)));
+  // A short cycle (not the clip's full default length) so the entrance AND the exit come round every couple
+  // of seconds — waiting out a 5s default to see a slide-in twice a loop made the preview feel dead.
+  const cycle = animated ? Math.min(duration, COMPOSE_PREVIEW_CYCLE_SECONDS) : duration;
+  const loopOffset = animated && nowSeconds !== undefined && cycle > 0 ? nowSeconds % cycle : 0;
+  const clip = createClip({ assetId: asset.id, sourceIn: 0, sourceOut: cycle, timelineStart: Math.max(0, playhead) - loopOffset });
+  const hover = composeText.hover;
+  const loop = hover && "animation" in hover ? hover.animation : composeText.animation;
+  const animIn = hover && "animationIn" in hover ? hover.animationIn : composeText.animationIn;
+  const animOut = hover && "animationOut" in hover ? hover.animationOut : composeText.animationOut;
+  if (loop) clip.textAnimation = loop;
+  if (animIn) clip.textAnimationIn = animIn;
+  if (animOut) clip.textAnimationOut = animOut;
   const track = createTrack("text", "");
   track.clips.push(clip);
 

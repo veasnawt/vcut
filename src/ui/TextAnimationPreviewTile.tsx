@@ -11,7 +11,7 @@ import type { TextAnimationType } from "../project/types.ts";
 
 const TILE_WIDTH = 84;
 const TILE_HEIGHT = 48;
-const SAMPLE_TEXT = "Text";
+const SAMPLE_TEXT = "ABC123";
 /** `wordHighlight` specifically needs more than one word to demonstrate anything — a single word just
  *  sits highlighted (or not) for the whole loop, never visibly "jumping". */
 const SAMPLE_WORDS_TEXT = "One Two Three";

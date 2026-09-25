@@ -9,13 +9,21 @@ import { TextAnimationPreviewTile } from "./TextAnimationPreviewTile.tsx";
 import { TextInOutPreviewTile } from "./TextInOutPreviewTile.tsx";
 
 type InOutValue = Clip["textAnimationIn"] | null | undefined;
+
+/** What a tile under the pointer would apply, for a caller that wants to preview it (the text composer shows it
+ *  on the live text). `null` for a side means the None tile; the whole callback gets `null` on mouse-leave. */
+export interface AnimationHoverPreview {
+  animation?: Clip["textAnimation"] | null;
+  animationIn?: Clip["textAnimationIn"] | null;
+  animationOut?: Clip["textAnimationOut"] | null;
+}
 type PickerTab = "in" | "out" | "loop";
 
 const TAB_LABEL: Record<PickerTab, string> = { in: "In", out: "Out", loop: "Loop" };
 
-function NoneTile({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
+function NoneTile({ active, onClick, label, onHover }: { active: boolean; onClick: () => void; label: string; onHover?: (hovering: boolean) => void }) {
   return (
-    <button onClick={onClick} className={`flex flex-col items-center gap-1 rounded p-1 transition hover:bg-white/10 ${active ? "bg-sky-500/20" : ""}`}>
+    <button onClick={onClick} onMouseEnter={() => onHover?.(true)} onMouseLeave={() => onHover?.(false)} className={`flex flex-col items-center gap-1 rounded p-1 transition hover:bg-white/10 ${active ? "bg-sky-500/20" : ""}`}>
       <div className="flex items-center justify-center rounded border border-white/10 bg-black/40 text-white/30" style={{ width: 84, height: 48 }}>
         <Close size={14} />
       </div>
@@ -42,6 +50,7 @@ export function TextAnimationPickerGrid({
   onPickIn,
   currentOut,
   onPickOut,
+  onHover,
 }: {
   current: Clip["textAnimation"] | null | undefined;
   onPick: (next: Clip["textAnimation"] | null) => void;
@@ -49,6 +58,8 @@ export function TextAnimationPickerGrid({
   onPickIn?: (next: Clip["textAnimationIn"] | null) => void;
   currentOut?: InOutValue;
   onPickOut?: (next: Clip["textAnimationOut"] | null) => void;
+  /** Fired as the pointer enters / leaves a tile (`null` on leave) — see `AnimationHoverPreview`. */
+  onHover?: (preview: AnimationHoverPreview | null) => void;
 }) {
   const t = useTranslation();
   const tabs: PickerTab[] = onPickIn && onPickOut ? ["in", "out", "loop"] : ["loop"];
@@ -60,10 +71,12 @@ export function TextAnimationPickerGrid({
     const pick = mode === "in" ? onPickIn! : onPickOut!;
     return (
       <div className="grid grid-cols-3 gap-1.5">
-        <NoneTile active={!value} onClick={() => pick(null)} label={t("None")} />
+        <NoneTile active={!value} onClick={() => pick(null)} label={t("None")} onHover={(on) => onHover?.(on ? (mode === "in" ? { animationIn: null } : { animationOut: null }) : null)} />
         {TEXT_INOUT_TYPE_OPTIONS.map((type) => (
           <button
             key={type}
+            onMouseEnter={() => onHover?.(mode === "in" ? { animationIn: { type } } : { animationOut: { type } })}
+            onMouseLeave={() => onHover?.(null)}
             // Switching TYPE keeps a duration already set on the current animation.
             onClick={() => pick({ type, ...(value?.duration ? { duration: value.duration } : null) })}
             className={`flex flex-col items-center gap-1 rounded p-1 transition hover:bg-white/10 ${value?.type === type ? "bg-sky-500/20" : ""}`}
@@ -78,10 +91,12 @@ export function TextAnimationPickerGrid({
 
   const loopGrid = (
     <div className="grid grid-cols-3 gap-1.5">
-      <NoneTile active={!current} onClick={() => onPick(null)} label={t("None")} />
+      <NoneTile active={!current} onClick={() => onPick(null)} label={t("None")} onHover={(on) => onHover?.(on ? { animation: null } : null)} />
       {TEXT_ANIMATION_TYPE_OPTIONS.map((type) => (
         <button
           key={type}
+          onMouseEnter={() => onHover?.({ animation: { type } })}
+          onMouseLeave={() => onHover?.(null)}
           onClick={() =>
             // Switching TYPE keeps whatever `speed`/`highlightColor` was already set on `current` —
             // same reasoning as Inspector's original single-clip version of this grid.

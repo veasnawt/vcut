@@ -35,4 +35,17 @@ describe("buildComposePreviewProject", () => {
     const still = buildComposePreviewProject(project, { style: DEFAULT_TEXT_STYLE, content: "Hi" }, 5, 1.25)!;
     assert.equal(still.sequence.tracks[still.sequence.tracks.length - 1].clips[0].timelineStart, 5);
   });
+
+  it("a hovered tile previews on the phantom without being chosen, and hovering None hides the chosen one", () => {
+    const project = emptyProject();
+    const last = (p: NonNullable<ReturnType<typeof buildComposePreviewProject>>) => p.sequence.tracks[p.sequence.tracks.length - 1].clips[0];
+    const base = { style: DEFAULT_TEXT_STYLE, content: "Hi", animationIn: { type: "fade" as const } };
+    const hoverPop = buildComposePreviewProject(project, { ...base, hover: { animationIn: { type: "pop" } } }, 0, 0.5)!;
+    assert.equal(last(hoverPop).textAnimationIn?.type, "pop");
+    const hoverNone = buildComposePreviewProject(project, { ...base, hover: { animationIn: null } }, 0, 0.5)!;
+    assert.equal(last(hoverNone).textAnimationIn, undefined);
+    const hoverOut = buildComposePreviewProject(project, { ...base, hover: { animationOut: { type: "slideUp" } } }, 0, 0.5)!;
+    assert.equal(last(hoverOut).textAnimationIn?.type, "fade", "hovering an Out tile keeps the chosen In");
+    assert.equal(last(hoverOut).textAnimationOut?.type, "slideUp");
+  });
 });
