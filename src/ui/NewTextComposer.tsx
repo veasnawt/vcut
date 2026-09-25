@@ -52,7 +52,7 @@ export function NewTextComposer() {
   const t = useTranslation();
   const [bottomInset, setBottomInset] = useState(0);
   const keyboardOpen = bottomInset > 80;
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   // Which panel is open under the input, if any — Style by default. The tabs are toggles (tap the open one to
   // close it and go back to typing); there is no separate "keyboard" tab, the field itself is the keyboard.
   const [tab, setTab] = useState<ComposerTab | null>("style");
@@ -82,6 +82,14 @@ export function NewTextComposer() {
     // where there's no keyboard to hide.)
     inputRef.current?.blur();
   }
+
+  // Grow the field to fit its lines (CSS max-height caps it); `field-sizing` isn't in Safari/Firefox yet.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [composeText?.content]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -125,16 +133,17 @@ export function NewTextComposer() {
       >
         <div className="flex w-full max-w-2xl flex-col gap-2">
         <div className="flex items-center gap-2">
-        <input
+        <textarea
           ref={inputRef}
-          type="text"
+          rows={1}
           value={composeText.content}
           placeholder={t("Enter text")}
           onChange={(e) => setComposeTextContent(e.target.value)}
           onKeyDown={(e) => {
-            // Same "Enter commits, matches a mobile keyboard's own Go/Done key" convention
-            // `MobileTextEditBar` uses; Escape cancels, matching every other popover/dialog in this app.
-            if (e.key === "Enter") {
+            // Multi-line: on a touch keyboard Enter adds a line (the check button commits); with a physical
+            // keyboard Enter commits and Shift+Enter adds a line. Escape cancels, like every other popover here.
+            const touch = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+            if (e.key === "Enter" && !e.shiftKey && !touch) {
               e.preventDefault();
               confirm();
             } else if (e.key === "Escape") {
@@ -146,7 +155,7 @@ export function NewTextComposer() {
           // app already applies.
           // Typed in the chosen font, so the field itself already reflects the look being built.
           style={{ fontFamily: `"${resolveFont(composeText.style.fontFamily, customFonts).cssFamily}", sans-serif` }}
-          className="min-w-0 flex-1 rounded-md border border-white/15 bg-white/5 px-3 py-2 text-[16px] text-white placeholder:text-white/35 focus:outline-none focus:ring-1 focus:ring-sky-400/60"
+          className="max-h-28 min-w-0 flex-1 resize-none rounded-md border border-white/15 bg-white/5 px-3 py-2 text-[16px] leading-snug text-white placeholder:text-white/35 focus:outline-none focus:ring-1 focus:ring-sky-400/60"
         />
         <button
           onClick={confirm}
