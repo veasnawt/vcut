@@ -113,6 +113,39 @@ export function buildCutoutInputArgs(
   ];
 }
 
+/** Cleans the edge of a matted "green screen" video so the Chroma Key that removes its background leaves no coloured
+ *  outline. Where the subject meets the background the model's pixels are a MIX of the subject and the key colour; a
+ *  keyer keeps those (they're far enough from the key) and they show as a green fringe. This works out the subject's
+ *  matte from the video, shrinks it by a couple of pixels so the mixed ring falls outside it, pulls leftover green out
+ *  of what remains (`despill`), and lays the result back over a flat key-colour background. The video keeps the exact
+ *  key colour everywhere the subject isn't, so the later key is clean.
+ *  `keyHex` is "#rrggbb"; `width`/`height`/`fps` are the input's own (the flat background must match them). */
+export function buildEdgeCleanArgs(
+  input: string,
+  output: string,
+  opts: { keyHex: string; width: number; height: number; fps: number; erodePasses?: number }
+): string[] {
+  const key = opts.keyHex.replace("#", "0x");
+  const passes = Math.max(0, Math.min(4, Math.round(opts.erodePasses ?? 2)));
+  const erode = Array.from({ length: passes }, () => "erosion").join(",");
+  const graph = [
+    "[0:v]split=2[a][b]",
+    `[a]chromakey=color=${key}:similarity=0.22:blend=0.08,format=yuva444p,alphaextract${erode ? `,${erode}` : ""}[m]`,
+    "[b]despill=type=green:mix=0.7:expand=0.2,format=rgb24[fg]",
+    "[fg][m]alphamerge[fga]",
+    "[1:v][fga]overlay=shortest=1:format=auto,format=yuv420p[out]",
+  ].join(";");
+  return [
+    "-i", input,
+    "-f", "lavfi", "-i", `color=c=${key}:s=${opts.width}x${opts.height}:r=${opts.fps}`,
+    "-filter_complex", graph,
+    "-map", "[out]",
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+    "-movflags", "+faststart",
+    "-y", output,
+  ];
+}
+
 /** Puts the original clip's audio back on a matted (silent) video, for the "replace this clip" cutout. */
 export function buildMuxAudioArgs(
   videoInput: string,
@@ -244,7 +277,17 @@ export function buildWaveformArgs(input: string, output: string): string[] {
  *  since `start`/`end` are arbitrary trim points, not necessarily keyframe-aligned — a stream copy can
  *  only cut on keyframes. `-an`: the inpainting model needs no audio, and the result won't carry any
  *  either (a v1 scope cut, not an oversight). */
-export function buildExtractClipArgs(input: string, output: string, startSeconds: number, endSeconds: number): string[] {
+export function buildExtractClipArgs(
+  input: string,
+  output: string,
+  startSeconds: number,
+  endSeconds: number,
+  /** When set, the chunk is re-timed to exactly `round(duration * fps)` frames at this constant rate, with the audio cut
+   *  to the same length — so `buildMaskVideoArgs`'s matching `frames` gives a mask of the IDENTICAL length. Bria rejects a
+   *  source and mask whose lengths differ even slightly ("Video lengths do not match"), and a seek that lands on a
+   *  keyframe, a variable-frame-rate source, or audio running past the video all make them differ. */
+  fps?: number
+): string[] {
   const start = Math.max(0, startSeconds);
   // Clamped against the ALREADY-clamped start, not the raw one — otherwise a negative `endSeconds`
   // (e.g. both start and end negative) could clamp to a value below the real `-ss`, producing an
@@ -254,6 +297,13 @@ export function buildExtractClipArgs(input: string, output: string, startSeconds
     "-ss", String(start),
     "-to", String(end),
     "-i", input,
+    ...(fps && fps > 0
+      ? [
+          "-vf", `fps=${fps}`,
+          "-frames:v", String(Math.max(1, Math.round((end - start) * fps))),
+          "-t", String(Math.max(1, Math.round((end - start) * fps)) / fps),
+        ]
+      : []),
     "-c:v", "libx264",
     // Re-encoded (not stream-copied) same as video, since the trim points aren't keyframe-aligned —
     // was `-an` (audio dropped entirely) back when this only ever fed ProPainter, a video-only model
@@ -288,7 +338,9 @@ export function buildMaskVideoArgs(
   height: number,
   fps: number,
   durationSeconds: number,
-  rect: { x: number; y: number; width: number; height: number }
+  rect: { x: number; y: number; width: number; height: number },
+  /** Exact frame count (see `buildExtractClipArgs`'s `fps`): the mask is cut to this many frames instead of a duration. */
+  frames?: number
 ): string[] {
   const safeDuration = Math.max(0.1, durationSeconds);
   const x = Math.max(0, Math.round(rect.x));
@@ -299,6 +351,7 @@ export function buildMaskVideoArgs(
     "-f", "lavfi",
     "-i", `color=c=black:s=${width}x${height}:r=${fps}:d=${safeDuration}`,
     "-vf", `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=white:t=fill`,
+    ...(frames && frames > 0 ? ["-frames:v", String(Math.round(frames))] : []),
     "-c:v", "libx264", "-pix_fmt", "yuv420p",
     // Same reasoning as `buildExtractClipArgs`'s identical flag — a remote decoder reading this mask
     // over plain HTTP needs `moov` at the front to read it in one forward pass.
