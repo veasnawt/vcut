@@ -250,6 +250,8 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
       onClose={onClose}
       canClose={!isBusy}
       maxHeight={Math.max(320, viewportHeight)}
+      // Short by default; tall only while the Teleprompter (script area) is open.
+      compact={!showTeleprompter}
     >
         <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3">
           <h2 className="text-sm font-semibold text-white">{t("Voice Record")}</h2>

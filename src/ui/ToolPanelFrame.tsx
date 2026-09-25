@@ -23,6 +23,7 @@ export function ToolPanelFrame({
   canClose = true,
   size = "default",
   maxHeight,
+  compact = false,
   children,
 }: {
   ariaLabel: string;
@@ -30,6 +31,10 @@ export function ToolPanelFrame({
   canClose?: boolean;
   size?: ToolPanelSize;
   maxHeight?: CSSProperties["maxHeight"];
+  /** Size to the content instead of filling the usual tall panel height (still capped at that height, and
+   *  scrolling if the content outgrows it). For tools whose default view is short and only some mode needs the
+   *  room — e.g. Voice Record, which is tall only while the Teleprompter is open. */
+  compact?: boolean;
   children: ReactNode;
 }) {
   const dock = useToolPanelFrameDock();
@@ -39,7 +44,7 @@ export function ToolPanelFrame({
         role="dialog"
         aria-label={ariaLabel}
         data-can-close={canClose}
-        className="vcut-docked-frame flex h-full min-h-0 w-full flex-col overflow-hidden bg-[#12151c]"
+        className={`vcut-docked-frame flex min-h-0 w-full flex-col overflow-hidden bg-[#12151c] ${compact ? "h-auto max-h-full self-start" : "h-full"}`}
       >
         {children}
       </div>,
@@ -57,7 +62,9 @@ export function ToolPanelFrame({
       <div
         onClick={(event) => event.stopPropagation()}
         style={maxHeight === undefined ? undefined : { maxHeight }}
-        className={`flex h-[85dvh] w-full ${WIDTH_CLASS[size]} flex-col overflow-hidden rounded-t-2xl border border-white/10 bg-[#12151c] shadow-2xl sm:h-[80vh] sm:rounded-xl`}
+        className={`flex w-full ${WIDTH_CLASS[size]} flex-col overflow-hidden rounded-t-2xl border border-white/10 bg-[#12151c] shadow-2xl sm:rounded-xl ${
+          compact ? "h-auto max-h-[85dvh] sm:max-h-[80vh]" : "h-[85dvh] sm:h-[80vh]"
+        }`}
       >
         {children}
       </div>
