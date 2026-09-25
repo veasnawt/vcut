@@ -130,7 +130,9 @@ export function buildEdgeCleanArgs(
   const erode = Array.from({ length: passes }, () => "erosion").join(",");
   const graph = [
     "[0:v]split=2[a][b]",
-    `[a]chromakey=color=${key}:similarity=0.22:blend=0.08,format=yuva444p,alphaextract${erode ? `,${erode}` : ""}[m]`,
+    // `colorkey` (distance in RGB), not `chromakey` (distance in YUV chroma only): a black shirt or dark hair has neutral
+    // chroma, which `chromakey` treats as close to the key colour and removes — the subject vanished.
+    `[a]format=rgba,colorkey=color=${key}:similarity=0.25:blend=0.08,alphaextract${erode ? `,${erode}` : ""}[m]`,
     "[b]despill=type=green:mix=0.7:expand=0.2,format=rgb24[fg]",
     "[fg][m]alphamerge[fga]",
     "[1:v][fga]overlay=shortest=1:format=auto,format=yuv420p[out]",

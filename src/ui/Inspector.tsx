@@ -539,10 +539,13 @@ function SmartCutoutSection({ clipId }: { clipId: string }) {
   const openAiEdit = useEditorStore((s) => s.openAiEdit);
   const [removing, setRemoving] = useState(false);
   const [creatingBehind, setCreatingBehind] = useState(false);
+  // A job already running on this clip (started from here or from anywhere else) also locks both buttons, so it can't be
+  // started twice.
+  const busy = useEditorStore((s) => s.aiTasks.some((task) => task.clipId === clipId));
   const [behindText, setBehindText] = useState("TEXT");
 
   async function handleRemoveBg() {
-    if (removing || creatingBehind) return;
+    if (removing || creatingBehind || busy) return;
     setRemoving(true);
     try {
       await removeClipBackground(clipId);
@@ -552,7 +555,7 @@ function SmartCutoutSection({ clipId }: { clipId: string }) {
   }
 
   async function handleTextBehind() {
-    if (removing || creatingBehind) return;
+    if (removing || creatingBehind || busy) return;
     setCreatingBehind(true);
     try {
       await createTextBehindSubject(clipId, behindText.trim() || undefined);
@@ -579,10 +582,10 @@ function SmartCutoutSection({ clipId }: { clipId: string }) {
         </p>
         <button
           onClick={handleRemoveBg}
-          disabled={removing || creatingBehind}
+          disabled={removing || creatingBehind || busy}
           className="w-full flex items-center justify-center gap-2 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 py-1.5 px-3 text-[11px] font-medium text-white transition active:scale-[0.99] disabled:opacity-50"
         >
-          {removing ? (
+          {removing || busy ? (
             <>
               <div className="h-3 w-3 animate-spin rounded-full border-2 border-sky-400 border-t-transparent" />
               <span>{t("Removing background...")}</span>
@@ -618,10 +621,10 @@ function SmartCutoutSection({ clipId }: { clipId: string }) {
           />
           <button
             onClick={handleTextBehind}
-            disabled={removing || creatingBehind}
+            disabled={removing || creatingBehind || busy}
             className="shrink-0 flex items-center gap-1.5 rounded bg-sky-500 hover:bg-sky-400 px-3 py-1.5 text-[11px] font-semibold text-white transition active:scale-[0.99] disabled:opacity-50"
           >
-            {creatingBehind ? (
+            {creatingBehind || busy ? (
               <>
                 <div className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
                 <span>{t("Creating...")}</span>

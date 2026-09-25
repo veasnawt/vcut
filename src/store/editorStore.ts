@@ -479,6 +479,13 @@ export interface EditorState {
    *  kept per-clip so switching selection away and back doesn't lose it. */
   removeObjectArmedClipId: string | null;
   removeObjectRect: (SourceRect & { clipId: string }) | null;
+  /** AI jobs in flight for a clip (Auto Cutout, Text Behind Subject). They take a minute or two and used to run silently
+   *  behind a status message that vanished after a few seconds, so people ran them again and got duplicates. The
+   *  banner reads this, and a second run on the same clip is refused while one is in flight. */
+  aiTasks: { id: string; clipId: string; label: string; startedAt: number }[];
+  /** The last AI job's outcome, kept on screen until dismissed (a failure) or for a few seconds (success). */
+  aiTaskNotice: { id: string; tone: "success" | "error"; text: string } | null;
+  dismissAiTaskNotice: () => void;
   armRemoveObject: (clipId: string) => void;
   setRemoveObjectRect: (clipId: string, rect: SourceRect) => void;
   clearRemoveObject: () => void;
@@ -744,6 +751,43 @@ export interface EditorState {
  *  derived booleans and labels are mirrored into the store for the UI to read. */
 const undoStack = new UndoStack();
 
+let aiTaskCounter = 0;
+let aiNoticeTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Runs one long AI job on a clip with visible progress: registers it (so the banner shows a live timer), refuses a
+ *  second job on the same clip while it runs, and leaves the outcome on screen afterwards — a failure until dismissed. */
+async function trackAiTask(
+  get: () => EditorState,
+  set: (partial: Partial<EditorState>) => void,
+  clipId: string,
+  label: string,
+  work: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
+): Promise<void> {
+  if (get().aiTasks.some((task) => task.clipId === clipId)) {
+    get().setStatus(translateText(get().language, "That clip is already being processed — it'll finish in a moment"), "error");
+    return;
+  }
+  const id = `ai${++aiTaskCounter}`;
+  if (aiNoticeTimer) clearTimeout(aiNoticeTimer);
+  set({ aiTasks: [...get().aiTasks, { id, clipId, label, startedAt: Date.now() }], aiTaskNotice: null });
+  let outcome: { ok: boolean; message: string };
+  try {
+    outcome = await work();
+  } catch (err) {
+    outcome = { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+  set({
+    aiTasks: get().aiTasks.filter((task) => task.id !== id),
+    aiTaskNotice: { id, tone: outcome.ok ? "success" : "error", text: outcome.message },
+  });
+  if (outcome.ok) {
+    aiNoticeTimer = setTimeout(() => {
+      if (get().aiTaskNotice?.id === id) set({ aiTaskNotice: null });
+    }, 5000);
+  }
+}
+
+
 /** The Copy/Cut clipboard: snapshots of clips (and, for text, their words and style), pasted at the playhead.
  *  Module-level rather than reactive state — the snapshots are large objects nothing renders — with only the
  *  count mirrored into the store (`clipboardCount`) so Paste can enable/disable. Deliberately survives project
@@ -950,6 +994,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
     resolveTimelineDropTarget: null,
     removeObjectArmedClipId: null,
     removeObjectRect: null,
+    aiTasks: [],
+    aiTaskNotice: null,
+    dismissAiTaskNotice() {
+      set({ aiTaskNotice: null });
+    },
     armedAssetId: null,
     aiEditModalClipId: null,
 
@@ -1732,18 +1781,17 @@ export const useEditorStore = create<EditorState>((set, get) => {
       if (!found) return;
       const asset = findAsset(project, found.clip.assetId);
       if (!asset) return;
+      const language = get().language;
 
-      get().setStatus(translateText(get().language, "Removing background..."));
-      try {
+      if (asset.kind === "video" && found.clip.sourceOut - found.clip.sourceIn > api.MAX_VIDEO_CUTOUT_SECONDS + 0.05) {
+        return get().setStatus(
+          translateText(language, "Cutout works on clips up to {n} seconds — split this clip first", { n: api.MAX_VIDEO_CUTOUT_SECONDS }),
+          "error"
+        );
+      }
+      await trackAiTask(get, set, clipId, translateText(language, "Cutting out the subject…"), async () => {
         if (asset.kind === "video") {
           // A video clip is cut out frame by frame (not from one still), keeping its audio.
-          const tooLong = found.clip.sourceOut - found.clip.sourceIn > api.MAX_VIDEO_CUTOUT_SECONDS + 0.05;
-          if (tooLong) {
-            return get().setStatus(
-              translateText(get().language, "Cutout works on clips up to {n} seconds — split this clip first", { n: api.MAX_VIDEO_CUTOUT_SECONDS }),
-              "error"
-            );
-          }
           const cutout = await api.cutoutVideoClip(projectId, clipId, true);
           const tagged = withAiOrigin(cutout.asset, asset.id, { tool: "video-cutout", keepAudio: true });
           get().run(new ApplyVideoCutoutCommand(clipId, tagged, { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds }));
@@ -1751,10 +1799,8 @@ export const useEditorStore = create<EditorState>((set, get) => {
           const newAsset = await api.removeBackground(projectId, asset.id, clipId, sourceTimeAtPlayhead(found.clip, get().playhead));
           get().run(new SwapClipAssetCommand(clipId, withAiOrigin(newAsset, asset.id, { tool: "cutout" })));
         }
-        get().setStatus(translateText(get().language, "Background removed"));
-      } catch (err) {
-        get().setStatus(err instanceof Error ? err.message : String(err), "error");
-      }
+        return { ok: true, message: translateText(language, "Cutout done — the background is removed") };
+      });
     },
 
     async createTextBehindSubject(clipId, initialText = "TEXT BEHIND") {
@@ -1764,19 +1810,19 @@ export const useEditorStore = create<EditorState>((set, get) => {
       if (!found) return;
       const asset = findAsset(project, found.clip.assetId);
       if (!asset) return;
+      const language = get().language;
 
-      get().setStatus(translateText(get().language, "Creating text behind person..."));
-      try {
+      if (asset.kind === "video" && found.clip.sourceOut - found.clip.sourceIn > api.MAX_VIDEO_CUTOUT_SECONDS + 0.05) {
+        return get().setStatus(
+          translateText(language, "Cutout works on clips up to {n} seconds — split this clip first", { n: api.MAX_VIDEO_CUTOUT_SECONDS }),
+          "error"
+        );
+      }
+      await trackAiTask(get, set, clipId, translateText(language, "Creating text behind the person…"), async () => {
         let cutoutAsset = asset;
         let videoCutout: { keyColor: string; windowSeconds: number } | undefined;
         const isCutout = asset.name.toLowerCase().includes("nobg") || asset.relPath.toLowerCase().includes("nobg");
         if (asset.kind === "video") {
-          if (found.clip.sourceOut - found.clip.sourceIn > api.MAX_VIDEO_CUTOUT_SECONDS + 0.05) {
-            return get().setStatus(
-              translateText(get().language, "Cutout works on clips up to {n} seconds — split this clip first", { n: api.MAX_VIDEO_CUTOUT_SECONDS }),
-              "error"
-            );
-          }
           // The subject layer sits above the text, over the original clip, which keeps the sound.
           const cutout = await api.cutoutVideoClip(projectId, clipId, false);
           cutoutAsset = withAiOrigin(cutout.asset, asset.id, { tool: "video-cutout", keepAudio: false, overlay: true });
@@ -1791,10 +1837,8 @@ export const useEditorStore = create<EditorState>((set, get) => {
         const cmd = new CreateTextBehindSubjectCommand(clipId, cutoutAsset, initialText, videoCutout);
         get().run(cmd);
         if (cmd.createdTextClipId) set({ selectedClipIds: [cmd.createdTextClipId] });
-        get().setStatus(translateText(get().language, "Created text behind person"));
-      } catch (err) {
-        get().setStatus(err instanceof Error ? err.message : String(err), "error");
-      }
+        return { ok: true, message: translateText(language, "Text behind the person is ready") };
+      });
     },
 
     openAiEdit(clipId) {

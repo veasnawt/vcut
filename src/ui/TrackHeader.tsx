@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowDown, ArrowUp, Delete, Lock, Menu, Music, Text as TextIcon, Unlock, Video, Visibility, VisibilityOff } from "@veasnawt/vicons";
 import { MoveTrackLayerCommand, RemoveTrackCommand, SetTrackFlagCommand } from "../commands/index.ts";
@@ -79,7 +79,24 @@ function TrackActionsMenu({ track, anchorRef, onClose }: { track: Track; anchorR
     };
   }, [anchorRef, confirmOpen, onClose]);
 
+  // The menu is taller than the space under a track near the bottom of the screen (or above the on-screen keyboard), so
+  // it used to open half off-screen. Once it has a real height, flip it above the header if it doesn't fit below, and
+  // clamp it inside the viewport with its own scroll as the last resort.
+  const [menuTop, setMenuTop] = useState<number | null>(null);
   const anchor = anchorRef.current?.getBoundingClientRect();
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    const rect = anchorRef.current?.getBoundingClientRect();
+    if (!menu || !rect) return;
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const height = menu.offsetHeight;
+    const margin = 8;
+    const below = rect.bottom + 4;
+    let top = below;
+    if (below + height > viewportHeight - margin) top = rect.top - height - 4;
+    top = Math.max(margin, Math.min(top, viewportHeight - height - margin));
+    setMenuTop(top);
+  }, [anchorRef, confirmOpen, track.kind, track.visible, track.locked]);
   if (!anchor) return null;
 
   // Portaled straight to `document.body` — a real, reported bug without this: `TrackHeader` renders
@@ -97,8 +114,13 @@ function TrackActionsMenu({ track, anchorRef, onClose }: { track: Track; anchorR
       ref={menuRef}
       role="menu"
       onClick={(e) => e.stopPropagation()}
-      style={{ position: "fixed", top: anchor.bottom + 4, left: Math.min(anchor.left, window.innerWidth - 176) }}
-      className="z-50 w-44 overflow-hidden rounded-lg border border-white/10 bg-[#181b22] py-1 text-left shadow-2xl"
+      style={{
+        position: "fixed",
+        top: menuTop ?? anchor.bottom + 4,
+        left: Math.max(8, Math.min(anchor.left, window.innerWidth - 176)),
+        maxHeight: (window.visualViewport?.height ?? window.innerHeight) - 16,
+      }}
+      className="z-50 w-44 overflow-y-auto rounded-lg border border-white/10 bg-[#181b22] py-1 text-left shadow-2xl"
     >
       <button
         role="menuitem"

@@ -23,14 +23,14 @@ describe("matted video edge cleanup (real FFmpeg)", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vcut-edge-"));
     try {
       const KEY = "78ff9b";
-      // A dark-red disc with a SOFT edge over the key colour — what a matting model returns: edge pixels are a mix.
+      // A near-black disc (like a black shirt — neutral chroma, which a YUV keyer wrongly treats as background) with a SOFT edge over the key colour — what a matting model returns: edge pixels are a mix.
       const soft = path.join(dir, "soft.mp4");
       execFileSync(
         ffmpeg!,
         [
           "-v", "error",
           "-f", "lavfi", "-i", `color=c=0x${KEY}:s=200x200:r=24:d=1`,
-          "-f", "lavfi", "-i", "color=c=0x8b1a1a:s=200x200:r=24:d=1",
+          "-f", "lavfi", "-i", "color=c=0x0b0b0b:s=200x200:r=24:d=1",
           "-f", "lavfi", "-i", "color=c=black:s=200x200:r=24:d=1,drawbox=x=50:y=50:w=100:h=100:color=white:t=fill,gblur=sigma=3",
           "-filter_complex", "[1:v][2:v]alphamerge[fg];[0:v][fg]overlay=format=auto,format=yuv420p",
           "-c:v", "libx264", "-crf", "12", "-y", soft,
@@ -54,9 +54,9 @@ describe("matted video edge cleanup (real FFmpeg)", () => {
       // ...after cleanup it is the exact key colour, so the later key removes it.
       const after = pixel(cleaned, 50, 100);
       assert.ok(distFromKey(after) < 12, `edge still tinted: ${after}`);
-      // The middle of the subject is untouched (still dark red), and far background is still the key colour.
+      // The middle of the subject is untouched (still near-black), and far background is still the key colour.
       const centre = pixel(cleaned, 100, 100);
-      assert.ok(centre[0] > 90 && centre[1] < 80, `subject damaged: ${centre}`);
+      assert.ok(distFromKey(centre) > 100 && centre[1] < 60, `subject damaged: ${centre}`);
       assert.ok(distFromKey(pixel(cleaned, 5, 5)) < 12);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

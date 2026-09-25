@@ -58,6 +58,7 @@ import { formatTimecode } from "../timeline/time.ts";
 import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCandidate } from "../timeline/transitions.ts";
 import { AiToolsPickerMenu } from "./AiToolsPickerMenu.tsx";
 import { AnimationPickerMenu } from "./AnimationPickerMenu.tsx";
+import { AiTaskBanner } from "./AiTaskBanner.tsx";
 import { AutoCaptionsDialog } from "./AutoCaptionsDialog.tsx";
 import { ClipContextMenu, type ClipContextMenuAction } from "./ClipContextMenu.tsx";
 import { ColorPickerMenu } from "./ColorPickerMenu.tsx";
@@ -1420,6 +1421,7 @@ function StatusBar({
         </ToolbarButton>
       </div>
       {showShortcuts && !isMobile && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
+      <AiTaskBanner />
       {captionsDialog && <AutoCaptionsDialog clipIds={captionsDialog.clipIds} onClose={() => setCaptionsDialog(null)} />}
       {showVoiceRecord && <VoiceRecordModal onClose={() => setShowVoiceRecord(false)} />}
       {showTextImport && <TextToClipsDialog onClose={() => setShowTextImport(false)} />}
