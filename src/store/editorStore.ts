@@ -8,6 +8,7 @@ import {
   AddCaptionsCommand,
   AddClipCommand,
   AddTrackCommand,
+  SetClipTextAnimationCommand,
   BatchCommand,
   buildTextAnimationCommand,
   buildTextStylePatchCommand,
@@ -408,10 +409,16 @@ export interface EditorState {
    *  keeping it as the input's own local state, so `Preview`'s `getProject()` can read it back and
    *  render a live phantom clip on the canvas while composing, before anything real exists to render.
    *  Starts `""` the instant composing is armed (see `setComposeText`). */
-  composeText: { style: TextStyle; trackId?: string; content: string } | null;
+  composeText: { style: TextStyle; trackId?: string; content: string; animation?: Clip["textAnimation"] } | null;
   /** Arms composing with a style (and, from an empty track's own "+" button, a specific `trackId`) —
    *  `content` always starts empty here; `setComposeTextContent` is what tracks it live afterward. */
   setComposeText: (compose: { style: TextStyle; trackId?: string }) => void;
+  /** Restyles the draft while composing — the composer's Style/Font tabs write here so the on-canvas
+   *  phantom clip (`composePreview.ts`) updates live, before anything real exists on the timeline. */
+  setComposeTextStyle: (style: TextStyle) => void;
+  /** Sets (or clears, with `null`) the animation the new clip will be created with; previewed live on
+   *  the phantom clip the same way `setComposeTextStyle` is. */
+  setComposeTextAnimation: (animation: Clip["textAnimation"] | null) => void;
   /** Live-updates the draft text while composing — see `composeText.content`'s own doc comment for why
    *  this lives in the store rather than as `NewTextComposer`'s own local input state. No-op if nothing
    *  is currently being composed. */
@@ -1151,6 +1158,16 @@ export const useEditorStore = create<EditorState>((set, get) => {
     setComposeText(compose) {
       set({ composeText: { ...compose, content: "" } });
     },
+    setComposeTextStyle(style) {
+      set((state) => (state.composeText ? { composeText: { ...state.composeText, style } } : {}));
+    },
+    setComposeTextAnimation(animation) {
+      set((state) => {
+        if (!state.composeText) return {};
+        const { animation: _previous, ...rest } = state.composeText;
+        return { composeText: animation ? { ...rest, animation } : rest };
+      });
+    },
     setComposeTextContent(content) {
       set((state) => (state.composeText ? { composeText: { ...state.composeText, content } } : {}));
     },
@@ -1189,6 +1206,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
           return addTrack.trackId;
         })();
       const clipId = get().addAssetAtPlayhead(assetId, targetTrackId, { avoidOverlap: true });
+      if (clipId && compose.animation) get().run(new SetClipTextAnimationCommand(clipId, compose.animation));
       if (clipId) set({ selectedClipIds: [clipId] });
     },
     cancelComposeText() {

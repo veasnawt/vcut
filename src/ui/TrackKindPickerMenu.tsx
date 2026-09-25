@@ -14,7 +14,7 @@ const KIND_OPTIONS: { kind: TrackKind; icon: typeof Video }[] = [
   { kind: "text", icon: TextIcon },
 ];
 
-/** Same "opens above its anchor" reasoning as the toolbar's other popovers (`TextStylePickerMenu`
+/** Same "opens above its anchor" reasoning as the toolbar's other popovers (`ColorPickerMenu`
  *  etc.) — this one anchors off the "+" row at the bottom of the track list instead of the toolbar,
  *  so it opens upward from wherever that row happens to sit. */
 function popupPosition(anchor: DOMRect): { bottom: number; left: number } {

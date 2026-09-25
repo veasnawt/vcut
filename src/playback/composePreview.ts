@@ -25,6 +25,7 @@ export function buildComposePreviewProject(
   const asset = createTextAsset(composeText.content, composeText.style);
   const duration = defaultClipDuration(asset);
   const clip = createClip({ assetId: asset.id, sourceIn: 0, sourceOut: duration, timelineStart: Math.max(0, playhead) });
+  if (composeText.animation) clip.textAnimation = composeText.animation;
   const track = createTrack("text", "");
   track.clips.push(clip);
 

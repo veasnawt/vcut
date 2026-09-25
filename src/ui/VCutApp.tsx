@@ -85,7 +85,6 @@ import { StickersPanel } from "./StickersPanel.tsx";
 import { Timeline } from "./Timeline.tsx";
 import { TemplateFillScreen } from "./TemplateFillScreen.tsx";
 import { TemplatePreviewScreen } from "./TemplatePreviewScreen.tsx";
-import { TextStylePickerMenu } from "./TextStylePickerMenu.tsx";
 import { TransitionPickerMenu } from "./TransitionPickerMenu.tsx";
 import { TransitionGlyph } from "./TransitionGlyph.tsx";
 import { ToolPanelDockContext } from "./ToolPanelDock.tsx";
@@ -343,7 +342,7 @@ function StatusBar({
   const [showStickers, setShowStickers] = useState(false);
   const [showVoiceRecord, setShowVoiceRecord] = useState(false);
   const [aiEditClipId, setAiEditClipId] = useState<string | null>(null);
-  const [showTextStyleMenu, setShowTextStyleMenu] = useState(false);
+  const composeTextActive = useEditorStore((s) => s.composeText !== null);
   const [showAnimationMenu, setShowAnimationMenu] = useState(false);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
   const [showFontMenu, setShowFontMenu] = useState(false);
@@ -360,7 +359,6 @@ function StatusBar({
     setShowSfx(false);
     setShowStickers(false);
     setShowVoiceRecord(false);
-    setShowTextStyleMenu(false);
     setShowAnimationMenu(false);
     setShowStyleMenu(false);
     setShowFontMenu(false);
@@ -753,19 +751,15 @@ function StatusBar({
             gates on the SELECTION itself, which is precisely what should still show here. */}
         {selectedClipIds.length === 0 && (
           <>
-            {/* Text: a style-picker popover rather than an instant create — lets a look be chosen up
-                front (same presets Script/Captions/Inspector's own Styles section offer) instead of
-                always landing `DEFAULT_TEXT_STYLE` and restyling afterward. Moved here (from the Media
-                panel) long before this grouping existed, so both land straight on the timeline (and so
-                in the preview) the instant they're created, rather than sitting as a library-only asset
-                waiting for a separate double-click/drag to place — still true of Script/Captions below
-                it. */}
+            {/* Text: opens the composer (`NewTextComposer`) straight away — an input focused and ready to
+                type, with Style / Font / Animation tabs beside it, all reflected live on the canvas — rather
+                than asking for a style before there's any text. Restyling an existing clip stays in Inspector. */}
             <ToolbarButton
               ref={textButtonRef}
               title={t("Add text")}
               label={t("Text")}
-              active={showTextStyleMenu}
-              onClick={() => toggleToolbarTool(showTextStyleMenu, setShowTextStyleMenu)}
+              active={composeTextActive}
+              onClick={() => setComposeText({ style: DEFAULT_TEXT_STYLE })}
             >
               {/* The label reads "Text" on its own — this is what signals "adds a new one" instead, a
                   small "+" badge on the glyph itself rather than spelling it out in the label text
@@ -780,33 +774,6 @@ function StatusBar({
                 </span>
               </span>
             </ToolbarButton>
-            {showTextStyleMenu && (
-              <TextStylePickerMenu
-                anchorRef={textButtonRef}
-                onPick={(style) => {
-                  const playhead = useEditorStore.getState().playhead;
-                  let targetClipId: string | null = null;
-                  if (project) {
-                    for (const track of project.sequence.tracks) {
-                      if (track.kind === "text") {
-                        const match = clipAtTime(track, playhead);
-                        if (match && findAsset(project, match.assetId)?.kind === "text") {
-                          targetClipId = match.id;
-                          break;
-                        }
-                      }
-                    }
-                  }
-                  if (targetClipId) {
-                    select([targetClipId]);
-                    patchTextStyleForSelection(style);
-                  } else {
-                    setComposeText({ style });
-                  }
-                }}
-                onClose={() => setShowTextStyleMenu(false)}
-              />
-            )}
             <ToolbarButton title={t("Import Text as Clips")} label={t("Script")} active={showTextImport} onClick={() => toggleToolbarTool(showTextImport, setShowTextImport)}>
               <Document size={18} />
             </ToolbarButton>
