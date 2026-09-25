@@ -11,9 +11,8 @@ import { FontGridPicker } from "./FontGridPicker.tsx";
 import { TextAnimationPickerGrid } from "./TextAnimationPickerGrid.tsx";
 import { TextStylePresetGrid } from "./TextStylePresetGrid.tsx";
 
-type ComposerTab = "keyboard" | "style" | "font" | "animation";
+type ComposerTab = "style" | "font" | "animation";
 const TABS: { id: ComposerTab; label: string }[] = [
-  { id: "keyboard", label: "Keyboard" },
   { id: "style", label: "Style" },
   { id: "font", label: "Font" },
   { id: "animation", label: "Animation" },
@@ -51,24 +50,33 @@ export function NewTextComposer() {
   const t = useTranslation();
   const [bottomInset, setBottomInset] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [tab, setTab] = useState<ComposerTab>("keyboard");
+  // Which panel is open under the input, if any. Closed by default: the input is always there, focused, and
+  // the tabs are toggles that open a panel (there is no separate "keyboard" tab — the field itself is the
+  // keyboard).
+  const [tab, setTab] = useState<ComposerTab | null>(null);
   const composing = composeText !== null;
 
-  // Every new compose session starts on the keyboard, focused — typing is the first thing anyone does.
+  // Every new compose session starts with the panel closed and the input focused — typing is the first thing
+  // anyone does.
   useEffect(() => {
     if (composing) {
-      setTab("keyboard");
+      setTab(null);
       inputRef.current?.focus();
     }
   }, [composing]);
 
   function selectTab(next: ComposerTab) {
-    setTab(next);
     setComposeTextHover(null);
-    // Leaving the keyboard tab dismisses the on-screen keyboard so the panel isn't hidden behind it;
-    // coming back re-focuses the input. (No-ops on desktop, where there's no keyboard to hide.)
-    if (next === "keyboard") inputRef.current?.focus();
-    else inputRef.current?.blur();
+    if (tab === next) {
+      // Tapping the open tab again closes its panel and returns to typing.
+      setTab(null);
+      inputRef.current?.focus();
+      return;
+    }
+    setTab(next);
+    // Opening a panel dismisses the on-screen keyboard so the panel isn't hidden behind it. (No-op on desktop,
+    // where there's no keyboard to hide.)
+    inputRef.current?.blur();
   }
 
   useEffect(() => {
@@ -111,6 +119,11 @@ export function NewTextComposer() {
           value={composeText.content}
           placeholder={t("Enter text")}
           onChange={(e) => setComposeTextContent(e.target.value)}
+          // On a touch device focusing the field raises the on-screen keyboard over any open panel, so close the
+          // panel; with a mouse the panel can stay open while you edit the words.
+          onFocus={() => {
+            if (typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches) setTab(null);
+          }}
           onKeyDown={(e) => {
             // Same "Enter commits, matches a mobile keyboard's own Go/Done key" convention
             // `MobileTextEditBar` uses; Escape cancels, matching every other popover/dialog in this app.
@@ -152,7 +165,7 @@ export function NewTextComposer() {
             </button>
           ))}
         </div>
-        {tab !== "keyboard" && (
+        {tab !== null && (
           <div style={{ height: PANEL_HEIGHT }} className="overflow-y-auto overscroll-contain rounded-md bg-black/20 p-2">
             {tab === "style" && (
               <TextStylePresetGrid onPick={(preset) => setComposeTextStyle(applyTextStylePreset(composeText.style, preset))} />
