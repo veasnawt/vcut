@@ -244,13 +244,20 @@ function uploadFormWithProgress<T>(url: string, form: FormData, onProgress?: (fr
  *  host app's title would otherwise never make it past a display-only prop). Ignored entirely for an
  *  already-existing project, which keeps whatever name it was actually given/renamed to. */
 export async function loadProject(projectId: string, projectName?: string): Promise<Project> {
-  if (isNative) return nativeLoadProject(projectId, projectName);
+  return (await loadProjectWithRevision(projectId, projectName)).project;
+}
+
+/** `loadProject` plus the server's `revision` for the file just read — the value the NEXT save must present as
+ *  its `baseRevision` so a save from a stale copy (another tab or device saved in between) is refused instead
+ *  of overwriting. `null` on native, where a project is a private local file with nobody else writing to it. */
+export async function loadProjectWithRevision(projectId: string, projectName?: string): Promise<{ project: Project; revision: number | null }> {
+  if (isNative) return { project: await nativeLoadProject(projectId, projectName), revision: null };
   const nameParam = projectName ? `&projectName=${encodeURIComponent(projectName)}` : "";
   const response = await apiFetch(`${BASE}/project?projectId=${encodeURIComponent(projectId)}${nameParam}`, { cache: "no-store" });
-  const body = await unwrap<{ project: unknown }>(response);
+  const body = await unwrap<{ project: unknown; revision?: number }>(response);
   // Validated on the way in as well as on the way out of the server: a project that can't be read
   // correctly should fail loudly here rather than half-populate the editor.
-  return deserializeProject(JSON.stringify(body.project));
+  return { project: deserializeProject(JSON.stringify(body.project)), revision: typeof body.revision === "number" ? body.revision : 0 };
 }
 
 /** A template's own structure and name, for opening it as an unsaved draft — see
@@ -282,34 +289,41 @@ export async function createProjectFromTemplate(templateId: string, name: string
   return { projectId: project.bpProjectId, name: project.name };
 }
 
-export async function saveProject(projectId: string, project: Project): Promise<void> {
-  if (isNative) return nativeSaveProject(projectId, project);
+export interface SaveProjectOptions {
+  /** The revision this copy was loaded at / last saved as. The server refuses the save (409
+   *  `revision-conflict`) if the stored project has moved on since. Omitted = unprotected. */
+  baseRevision?: number | null;
+  /** The user's explicit "keep my version": skip the revision check and overwrite. */
+  force?: boolean;
+  /** Send with `keepalive` so the browser finishes the request after the page is gone. Ignored (a normal
+   *  request is sent) when the body is over ~60KB, the size browsers cap keepalive bodies near. */
+  keepalive?: boolean;
+}
+
+/** Saves the project. Returns the server's new revision (`null` on native, where there isn't one). Throws an
+ *  `ApiRequestError` with `code: "revision-conflict"` (status 409) when another tab or device saved first. */
+export async function saveProject(projectId: string, project: Project, options: SaveProjectOptions = {}): Promise<{ revision: number | null }> {
+  if (isNative) {
+    await nativeSaveProject(projectId, project);
+    return { revision: null };
+  }
+  const body = JSON.stringify({
+    project,
+    ...(typeof options.baseRevision === "number" ? { baseRevision: options.baseRevision } : null),
+    ...(options.force ? { force: true } : null),
+  });
   const response = await apiFetch(`${BASE}/project?projectId=${encodeURIComponent(projectId)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project }),
+    body,
+    ...(options.keepalive && body.length <= KEEPALIVE_MAX_BODY ? { keepalive: true } : null),
   });
-  await unwrap<{ ok: boolean }>(response);
+  const result = await unwrap<{ ok: boolean; revision?: number }>(response);
+  return { revision: typeof result.revision === "number" ? result.revision : null };
 }
 
-/** A save meant to survive the page closing: sent with `keepalive` so the browser finishes the request after
- *  the page is gone. Silently does nothing when the project JSON exceeds `maxBytes` (keepalive bodies are
- *  capped near 64KB) or on native, where saves are local file writes. Never throws. */
-export async function saveProjectKeepalive(projectId: string, project: Project, maxBytes: number): Promise<void> {
-  if (isNative) return;
-  const body = JSON.stringify({ project });
-  if (body.length > maxBytes) return;
-  try {
-    await apiFetch(`${BASE}/project?projectId=${encodeURIComponent(projectId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body,
-      keepalive: true,
-    });
-  } catch {
-    // The page is going away; nothing useful to do with a failure.
-  }
-}
+/** Browsers cap the total size of in-flight `keepalive` request bodies near 64KB; stay comfortably under. */
+const KEEPALIVE_MAX_BODY = 60_000;
 
 /** `hiddenFromLibrary`: a stock sound effect or voiceover take, not something the user chose to
  *  import as their own media — see `Asset.hiddenFromLibrary`'s own doc comment for the CLIENT-side

@@ -50,7 +50,7 @@ import { preloadAllFonts, preloadFont, resolveFont } from "../project/fonts.ts";
 import { templateSlots } from "../project/template.ts";
 import { applyTextStylePreset } from "../project/textStylePresets.ts";
 import { DEFAULT_TEXT_STYLE, type Clip, type Track } from "../project/types.ts";
-import { flushPendingSave, saveOnPageHide, useEditorStore } from "../store/editorStore.ts";
+import { flushPendingSave, useEditorStore } from "../store/editorStore.ts";
 import { clipAtTime } from "../timeline/queries.ts";
 import { formatTimecode } from "../timeline/time.ts";
 import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCandidate } from "../timeline/transitions.ts";
@@ -71,6 +71,7 @@ import { FloatablePanel, type FloatRect } from "./FloatablePanel.tsx";
 import { MixerPanel } from "./MixerPanel.tsx";
 import { MobileSignInDialog } from "./MobileSignInDialog.tsx";
 import { NewTextComposer } from "./NewTextComposer.tsx";
+import { SaveConflictDialog } from "./SaveConflictDialog.tsx";
 import { PixelEffectPickerMenu } from "./PixelEffectPickerMenu.tsx";
 import { SaveAsTemplateDialog } from "./SaveAsTemplateDialog.tsx";
 import { StylePickerMenu } from "./StylePickerMenu.tsx";
@@ -1338,6 +1339,7 @@ function StatusBar({
         />
       )}
       <NewTextComposer />
+      <SaveConflictDialog />
       {/* Zero-size, invisible — exists only so the picker menus above have a real DOM element to
           anchor to (`getBoundingClientRect()`) when opened FROM the context menu instead of their own
           toolbar button. Repositioning it via plain inline style (not React state driving layout) is
@@ -1873,12 +1875,9 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
   useEffect(() => {
     // `beforeunload` alone isn't enough: an async fetch started there is routinely cancelled, and on
     // iOS/Android a backgrounded app is often killed without it ever firing. `visibilitychange` (hidden)
-    // and `pagehide` are the events that DO fire in those cases, so each sends a `keepalive` save the
-    // browser completes on its own, then the ordinary flush as well.
-    const onLeaving = () => {
-      saveOnPageHide();
-      void flushPendingSave();
-    };
+    // and `pagehide` are the events that DO fire in those cases, so each flushes with `keepalive`, which lets
+    // the browser complete the save on its own even if the page is torn down.
+    const onLeaving = () => void flushPendingSave({ keepalive: true });
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") onLeaving();
     };

@@ -27,7 +27,7 @@ Last updated 2026-09-25.
 | P1-6 Two network lookups per hosted media request | Open |
 | P1-7 Server storage only grows, no backups | Partly done — hosted exports are deleted after 24h (hourly sweep). Still open: exports/uploads don't count toward quota, and there are no volume backups (a Railway-side setting) |
 | P1-8 Jobs only in memory; restart loses spent credits | Done for credits — `job_holds` table (migration 0013, must be applied) records credits spent on in-memory AI video / Remove Object / Captions jobs; holds from a dead process are refunded once. Provider-side predictions of a killed job may still run (not cancelled) |
-| P1-9 Two tabs/devices silently overwrite each other | Open |
+| P1-9 Two tabs/devices silently overwrite each other | Done — projects carry a server `revision`; a save from a stale copy is refused (409) and the user chooses "Load the latest version" or "Keep my version". Page-hide saves now go through the normal save path (keepalive) so they can't create false conflicts. Native (single device) is unaffected |
 | P1-10 Stripe webhook out-of-order events | Done — plan derived from the customer's CURRENT subscriptions (order/redelivery-independent); free users no longer refilled by repeated non-active events; unmatched/failed writes answer 5xx so Stripe retries. Not exercised against live Stripe |
 | P1-11 Copy/paste + standard shortcuts | Done — Ctrl/⌘ + C / X / V / A, End, ↑/↓ to previous/next edit point, Esc to deselect (J/K/L not added) |
 | P1-12 Undo edge cases | Open |
@@ -64,6 +64,6 @@ Last updated 2026-09-25.
 2. ~~P1-15 CI green~~ (done).
 3. ~~P1-8 + P1-10 + P1-7 (retention)~~ (done; volume backups and quota-counting exports remain).
 4. P1-1 smooth keyframes in export.
-5. P1-9 multi-tab overwrite protection, P1-11 copy/paste + shortcuts, P1-12 undo edge cases.
+5. ~~P1-9 multi-tab overwrite protection~~, ~~P1-11 copy/paste + shortcuts~~ (done); P1-12 undo edge cases.
 6. P1-5 / P1-6 / P1-13 / P1-14 import + memory work.
 7. P2 polish, P3 future.
