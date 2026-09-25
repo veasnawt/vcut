@@ -132,6 +132,8 @@ export const KM_TRANSLATIONS: Record<string, string> = {
   "Duplicate": "ចម្លង",
   "Duplicated clip": "បានចម្លងឃ្លីប",
   "Copied clip": "បានចម្លងឃ្លីបទុក",
+  "Save to Photos": "រក្សាទុកក្នុងរូបថត",
+  "Preparing…": "កំពុងរៀបចំ…",
   "Import audio": "នាំចូលសំឡេង",
   "Add a sound file from your device": "បន្ថែមឯកសារសំឡេងពីឧបករណ៍របស់អ្នក",
   "Sound effects": "បែបផែនសំឡេង",

@@ -1,5 +1,6 @@
 import type { Clip } from "../project/types.ts";
 import { detectRealSeek, lruEvictByBytes, shouldStreamInsteadOfDecode } from "./audioScheduling.ts";
+import { unlockPlaybackAudio } from "./playbackUnlock.ts";
 import { holdMediaAtEnd } from "./mediaEnd.ts";
 
 /** Same shape `PlaybackEngine.activeAudioClips` already returns — declared here (not imported from
@@ -297,6 +298,10 @@ export class AudioMixEngine {
    *  this context (`syncVideoClipAudio`), so a context that never starts can hold those elements back
    *  too, not just silence them. */
   resumeFromGesture(): void {
+    // Every Play tap re-asserts the "playback" audio category (and, on older iOS, the silent-media unlock) so the
+    // mix stays audible with the ring/silent switch on silent — recording or other audio use in between can reset
+    // the category set once at construction.
+    unlockPlaybackAudio();
     if (this.audioContext.state !== "running") void this.audioContext.resume().catch(() => {});
   }
 

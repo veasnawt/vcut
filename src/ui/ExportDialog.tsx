@@ -2,6 +2,7 @@
 
 import { Capacitor } from "@capacitor/core";
 import { Share } from "@capacitor/share";
+import { canShareVideoFile, shareVideoFile } from "../export/webShare.ts";
 import { Check, Close } from "@veasnawt/vicons";
 import { useEffect, useId, useRef, useState } from "react";
 import {
@@ -251,6 +252,22 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
 
   // Native has no browser download — a `download` anchor is meaningless in a WebView. The OS share
   // sheet (save to Files, send to another app, etc.) is the native equivalent of "here's your file."
+  // Browser (not the app): a page can't write to the photo library on its own, but on phones the share sheet's
+  // "Save Video" does — one tap after the export finishes. Only offered where the browser can share files.
+  const [canSaveToPhotos, setCanSaveToPhotos] = useState(false);
+  useEffect(() => setCanSaveToPhotos(!isNative && canShareVideoFile()), [isNative]);
+  async function saveToPhotos() {
+    if (!projectId || !fileName) return;
+    setSharing(true);
+    try {
+      await shareVideoFile(exportUrl(projectId, fileName), fileName);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSharing(false);
+    }
+  }
+
   async function shareNative() {
     if (!projectId || !fileName) return;
     setSharing(true);
@@ -518,13 +535,26 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                     {sharing ? t("Sharing…") : t("Save / Share")}
                   </button>
                 ) : (
-                  <a
-                    href={exportUrl(projectId, fileName)}
-                    download={fileName}
-                    className="block w-full rounded-lg bg-emerald-400 px-3 py-2.5 text-center text-xs font-semibold text-[#0b1a14] transition hover:bg-emerald-300"
-                  >
-                    {t("Save video")}
-                  </a>
+                  <>
+                    {canSaveToPhotos && (
+                      <button
+                        onClick={() => void saveToPhotos()}
+                        disabled={sharing}
+                        className="w-full rounded-lg bg-emerald-400 px-3 py-2.5 text-xs font-semibold text-[#0b1a14] transition hover:bg-emerald-300 disabled:opacity-50"
+                      >
+                        {sharing ? t("Preparing…") : t("Save to Photos")}
+                      </button>
+                    )}
+                    <a
+                      href={exportUrl(projectId, fileName)}
+                      download={fileName}
+                      className={`block w-full rounded-lg px-3 py-2.5 text-center text-xs font-semibold transition ${
+                        canSaveToPhotos ? "bg-white/[0.06] text-white/80 hover:bg-white/10 hover:text-white" : "bg-emerald-400 text-[#0b1a14] hover:bg-emerald-300"
+                      }`}
+                    >
+                      {t("Save video")}
+                    </a>
+                  </>
                 )
               )}
               {phase === "done" && error && <p className="text-center text-[11px] text-amber-200/80">{error}</p>}

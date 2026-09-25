@@ -1,5 +1,6 @@
 "use client";
 
+import { unlockPlaybackAudio } from "../playback/playbackUnlock.ts";
 import { useEffect, useRef, useState } from "react";
 import { Microphone } from "@veasnawt/vicons";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -324,7 +325,7 @@ export function VoiceRecordModal({ onClose }: { onClose: () => void }) {
               {previewUrl && (
                 // `key` forces a fresh element per render, not just a swapped `src` — avoids the
                 // browser holding onto a stale decoded buffer for the PREVIOUS effect/voiceChanger pick.
-                <audio key={previewUrl} src={previewUrl} controls className="h-9 w-full" />
+                <audio key={previewUrl} src={previewUrl} controls onPlay={unlockPlaybackAudio} className="h-9 w-full" />
               )}
               <div className="flex flex-wrap gap-2">
                 <button
