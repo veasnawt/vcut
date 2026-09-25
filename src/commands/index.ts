@@ -53,6 +53,7 @@ import {
 } from "../timeline/operations.ts";
 import type { VideoCutoutInfo } from "../timeline/operations.ts";
 import { applyGridLayout, stackCopies } from "../timeline/collage.ts";
+import { fitClipsToBeats, splitClipAtBeats } from "../timeline/beatSync.ts";
 import type { GridOptions, StackOptions } from "../timeline/collage.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { hasTextStyleKeyframes } from "../timeline/keyframes.ts";
@@ -1871,6 +1872,66 @@ export class ApplyGridLayoutCommand implements Command {
     this.previousProject = project;
     const result = applyGridLayout(project, this.clipIds, this.layoutId, this.options);
     this.placedClipIds = result.clipIds;
+    return result.project;
+  }
+
+  revert(): Project {
+    if (!this.previousProject) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return this.previousProject;
+  }
+}
+
+/** Cuts clips to the beat (see `fitClipsToBeats`). */
+export class FitClipsToBeatsCommand implements Command {
+  label = "Cut to Beat";
+  private previousProject: Project | null = null;
+  applied = 0;
+  skipped = 0;
+
+  private clipIds: string[];
+  private beatTimes: number[];
+  private everyN: number;
+
+  constructor(clipIds: string[], beatTimes: number[], everyN: number) {
+    this.clipIds = clipIds;
+    this.beatTimes = beatTimes;
+    this.everyN = everyN;
+  }
+
+  apply(project: Project): Project {
+    this.previousProject = project;
+    const result = fitClipsToBeats(project, this.clipIds, this.beatTimes, this.everyN);
+    this.applied = result.applied;
+    this.skipped = result.skipped;
+    return result.project;
+  }
+
+  revert(): Project {
+    if (!this.previousProject) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return this.previousProject;
+  }
+}
+
+/** Splits a clip on the beat (see `splitClipAtBeats`). */
+export class SplitClipAtBeatsCommand implements Command {
+  label = "Split on Beats";
+  private previousProject: Project | null = null;
+  clipIds: string[] = [];
+
+  private clipId: string;
+  private beatTimes: number[];
+  private everyN: number;
+
+  constructor(clipId: string, beatTimes: number[], everyN: number) {
+    this.clipId = clipId;
+    this.beatTimes = beatTimes;
+    this.everyN = everyN;
+  }
+
+  apply(project: Project): Project {
+    this.previousProject = project;
+    const result = splitClipAtBeats(project, this.clipId, this.beatTimes, this.everyN);
+    this.clipIds = result.clipIds;
     return result.project;
   }
 

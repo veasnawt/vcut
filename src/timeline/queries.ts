@@ -1,5 +1,6 @@
 import { clipDuration } from "../project/createProject.ts";
 import { clipEnd } from "../project/createProject.ts";
+import { allBeatTimes } from "./beatSync.ts";
 import type { Clip, Project, Track, TrackKind } from "../project/types.ts";
 
 /** The clip playing at `time` on this track, if any. Ranges are half-open — `[start, end)` — so two
@@ -37,6 +38,8 @@ export function snapPoints(
       points.add(clipEnd(clip));
     }
   }
+  // Detected beats of any music on the timeline (`Asset.beats`): edits and the playhead snap to them.
+  for (const beat of allBeatTimes(project)) points.add(beat);
   if (options?.playhead !== undefined) points.add(options.playhead);
   return [...points].sort((a, b) => a - b);
 }

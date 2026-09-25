@@ -75,6 +75,9 @@ export interface Asset {
    *  was sitting right there in `project.assets`, just with nothing left connecting it back to "this
    *  came from a generation, here's the prompt that made it." */
   aiGeneration?: { prompt: string; aspectRatio: string; model?: string };
+  /** Detected beats of an audio/music asset: tempo and the beat times in the ASSET's own seconds. Set by "Beat sync";
+   *  drives beat markers on the timeline, snapping to the beat, and cutting clips to the beat. */
+  beats?: { bpm: number; confidence: number; times: number[] };
   /** Set on an asset an AI tool made FROM another asset (a cutout, an AI edit, an object removal): which asset it came
    *  from and the recipe that was applied. Lets "Save as template" turn the slot into the ORIGINAL footage and repeat the
    *  same AI step on whatever media a template user picks. */

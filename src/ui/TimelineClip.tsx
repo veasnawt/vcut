@@ -1006,6 +1006,22 @@ function TimelineClipComponent({
         {assetName}
       </span>
 
+      {/* Detected beats (Beat sync) as thin ticks along an audio clip, at the clip's own trim and speed. */}
+      {isAudio && asset?.beats && !clip.reverse && !(clip.speedCurve && clip.speedCurve.length >= 2) && (
+        <div aria-hidden className="pointer-events-none absolute inset-y-0 left-0 z-[5]">
+          {asset.beats.times
+            .filter((time) => time >= previewSourceIn && time < previewSourceOut)
+            .slice(0, 800)
+            .map((time, index) => (
+              <span
+                key={index}
+                className={`absolute top-0 w-px ${index % 4 === 0 ? "h-full bg-amber-300/70" : "h-2/5 bg-amber-300/40"}`}
+                style={{ left: ((time - previewSourceIn) / (clip.speed && clip.speed > 0 ? clip.speed : 1)) * pixelsPerSecond }}
+              />
+            ))}
+        </div>
+      )}
+
       {/* The selected clip's length, live while trimming — hidden when the clip is too narrow to hold it. */}
       {selected && duration * pixelsPerSecond >= 56 && (
         <span

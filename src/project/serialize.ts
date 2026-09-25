@@ -259,6 +259,16 @@ function parseOutline(value: unknown): ClipOutline | undefined {
   return { color: hex(r.color, "#ffffff")!, width, glow, ...(glowColor ? { glowColor } : null) };
 }
 
+function parseBeats(value: unknown): { bpm: number; confidence: number; times: number[] } | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const r = value as Record<string, unknown>;
+  if (!Array.isArray(r.times) || typeof r.bpm !== "number" || !Number.isFinite(r.bpm)) return undefined;
+  const times = r.times.filter((t): t is number => typeof t === "number" && Number.isFinite(t) && t >= 0).slice(0, 5000);
+  if (times.length < 2) return undefined;
+  const confidence = typeof r.confidence === "number" && Number.isFinite(r.confidence) ? Math.min(1, Math.max(0, r.confidence)) : 0;
+  return { bpm: r.bpm, confidence, times };
+}
+
 function parseAsset(raw: Record<string, unknown>): Asset {
   const kind = str(raw.kind, "asset kind");
   if (kind !== "video" && kind !== "audio" && kind !== "image" && kind !== "text" && kind !== "color") {
@@ -266,6 +276,7 @@ function parseAsset(raw: Record<string, unknown>): Asset {
   }
   const aiGeneration = parseAiGeneration(raw.aiGeneration);
   const aiOrigin = parseAiOrigin(raw.aiOrigin);
+  const beats = parseBeats(raw.beats);
   const templatePlaceholder = parseTemplatePlaceholder(raw.templatePlaceholder);
   const animation = kind === "image" ? parseAssetAnimation(raw.animation) : undefined;
   const stickerSource = parseStickerSource(raw.stickerSource);
@@ -294,6 +305,7 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     ...(typeof raw.hiddenFromLibrary === "boolean" ? { hiddenFromLibrary: raw.hiddenFromLibrary } : null),
     ...(aiGeneration ? { aiGeneration } : null),
     ...(aiOrigin ? { aiOrigin } : null),
+    ...(beats ? { beats } : null),
     ...(kind === "text" ? { textContent: str(raw.textContent, "text content", ""), textStyle: parseTextStyle(raw.textStyle) } : null),
     // Same "additive presentation data, not something that defines what the asset fundamentally IS"
     // spirit as `textContent`/`textStyle` above — a missing/malformed color falls back to black rather

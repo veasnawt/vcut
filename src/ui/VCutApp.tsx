@@ -59,6 +59,7 @@ import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCan
 import { AiToolsPickerMenu } from "./AiToolsPickerMenu.tsx";
 import { AnimationPickerMenu } from "./AnimationPickerMenu.tsx";
 import { AiTaskBanner } from "./AiTaskBanner.tsx";
+import { BeatSyncDialog } from "./BeatSyncDialog.tsx";
 import { CollageDialog } from "./CollageDialog.tsx";
 import { AutoCaptionsDialog } from "./AutoCaptionsDialog.tsx";
 import { ClipContextMenu, type ClipContextMenuAction } from "./ClipContextMenu.tsx";
@@ -358,6 +359,7 @@ function StatusBar({
    *  next to a back button, the same way a selection narrows it. */
   const [expandedGroup, setExpandedGroup] = useState<"text" | "audio" | null>(null);
   const [showCollage, setShowCollage] = useState(false);
+  const [showBeatSync, setShowBeatSync] = useState(false);
   const audioButtonRef = useRef<HTMLButtonElement>(null);
   const audioImportInputRef = useRef<HTMLInputElement>(null);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
@@ -750,6 +752,17 @@ function StatusBar({
                         } else {
                           setBottomPanel(bottomPanel === "mixer" ? "timeline" : "mixer");
                         }
+                      },
+                    },
+                    {
+                      id: "beats",
+ shortLabel: t("Beats"),
+                      label: t("Beat sync"),
+                      description: t("Find the beat of your music and cut clips to it"),
+                      icon: <Gauge size={16} />,
+                      onSelect: () => {
+                        closeAllToolbarTools();
+                        setShowBeatSync(true);
                       },
                     },
                     {
@@ -1204,6 +1217,11 @@ function StatusBar({
             <Grid size={18} />
           </ToolbarButton>
         )}
+        {project && selectedClipIds.some((id) => findClip(project, id)?.track.kind === "video") && (
+          <ToolbarButton title={t("Find the beat of your music and cut clips to it")} label={t("Beat sync")} active={showBeatSync} onClick={() => setShowBeatSync(true)}>
+            <Gauge size={18} />
+          </ToolbarButton>
+        )}
 
         {/* Opens a grid of every transition style, each tile a live animated preview
             (`TransitionPickerMenu`), with an In/Out tab switch covering both `transitionIn` and
@@ -1431,6 +1449,7 @@ function StatusBar({
       {showShortcuts && !isMobile && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
       <AiTaskBanner />
       {showCollage && <CollageDialog onClose={() => setShowCollage(false)} />}
+      {showBeatSync && <BeatSyncDialog onClose={() => setShowBeatSync(false)} />}
       {captionsDialog && <AutoCaptionsDialog clipIds={captionsDialog.clipIds} onClose={() => setCaptionsDialog(null)} />}
       {showVoiceRecord && <VoiceRecordModal onClose={() => setShowVoiceRecord(false)} />}
       {showTextImport && <TextToClipsDialog onClose={() => setShowTextImport(false)} />}

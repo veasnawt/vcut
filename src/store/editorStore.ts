@@ -34,6 +34,7 @@ import type { PlaybackEngine } from "../playback/PlaybackEngine.ts";
 import { createColorAsset, createTextAsset, findAsset, findClip, sequenceDuration } from "../project/createProject.ts";
 import { assetFromBundledSfx, type SfxDefinition } from "../project/sfx.ts";
 import type { MusicTrack } from "../project/music.ts";
+import { analyzeAudioUrl } from "../audio/beatAnalyze.ts";
 import { denormalizeRegion, normalizeRegion, withAiOrigin } from "../project/aiRecipe.ts";
 import { buildProjectFromTemplate, completeTemplateAiStep, fillTemplateSlot, skipTemplateAiSteps as skipTemplateAiStepsInProject, setTemplateClipText, trimTemplateSlot } from "../project/template.ts";
 import type { TextStylePreset } from "../project/textStylePresets.ts";
@@ -482,6 +483,9 @@ export interface EditorState {
   /** AI jobs in flight for a clip (Auto Cutout, Text Behind Subject). They take a minute or two and used to run silently
    *  behind a status message that vanished after a few seconds, so people ran them again and got duplicates. The
    *  banner reads this, and a second run on the same clip is refused while one is in flight. */
+  /** Listens to an audio asset (in the browser) and stores its tempo and beat times on it (`Asset.beats`). Resolves with the
+   *  result, or `null` (after a status message) if it couldn't. */
+  analyzeBeats: (assetId: string) => Promise<{ bpm: number; confidence: number; times: number[] } | null>;
   aiTasks: { id: string; clipId: string; label: string; startedAt: number }[];
   /** The last AI job's outcome, kept on screen until dismissed (a failure) or for a few seconds (success). */
   aiTaskNotice: { id: string; tone: "success" | "error"; text: string } | null;
@@ -996,6 +1000,24 @@ export const useEditorStore = create<EditorState>((set, get) => {
     removeObjectRect: null,
     aiTasks: [],
     aiTaskNotice: null,
+    async analyzeBeats(assetId) {
+      const { projectId, project } = get();
+      const asset = project ? findAsset(project, assetId) : undefined;
+      if (!projectId || !project || !asset) return null;
+      const language = get().language;
+      try {
+        const url = api.mediaUrl(projectId, asset.relPath, Boolean(asset.libraryMediaId));
+        const analysis = await analyzeAudioUrl(url);
+        const beats = { bpm: analysis.bpm, confidence: analysis.confidence, times: analysis.beats };
+        const current = get().project;
+        if (current) applyProject({ ...current, assets: current.assets.map((a) => (a.id === assetId ? { ...a, beats } : a)) });
+        get().setStatus(translateText(language, "Found {bpm} BPM — {n} beats", { bpm: Math.round(analysis.bpm), n: analysis.beats.length }));
+        return beats;
+      } catch (err) {
+        get().setStatus(err instanceof Error ? err.message : String(err), "error");
+        return null;
+      }
+    },
     dismissAiTaskNotice() {
       set({ aiTaskNotice: null });
     },
