@@ -7,6 +7,7 @@ import { deserializeProject, serializeProject } from "../project/serialize.ts";
 import type { TemplateProjectData } from "../project/template.ts";
 import type { Asset, AssetKind, Project } from "../project/types.ts";
 import { SHORT_PRESET } from "../project/types.ts";
+import { writeBlobInChunks } from "./chunkedWrite.ts";
 import { ApiRequestError } from "./client.ts";
 
 /** On-device counterpart of `studios/vcut/app/api/vcut/**`'s filesystem routes, for the native
@@ -153,6 +154,21 @@ function readFileAsBase64(file: Blob): Promise<string> {
   });
 }
 
+/** Writes `blob` to `path` under `DIRECTORY` in slices (`chunkedWrite.ts`) so a large import never holds the
+ *  whole file — or its 1.33x base64 form — in memory at once. Removes the partial file if anything fails. */
+async function writeMediaFile(path: string, blob: Blob, onProgress?: (fraction: number) => void): Promise<void> {
+  await writeBlobInChunks(
+    blob,
+    {
+      encode: readFileAsBase64,
+      write: (data) => Filesystem.writeFile({ path, directory: DIRECTORY, data }).then(() => undefined),
+      append: (data) => Filesystem.appendFile({ path, directory: DIRECTORY, data }),
+      discard: () => Filesystem.deleteFile({ path, directory: DIRECTORY }),
+    },
+    { onProgress }
+  );
+}
+
 /** Reads duration/dimensions/audio-presence straight from the WebView's own media decoder — the
  *  on-device equivalent of the server's `ffprobe` call, needing no native plugin at all. Not as
  *  exhaustive as ffprobe (no `fps`), but everything `Asset` actually requires is here. */
@@ -234,7 +250,7 @@ export async function nativeImportMedia(projectId: string, file: File): Promise<
   const suffix = dotIndex > 0 ? safeName.slice(dotIndex) : "";
   const relPath = `${stem}-${newId("m")}${suffix}`;
 
-  await Filesystem.writeFile({ path: `${mediaDir(projectId)}/${relPath}`, directory: DIRECTORY, data: await readFileAsBase64(file) });
+  await writeMediaFile(`${mediaDir(projectId)}/${relPath}`, file);
 
   return {
     id: newId("a"),
@@ -392,7 +408,7 @@ export async function nativeCreateProjectFromTemplate(templateId: string, draftP
         );
         if (!response.ok) return asset; // best-effort — see this function's own doc comment
         const blob = await response.blob();
-        await Filesystem.writeFile({ path: `${mediaDir(bpProjectId)}/${asset.relPath}`, directory: DIRECTORY, data: await readFileAsBase64(blob) });
+        await writeMediaFile(`${mediaDir(bpProjectId)}/${asset.relPath}`, blob);
         const { templateBundledAudio: _templateBundledAudio, ...resolved } = asset;
         return resolved;
       } catch {
