@@ -494,9 +494,12 @@ describe("buildExportPlan with keyframed transform/effects", () => {
     const base = emptyProject([videoAsset("asset1", 0.5)]);
     let project = addClip(base, videoTrackId(base), "asset1", 0);
     const [clip] = clipsOf(project, videoTrackId(project));
+    // Crop keyframes (not scale/position) on purpose: position and zoom keyframes now export as one smooth per-frame
+    // expression (see the "smooth" tests below), so only animations that can't (crop, rotation + zoom, effects)
+    // still take the static-slice path these tests are about.
     project = setClipTransformKeyframes(project, clip.id, [
       { id: "a", time: 0, value: IDENTITY_TRANSFORM },
-      { id: "b", time: 0.5, value: { ...IDENTITY_TRANSFORM, scale: 2 } },
+      { id: "b", time: 0.5, value: { ...IDENTITY_TRANSFORM, crop: { top: 0, right: 0, bottom: 0, left: 0.25 } } },
     ]);
 
     const graph = filterGraph(plan(project).args);
@@ -509,6 +512,71 @@ describe("buildExportPlan with keyframed transform/effects", () => {
     // Each slice goes through the exact same buildTransformFilters chain a static transformed clip
     // uses (crop/eq/scale/rotate/overlay) — 4 full occurrences, one per slice.
     assert.equal((graph.match(/overlay=x=/g) ?? []).length, 4);
+  });
+
+  it("renders position and zoom keyframes as one continuous per-frame expression (smooth), not static slices", () => {
+    const base = emptyProject([videoAsset("asset1", 2)]);
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    project = setClipTransformKeyframes(project, clip.id, [
+      { id: "a", time: 0, value: { ...IDENTITY_TRANSFORM, scale: 1, offsetX: -50 } },
+      { id: "b", time: 2, value: { ...IDENTITY_TRANSFORM, scale: 1.5, offsetX: 50 } },
+    ]);
+
+    const graph = filterGraph(plan(project).args);
+
+    assert.ok(!graph.includes("_kfsrcsplit"), "smooth motion must not be held in static slices");
+    assert.equal((graph.match(/overlay=x=/g) ?? []).length, 1, "one overlay for the whole clip");
+    assert.match(graph, /:eval=frame/, "zoom re-evaluates the scale every frame");
+    assert.match(graph, /overlay=x='\(W-w\)\/2\+if\(lt\(t\\,2\.000000\)/, "position is a per-frame expression of t");
+    assert.ok(!graph.includes("rotate="), "the fixed-size rotate stage is dropped while the buffer size animates");
+  });
+
+  it("position-only keyframes keep a constant rotation and crop (only overlay's x/y animate)", () => {
+    const base = emptyProject([videoAsset("asset1", 2)]);
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    project = setClipTransformKeyframes(project, clip.id, [
+      { id: "a", time: 0, value: { ...IDENTITY_TRANSFORM, rotationDeg: 30, offsetY: 0 } },
+      { id: "b", time: 2, value: { ...IDENTITY_TRANSFORM, rotationDeg: 30, offsetY: 80 } },
+    ]);
+
+    const graph = filterGraph(plan(project).args);
+
+    assert.ok(!graph.includes("_kfsrcsplit"));
+    assert.match(graph, /rotate=a=30\.000000\*PI\/180/, "the constant rotation is still applied, statically");
+    assert.doesNotMatch(graph, /eval=frame/, "no zoom animation, so scale stays static");
+    assert.match(graph, /y='\(H-h\)\/2\+if\(lt\(t/);
+  });
+
+  it("falls back to static slices when zoom is combined with rotation, crop, or effects keyframes", () => {
+    const base = emptyProject([videoAsset("asset1", 2)]);
+    const fresh = () => {
+      const p = addClip(base, videoTrackId(base), "asset1", 0);
+      return { p, clip: clipsOf(p, videoTrackId(p))[0] };
+    };
+    // rotation constant but non-zero + zoom -> rotate's fixed output size can't follow a growing buffer
+    let { p, clip } = fresh();
+    p = setClipTransformKeyframes(p, clip.id, [
+      { id: "a", time: 0, value: { ...IDENTITY_TRANSFORM, rotationDeg: 20, scale: 1 } },
+      { id: "b", time: 2, value: { ...IDENTITY_TRANSFORM, rotationDeg: 20, scale: 1.5 } },
+    ]);
+    assert.ok(filterGraph(plan(p).args).includes("_kfsrcsplit"), "zoom + rotation slices");
+    // static crop + zoom -> pad's fixed output size
+    ({ p, clip } = fresh());
+    const crop = { top: 0, right: 0, bottom: 0, left: 0.2 };
+    p = setClipTransformKeyframes(p, clip.id, [
+      { id: "a", time: 0, value: { ...IDENTITY_TRANSFORM, crop, scale: 1 } },
+      { id: "b", time: 2, value: { ...IDENTITY_TRANSFORM, crop, scale: 1.5 } },
+    ]);
+    assert.ok(filterGraph(plan(p).args).includes("_kfsrcsplit"), "zoom + crop slices");
+    // rotation animating together with position
+    ({ p, clip } = fresh());
+    p = setClipTransformKeyframes(p, clip.id, [
+      { id: "a", time: 0, value: { ...IDENTITY_TRANSFORM, rotationDeg: 0, offsetX: 0 } },
+      { id: "b", time: 2, value: { ...IDENTITY_TRANSFORM, rotationDeg: 45, offsetX: 50 } },
+    ]);
+    assert.ok(filterGraph(plan(p).args).includes("_kfsrcsplit"), "rotation + position slices");
   });
 
   it("renders rotation-only transform keyframes as one continuous per-frame expression", () => {
@@ -602,9 +670,12 @@ describe("buildExportPlan with keyframed transform/effects", () => {
     const base = emptyProject([videoAsset("asset1", 0.5)]);
     let project = addClip(base, videoTrackId(base), "asset1", 0);
     const [clip] = clipsOf(project, videoTrackId(project));
+    // Crop keyframes (not scale/position) on purpose: position and zoom keyframes now export as one smooth per-frame
+    // expression (see the "smooth" tests below), so only animations that can't (crop, rotation + zoom, effects)
+    // still take the static-slice path these tests are about.
     project = setClipTransformKeyframes(project, clip.id, [
       { id: "a", time: 0, value: IDENTITY_TRANSFORM },
-      { id: "b", time: 0.5, value: { ...IDENTITY_TRANSFORM, scale: 2 } },
+      { id: "b", time: 0.5, value: { ...IDENTITY_TRANSFORM, crop: { top: 0, right: 0, bottom: 0, left: 0.25 } } },
     ]);
 
     const { args } = plan(project);
@@ -629,9 +700,12 @@ describe("buildExportPlan with keyframed transform/effects", () => {
     const base = emptyProject([videoAsset("asset1", 0.5)]);
     let project = addClip(base, videoTrackId(base), "asset1", 0);
     const [clip] = clipsOf(project, videoTrackId(project));
+    // Crop keyframes (not scale/position) on purpose: position and zoom keyframes now export as one smooth per-frame
+    // expression (see the "smooth" tests below), so only animations that can't (crop, rotation + zoom, effects)
+    // still take the static-slice path these tests are about.
     project = setClipTransformKeyframes(project, clip.id, [
       { id: "a", time: 0, value: IDENTITY_TRANSFORM },
-      { id: "b", time: 0.5, value: { ...IDENTITY_TRANSFORM, scale: 2 } },
+      { id: "b", time: 0.5, value: { ...IDENTITY_TRANSFORM, crop: { top: 0, right: 0, bottom: 0, left: 0.25 } } },
     ]);
 
     const graph = filterGraph(plan(project).args);
@@ -654,9 +728,12 @@ describe("buildExportPlan with keyframed transform/effects", () => {
     const base = emptyProject([videoAsset("asset1", 220)]);
     let project = addClip(base, videoTrackId(base), "asset1", 0);
     const [clip] = clipsOf(project, videoTrackId(project));
+    // Crop keyframes (not scale/position) on purpose: position and zoom keyframes now export as one smooth per-frame
+    // expression (see the "smooth" tests below), so only animations that can't (crop, rotation + zoom, effects)
+    // still take the static-slice path these tests are about.
     project = setClipTransformKeyframes(project, clip.id, [
       { id: "a", time: 0, value: IDENTITY_TRANSFORM },
-      { id: "b", time: 220, value: { ...IDENTITY_TRANSFORM, scale: 2 } },
+      { id: "b", time: 220, value: { ...IDENTITY_TRANSFORM, crop: { top: 0, right: 0, bottom: 0, left: 0.25 } } },
     ]);
 
     const { args } = plan(project);
@@ -2668,9 +2745,12 @@ describe("buildExportPlan with transitions", () => {
     const [clipA] = clipsOf(project, videoTrackId(project));
     project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
     const [, clipB] = clipsOf(project, videoTrackId(project));
+    // Crop keyframes (not scale/position) on purpose: position and zoom keyframes now export as one smooth per-frame
+    // expression (see the "smooth" tests below), so only animations that can't (crop, rotation + zoom, effects)
+    // still take the static-slice path these tests are about.
     project = setClipTransformKeyframes(project, clipB.id, [
       { id: "k1", time: 0, value: IDENTITY_TRANSFORM },
-      { id: "k2", time: 5, value: { ...IDENTITY_TRANSFORM, scale: 1.3 } },
+      { id: "k2", time: 5, value: { ...IDENTITY_TRANSFORM, crop: { top: 0, right: 0, bottom: 0, left: 0.25 } } },
     ]);
     project = setClipTransitionIn(project, clipB.id, { duration: 1, type: "wipeLeft" });
 

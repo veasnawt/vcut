@@ -19,7 +19,7 @@ Last updated 2026-09-25.
 
 | Item | Status |
 |---|---|
-| P1-1 Keyframed motion is stepped in export (0.15s / 0.3s hosted) | Open |
+| P1-1 Keyframed motion is stepped in export | Mostly done — position (pan) and zoom (scale) keyframes, and rotation-only keyframes, now export as one per-frame expression (smooth, matching the preview's linear interpolation). Still sliced (0.15-0.3s): zoom combined with rotation or crop, crop keyframes, rotation animating together with position, and effects / color-grading keyframes |
 | P1-2 Preview full-resolution CPU pixel work | Done |
 | P1-3 Mask export very slow | Done |
 | P1-4 Inspector re-rendered every frame | Done |
@@ -63,7 +63,7 @@ Last updated 2026-09-25.
 1. ~~P0-4 autosave reliability~~ (done).
 2. ~~P1-15 CI green~~ (done).
 3. ~~P1-8 + P1-10 + P1-7 (retention)~~ (done; volume backups and quota-counting exports remain).
-4. P1-1 smooth keyframes in export.
+4. ~~P1-1 smooth keyframes in export~~ (pan + zoom done; the combinations above remain).
 5. ~~P1-9 multi-tab overwrite protection~~, ~~P1-11 copy/paste + shortcuts~~ (done); P1-12 undo edge cases.
 6. P1-5 / P1-6 / P1-13 / P1-14 import + memory work.
 7. P2 polish, P3 future.

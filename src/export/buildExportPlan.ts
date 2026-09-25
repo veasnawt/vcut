@@ -457,23 +457,60 @@ function hasRotationOnlyTransformKeyframes(clip: Clip): boolean {
   return sameGeometry && keyframes.some(({ value }) => value.rotationDeg !== first.rotationDeg);
 }
 
-/** A continuous, piecewise-linear FFmpeg expression for rotation keyframes. `t` is local to the
- *  segment's zeroed source, so `elapsedAtSegmentStart` maps it back into clip-relative keyframe time.
- *  Commas are escaped for the filter-graph parser while remaining expression separators. */
-function rotationKeyframeExpression(clip: Clip, elapsedAtSegmentStart: number): string {
+/** Which transform properties a keyframed clip can animate SMOOTHLY (one continuous expression evaluated on
+ *  every output frame) instead of the old 0.15-0.3s "staircase" of static slices. `null` when the clip must
+ *  use slices.
+ *
+ *  - Position (`offsetX`/`offsetY`) only ever feeds `overlay`'s per-frame `x`/`y` expressions, so it can
+ *    always be smooth — even alongside a constant rotation or crop.
+ *  - Zoom (`scale`) changes the scaled buffer's SIZE every frame (`scale=...:eval=frame`), and every filter
+ *    after it would then see a changing size. `rotate` and `pad` fix their output dimensions once at graph
+ *    setup, so zoom is only smooth when neither is needed: rotation identically 0 and no crop.
+ *  - Anything else animating (rotation together with position/zoom, crop, effects, color grading) keeps the
+ *    slice path: rotation-only keyframes have their own path (`hasRotationOnlyTransformKeyframes`) and the
+ *    rest of the combinations can't share a single set of fixed-size filters. */
+function smoothMotionPlan(clip: Clip): { position: boolean; scale: boolean } | null {
+  const keyframes = clip.transformKeyframes ?? [];
+  if (keyframes.length < 2 || hasEffectsKeyframes(clip) || hasColorGradingKeyframes(clip)) return null;
+  const first = keyframes[0].value;
+  const same = (pick: (t: ClipTransform) => number) => keyframes.every(({ value }) => pick(value) === pick(first));
+  const rotationConstant = same((t) => t.rotationDeg);
+  const cropConstant = same((t) => t.crop.top) && same((t) => t.crop.right) && same((t) => t.crop.bottom) && same((t) => t.crop.left);
+  if (!rotationConstant || !cropConstant) return null;
+  const position = !same((t) => t.offsetX) || !same((t) => t.offsetY);
+  const scale = !same((t) => t.scale);
+  if (!position && !scale) return null; // nothing animates: the plain static path already handles it
+  if (scale) {
+    const noCrop = first.crop.top === 0 && first.crop.right === 0 && first.crop.bottom === 0 && first.crop.left === 0;
+    if (first.rotationDeg !== 0 || !noCrop) return null;
+  }
+  return { position, scale };
+}
+
+/** A continuous, piecewise-linear FFmpeg expression for one transform property's keyframes, held (not
+ *  extrapolated) outside the first/last keyframe — the same interpolation `resolveClipTransform` uses in the
+ *  preview (`lerpTransform`). `t` is local to the segment's zeroed source, so `elapsedAtSegmentStart` maps it
+ *  back into clip-relative keyframe time. Commas are escaped for the filter-graph parser while remaining
+ *  expression separators. */
+function transformKeyframeExpression(clip: Clip, elapsedAtSegmentStart: number, pick: (transform: ClipTransform) => number): string {
   const keyframes = [...(clip.transformKeyframes ?? [])].sort((a, b) => a.time - b.time);
-  if (keyframes.length === 0) return n(clip.transform?.rotationDeg ?? 0);
+  if (keyframes.length === 0) return n(clip.transform ? pick(clip.transform) : 0);
   const elapsed = elapsedAtSegmentStart === 0 ? "t" : `(t+${n(elapsedAtSegmentStart)})`;
-  let expression = n(keyframes[keyframes.length - 1].value.rotationDeg);
+  let expression = n(pick(keyframes[keyframes.length - 1].value));
   for (let index = keyframes.length - 2; index >= 0; index--) {
     const from = keyframes[index];
     const to = keyframes[index + 1];
     const duration = Math.max(1e-9, to.time - from.time);
-    const delta = to.value.rotationDeg - from.value.rotationDeg;
-    const interpolated = `${n(from.value.rotationDeg)}+${n(delta)}*clip((${elapsed}-${n(from.time)})/${n(duration)},0,1)`;
+    const delta = pick(to.value) - pick(from.value);
+    const interpolated = `${n(pick(from.value))}+${n(delta)}*clip((${elapsed}-${n(from.time)})/${n(duration)},0,1)`;
     expression = `if(lt(${elapsed},${n(to.time)}),${interpolated},${expression})`;
   }
   return expression.replaceAll(",", "\\,");
+}
+
+/** Rotation keyframes as a degrees expression — see `transformKeyframeExpression`. */
+function rotationKeyframeExpression(clip: Clip, elapsedAtSegmentStart: number): string {
+  return transformKeyframeExpression(clip, elapsedAtSegmentStart, (transform) => transform.rotationDeg);
 }
 
 /** Filter chain for a clip with a REAL transform and/or REAL effects (see `isIdentityTransform`/
@@ -515,8 +552,14 @@ function buildTransformFilters(params: {
   mask?: ClipMask;
   /** Continuous degrees expression in this filter's local `t`; used for rotation-only keyframes. */
   rotationExpressionDegrees?: string;
+  /** Continuous pixel-offset expressions in local `t` for position keyframes (see `smoothMotionPlan`). */
+  offsetXExpression?: string;
+  offsetYExpression?: string;
+  /** Continuous scale-multiplier expression in local `t` for zoom keyframes; only valid with no crop and no
+   *  rotation (see `smoothMotionPlan`), and switches `scale` to per-frame evaluation. */
+  scaleExpression?: string;
 }): string[] {
-  const { source, bg, outputLabel, transform, effects, width, height, fps, chromaKey, colorGrading, lutPath, pixelEffect, flipHorizontal, flipVertical, mask, rotationExpressionDegrees } = params;
+  const { source, bg, outputLabel, transform, effects, width, height, fps, chromaKey, colorGrading, lutPath, pixelEffect, flipHorizontal, flipVertical, mask, rotationExpressionDegrees, offsetXExpression, offsetYExpression, scaleExpression } = params;
   const { crop } = transform;
   const clipLabel = `${outputLabel}_src`;
   const bgLabel = `${outputLabel}_bg`;
@@ -541,11 +584,16 @@ function buildTransformFilters(params: {
   const hasCrop = crop.top > 0 || crop.right > 0 || crop.bottom > 0 || crop.left > 0;
   // `iw`/`ih` are already cropped here. Multiplying the target dimensions by the remaining fractions
   // reconstructs the fit scale of the FULL source, so cropping one edge does not re-fit/zoom the image.
+  // Animated zoom: `eval=frame` re-evaluates w/h (and so `t`) on every frame instead of once at setup. Only
+  // reachable without crop (`smoothMotionPlan`), and with the `rotate`/`pad` stages dropped below, since
+  // those fix their output size at setup and would clip or mis-place a buffer that keeps changing size.
+  const animatedScale = scaleExpression !== undefined && !hasCrop;
+  const scaleFactor = animatedScale ? `(${scaleExpression})` : n(transform.scale);
   const scaleFilter = hasCrop
-    ? `scale=w='iw*min(${width}*${n(remainingX)}/iw,${height}*${n(remainingY)}/ih)*${n(transform.scale)}'` +
-      `:h='ih*min(${width}*${n(remainingX)}/iw,${height}*${n(remainingY)}/ih)*${n(transform.scale)}'`
-    : `scale=w='iw*min(${width}/iw,${height}/ih)*${n(transform.scale)}'` +
-      `:h='ih*min(${width}/iw,${height}/ih)*${n(transform.scale)}'`;
+    ? `scale=w='iw*min(${width}*${n(remainingX)}/iw,${height}*${n(remainingY)}/ih)*${scaleFactor}'` +
+      `:h='ih*min(${width}*${n(remainingX)}/iw,${height}*${n(remainingY)}/ih)*${scaleFactor}'`
+    : `scale=w='iw*min(${width}/iw,${height}/ih)*${scaleFactor}'` +
+      `:h='ih*min(${width}/iw,${height}/ih)*${scaleFactor}'${animatedScale ? ":eval=frame" : ""}`;
   // Restore the cropped pixels' position inside a transparent full-source-sized canvas before
   // rotating. This keeps the untouched opposite edge fixed and matches computeTransformedBox.
   const padFilter = hasCrop
@@ -702,13 +750,13 @@ function buildTransformFilters(params: {
 
   return [
     ...maskLines,
-    `${mainChain}${needsCommaBefore ? "," : ""}${eqFilter}${curvesFilter ? `,${curvesFilter}` : ""}${lutFilter}${pixelEffectFilter}${flipFilter},${scaleFilter}${blurFilter}${padFilter},${rotateFilter}${opacityFilter},` +
+    `${mainChain}${needsCommaBefore ? "," : ""}${eqFilter}${curvesFilter ? `,${curvesFilter}` : ""}${lutFilter}${pixelEffectFilter}${flipFilter},${scaleFilter}${blurFilter}${padFilter}${animatedScale ? "" : `,${rotateFilter}`}${opacityFilter},` +
       `setsar=1,fps=${fps},setpts=PTS-STARTPTS[${clipLabel}]`,
     // The background is its own lavfi input (pushed alongside this), not an inline `color=` source
     // filter — matching the pattern gap segments already use elsewhere in this function, so there's
     // only one way black/silence sources get created in this file, not two.
     `[${bg}]setpts=PTS-STARTPTS[${bgLabel}]`,
-    `[${bgLabel}][${clipLabel}]overlay=x='(W-w)/2+${n(transform.offsetX)}':y='(H-h)/2+${n(transform.offsetY)}':format=auto[${outputLabel}]`,
+    `[${bgLabel}][${clipLabel}]overlay=x='(W-w)/2+${offsetXExpression ?? n(transform.offsetX)}':y='(H-h)/2+${offsetYExpression ?? n(transform.offsetY)}':format=auto[${outputLabel}]`,
   ];
 }
 
@@ -2317,7 +2365,8 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
     fadeOut?: number
   ): void {
     const label = fadeIn || fadeOut ? `${outputLabel}_prefade` : outputLabel;
-    if (hasRotationOnlyTransformKeyframes(clip)) {
+    const smoothMotion = smoothMotionPlan(clip);
+    if (hasRotationOnlyTransformKeyframes(clip) || smoothMotion) {
       const sourceIndex = inputIndex++;
       if (isImage) {
         pushImageInput(clip, path, clip.sourceIn + elapsedAtSegmentStart, sliceDuration, sourceIndex);
@@ -2351,7 +2400,17 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           flipHorizontal: clip.flipHorizontal,
           flipVertical: clip.flipVertical,
           mask: clip.mask,
-          rotationExpressionDegrees: rotationKeyframeExpression(clip, elapsedAtSegmentStart),
+          ...(smoothMotion
+            ? {
+                ...(smoothMotion.position
+                  ? {
+                      offsetXExpression: transformKeyframeExpression(clip, elapsedAtSegmentStart, (tr) => tr.offsetX),
+                      offsetYExpression: transformKeyframeExpression(clip, elapsedAtSegmentStart, (tr) => tr.offsetY),
+                    }
+                  : null),
+                ...(smoothMotion.scale ? { scaleExpression: transformKeyframeExpression(clip, elapsedAtSegmentStart, (tr) => tr.scale) } : null),
+              }
+            : { rotationExpressionDegrees: rotationKeyframeExpression(clip, elapsedAtSegmentStart) }),
         })
       );
       if (fadeIn || fadeOut) pushSoloTransitionStages(label, outputLabel, clip, sliceDuration, transparent, fadeIn, fadeOut);
