@@ -181,6 +181,20 @@ export interface TextGradient {
   stops: TextGradientStop[];
 }
 
+/** A coloured outline and soft glow drawn around a clip's visible shape — the subject of an AI cutout, or a sticker or
+ *  photo with transparency (a plain video clip just gets a rectangle). Sizes are in sequence pixels, so the look is the
+ *  same at any preview zoom and in the export. */
+export interface ClipOutline {
+  /** "#rrggbb" — the outline. */
+  color: string;
+  /** 0..24 — thickness of the outline; 0 for a glow only. */
+  width: number;
+  /** 0..60 — blur radius of the glow behind the outline; 0 for no glow. */
+  glow: number;
+  /** "#rrggbb" — the glow's colour; defaults to the outline colour. */
+  glowColor?: string;
+}
+
 /** One AI tool application, recorded so a template can run it again. `region` (Remove Object) is normalized 0..1 of the
  *  source frame so it still lines up on media of another size. */
 export interface AiRecipeStep {
@@ -897,6 +911,8 @@ export interface Clip {
    *  slide-in, a heartbeat loop and a fade-out at once). Text clips only, same as `textAnimation`. */
   textAnimationIn?: TextInOutAnimation;
   textAnimationOut?: TextInOutAnimation;
+  /** A coloured outline and glow around the clip's visible shape (see `ClipOutline`). Absent = none. */
+  outline?: ClipOutline;
   /** Template clips only: the AI steps to run on whatever media fills this clip's slot, in order (see `Asset.aiOrigin`). */
   templateAiSteps?: AiRecipeStep[];
   /** Real per-word timing for `textAnimation.type === "wordHighlight"`, CLIP-RELATIVE seconds (same

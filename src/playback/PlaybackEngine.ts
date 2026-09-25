@@ -1,6 +1,7 @@
 import { clipDuration, clipEnd } from "../project/createProject.ts";
 import { animationFrameIndex, animationFrameRect, type AssetAnimation } from "../project/stickers.ts";
-import type { ChromaKeySettings, Clip, ClipEffects, ClipMask, ClipTransform, ColorGrading, CustomFontAsset, Project, TextStyle, TransitionType, Track } from "../project/types.ts";
+import type { ChromaKeySettings, Clip, ClipOutline, ClipEffects, ClipMask, ClipTransform, ColorGrading, CustomFontAsset, Project, TextStyle, TransitionType, Track } from "../project/types.ts";
+import { isIdentityOutline } from "../export/outlineFilter.ts";
 import { isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
 import { applyColorGrading, buildCurveLut, composeLuts } from "../timeline/colorCurves.ts";
@@ -2174,7 +2175,8 @@ export class PlaybackEngine {
           clip.flipHorizontal,
           mask,
           clip.flipVertical,
-          override?.lutIntensity ?? clip.lutIntensity
+          override?.lutIntensity ?? clip.lutIntensity,
+          clip.outline
         );
         compositeTransitionFrame(
           context,
@@ -2215,7 +2217,8 @@ export class PlaybackEngine {
             clip.flipHorizontal,
             mask,
             clip.flipVertical,
-          override?.lutIntensity ?? clip.lutIntensity
+          override?.lutIntensity ?? clip.lutIntensity,
+          clip.outline
           );
         },
         { windowElapsed: activeTransition.elapsed, windowDuration: activeTransition.duration, clipElapsed: elapsed, fadingOut: false }
@@ -2249,7 +2252,8 @@ export class PlaybackEngine {
             clip.flipHorizontal,
             mask,
             clip.flipVertical,
-          override?.lutIntensity ?? clip.lutIntensity
+          override?.lutIntensity ?? clip.lutIntensity,
+          clip.outline
           );
         },
         {
@@ -2262,7 +2266,7 @@ export class PlaybackEngine {
       return;
     }
 
-    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed, clip.flipHorizontal, mask, clip.flipVertical, override?.lutIntensity ?? clip.lutIntensity);
+    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed, clip.flipHorizontal, mask, clip.flipVertical, override?.lutIntensity ?? clip.lutIntensity, clip.outline);
   }
 
   /** Draws and plays the outgoing clip's source handle during a blend, holding its final frame at EOF.
@@ -2351,7 +2355,7 @@ export class PlaybackEngine {
     const transform = resolveClipTransform(partner, partnerElapsed);
     const effects = resolveClipEffects(partner, partnerElapsed);
     const colorGrading = resolveClipColorGrading(partner, partnerElapsed);
-    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, partner.chromaKey, colorGrading, partner.id, partner.lutId, partner.pixelEffect, partnerElapsed, partner.flipHorizontal, partner.mask, partner.flipVertical, partner.lutIntensity);
+    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, partner.chromaKey, colorGrading, partner.id, partner.lutId, partner.pixelEffect, partnerElapsed, partner.flipHorizontal, partner.mask, partner.flipVertical, partner.lutIntensity, partner.outline);
     return true;
   }
 
@@ -2387,7 +2391,8 @@ export class PlaybackEngine {
     flipHorizontal = false,
     mask?: ClipMask,
     flipVertical = false,
-    lutIntensity?: number
+    lutIntensity?: number,
+    outline?: ClipOutline
   ): void {
     const box = computeTransformedBox(sourceWidth, sourceHeight, frameWidth, frameHeight, transform);
     if (!box) return;
@@ -2484,6 +2489,9 @@ export class PlaybackEngine {
     // canvas's ACTUAL size rather than assuming it matches. 1 for an unprocessed element.
     const mapX = source === element ? 1 : (source as HTMLCanvasElement).width / sourceWidth;
     const mapY = source === element ? 1 : (source as HTMLCanvasElement).height / sourceHeight;
+    if (outline && !isIdentityOutline(outline)) {
+      this.drawOutline(context, source, box.cropX * mapX, box.cropY * mapY, box.cropWidth * mapX, box.cropHeight * mapY, box.width, box.height, outline);
+    }
     context.drawImage(
       source,
       box.cropX * mapX,
@@ -2495,6 +2503,76 @@ export class PlaybackEngine {
       box.width,
       box.height
     );
+    context.restore();
+  }
+
+  private outlineCanvasEl: HTMLCanvasElement | null = null;
+
+  /** Draws a clip's coloured outline and glow (see `ClipOutline`) — as flat-colour copies of its visible shape, under the
+   *  clip itself. Called with the clip's own transform already applied to `context`, so distances here are in sequence
+   *  pixels and the outline follows the rotated edge. The outline is the shape drawn at many offsets around a circle of the
+   *  outline's radius; the glow is the shape's shadow, blurred. Uses `shadowBlur` (supported everywhere) rather than
+   *  `context.filter`, which Safari ignores. */
+  private drawOutline(
+    context: CanvasRenderingContext2D,
+    source: CanvasImageSource,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    width: number,
+    height: number,
+    outline: ClipOutline
+  ): void {
+    const dpr = deviceScaleOf(context);
+    // A flat-colour silhouette of the visible shape, at roughly the size it's shown at (never larger than needed).
+    const targetW = Math.max(1, Math.min(2048, Math.round(width * dpr)));
+    const targetH = Math.max(1, Math.min(2048, Math.round(height * dpr)));
+    const canvas = this.outlineCanvasEl ?? document.createElement("canvas");
+    if (!this.outlineCanvasEl) this.outlineCanvasEl = canvas;
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+    }
+    const silhouette = canvas.getContext("2d");
+    if (!silhouette) return;
+    const paint = (color: string) => {
+      silhouette.globalCompositeOperation = "source-over";
+      silhouette.clearRect(0, 0, targetW, targetH);
+      silhouette.drawImage(source, sx, sy, sw, sh, 0, 0, targetW, targetH);
+      silhouette.globalCompositeOperation = "source-in";
+      silhouette.fillStyle = color;
+      silhouette.fillRect(0, 0, targetW, targetH);
+      silhouette.globalCompositeOperation = "source-over";
+    };
+
+    context.save();
+    context.filter = "none";
+    const glow = Math.max(0, outline.glow);
+    if (glow > 0) {
+      paint(outline.glowColor ?? outline.color);
+      // Draw the silhouette far off-canvas and offset its shadow back into view, so only the blurred shadow shows.
+      const far = 20000;
+      context.shadowColor = outline.glowColor ?? outline.color;
+      context.shadowBlur = glow * dpr;
+      context.shadowOffsetX = far * dpr;
+      context.shadowOffsetY = 0;
+      // Twice: the export brightens its blurred glow (x2), and one shadow pass alone reads noticeably fainter.
+      context.drawImage(canvas, -width / 2 - far, -height / 2, width, height);
+      context.drawImage(canvas, -width / 2 - far, -height / 2, width, height);
+      context.shadowColor = "transparent";
+      context.shadowBlur = 0;
+      context.shadowOffsetX = 0;
+    }
+    const radius = Math.max(0, outline.width);
+    if (radius > 0) {
+      paint(outline.color);
+      const steps = Math.max(16, Math.min(48, Math.ceil(radius * 4)));
+      for (let i = 0; i < steps; i++) {
+        const angle = (i / steps) * Math.PI * 2;
+        context.drawImage(canvas, -width / 2 + Math.cos(angle) * radius, -height / 2 + Math.sin(angle) * radius, width, height);
+      }
+    }
     context.restore();
   }
 

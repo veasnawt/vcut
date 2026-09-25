@@ -1,6 +1,6 @@
 import { clipDuration, clipEnd, createClip, createTextAsset, findAsset, findClip, findTrack, newId } from "../project/createProject.ts";
 import { applyTextStylePreset, type TextStylePreset } from "../project/textStylePresets.ts";
-import type { ChromaKeySettings, Asset, Clip, ClipBlendMode, ClipEffects, ClipMask, ClipTransform, ColorGrading, CoverSelection, Project, SpeedCurvePoint, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
+import type { ChromaKeySettings, ClipOutline, Asset, Clip, ClipBlendMode, ClipEffects, ClipMask, ClipTransform, ColorGrading, CoverSelection, Project, SpeedCurvePoint, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
 import { DEFAULT_TEXT_STYLE, IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../project/types.ts";
 import {
   addClip,
@@ -8,6 +8,7 @@ import {
   deleteClips,
   EditError,
   applyVideoCutout,
+  setClipOutline,
   createTextBehindSubject,
   moveClip,
   moveTrackLayer,
@@ -1014,6 +1015,33 @@ export class SetClipColorGradingCommand implements Command {
  *  `SetClipTransformKeyframesCommand`'s own) rather than a nullable-`previous`-means-"never applied"
  *  one, since `null` is itself a legitimate PREVIOUS value here (no chroma key before this command
  *  ran), not just the command's own not-yet-applied sentinel. */
+export class SetClipOutlineCommand implements Command {
+  label = "Set Outline";
+  private applied = false;
+  private previous: ClipOutline | null = null;
+
+  private clipId: string;
+  private outline: ClipOutline | null;
+
+  constructor(clipId: string, outline: ClipOutline | null) {
+    this.clipId = clipId;
+    this.outline = outline;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = found.clip.outline ?? null;
+    this.applied = true;
+    return setClipOutline(project, this.clipId, this.outline);
+  }
+
+  revert(project: Project): Project {
+    if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipOutline(project, this.clipId, this.previous);
+  }
+}
+
 export class SetClipChromaKeyCommand implements Command {
   label = "Set Chroma Key";
   private applied = false;

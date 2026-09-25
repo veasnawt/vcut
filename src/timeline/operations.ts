@@ -1,5 +1,5 @@
 import { clipDuration, clipEnd, createClip, createTextAsset, findAsset, findClip, findTrack, newId } from "../project/createProject.ts";
-import type { ChromaKeySettings, Asset, Clip, ClipBlendMode, ClipEffects, ClipMask, ClipTransform, ColorCurve, ColorGrading, CoverSelection, Project, SpeedCurvePoint, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
+import type { ClipOutline, ChromaKeySettings, Asset, Clip, ClipBlendMode, ClipEffects, ClipMask, ClipTransform, ColorCurve, ColorGrading, CoverSelection, Project, SpeedCurvePoint, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
 import { CLIP_BLEND_MODES, DEFAULT_TEXT_STYLE, IMAGE_DEFAULT_DURATION, isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop, isIdentityTransform, TEXT_DEFAULT_DURATION } from "../project/types.ts";
 import { frameDuration, snapToFrame } from "./time.ts";
 import { normalizeLutIntensity } from "./lut.ts";
@@ -1131,6 +1131,28 @@ function clampChromaKey(settings: ChromaKeySettings): ChromaKeySettings {
  *  transform, there's no "chroma key value that's secretly a no-op" to collapse toward, only present
  *  or absent). See `ChromaKeySettings`'s own doc comment for why the fields mirror FFmpeg's `colorkey`
  *  filter so closely. */
+/** Sets or clears a clip's outline/glow (`null`, or one with no thickness and no glow, clears it). */
+export function setClipOutline(project: Project, clipId: string, outline: ClipOutline | null): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    const width = outline ? Math.min(24, Math.max(0, outline.width)) : 0;
+    const glow = outline ? Math.min(60, Math.max(0, outline.glow)) : 0;
+    if (!outline || (width <= 0 && glow <= 0)) {
+      delete found.clip.outline;
+      return;
+    }
+    const isHex = (c: string | undefined) => typeof c === "string" && /^#[0-9a-fA-F]{6}$/.test(c);
+    found.clip.outline = {
+      color: isHex(outline.color) ? outline.color : "#ffffff",
+      width,
+      glow,
+      ...(isHex(outline.glowColor) ? { glowColor: outline.glowColor } : null),
+    };
+  });
+}
+
 export function setClipChromaKey(project: Project, clipId: string, settings: ChromaKeySettings | null): Project {
   return edit(project, (draft) => {
     const found = findClip(draft, clipId);

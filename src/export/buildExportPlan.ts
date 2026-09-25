@@ -2,8 +2,9 @@ import { applyTextTransform, TEXT_BOX_PADDING, TEXT_MARGIN_PX } from "../playbac
 import { clipDuration, clipEnd, findAsset, sequenceDuration } from "../project/createProject.ts";
 import { fontById, fontFileFor, resolveFontVariant } from "../project/fonts.ts";
 import type { AssFontMetrics, FontDefinition } from "../project/fonts.ts";
-import type { ChromaKeySettings, Clip, ClipBlendMode, ClipEffects, ClipMask, ClipTransform, ColorGrading, PixelEffectType, Project, TextCrop, TextStyle, TransitionType, Track } from "../project/types.ts";
+import type { ChromaKeySettings, Clip, ClipOutline, ClipBlendMode, ClipEffects, ClipMask, ClipTransform, ColorGrading, PixelEffectType, Project, TextCrop, TextStyle, TransitionType, Track } from "../project/types.ts";
 import { IDENTITY_EFFECTS, IDENTITY_TRANSFORM, isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop, isIdentityTransform } from "../project/types.ts";
+import { buildOutlineLines, isIdentityOutline } from "./outlineFilter.ts";
 import {
   BOUNCE_AMPLITUDE_PX,
   BOUNCE_PERIOD_SECONDS,
@@ -542,6 +543,8 @@ function buildTransformFilters(params: {
   height: number;
   fps: number;
   chromaKey?: ChromaKeySettings;
+  /** Coloured outline + glow around the clip's visible shape (see `ClipOutline`); drawn last, after rotation. */
+  outline?: ClipOutline;
   colorGrading?: ColorGrading;
   /** Resolved `.cube` file path (`ExportPlanOptions.lutPathFor(clip.lutId)`), or `undefined` when the
    *  clip has no `lutId` or the resolver itself wasn't supplied — either way, no `lut3d=` stage. */
@@ -559,7 +562,7 @@ function buildTransformFilters(params: {
    *  rotation (see `smoothMotionPlan`), and switches `scale` to per-frame evaluation. */
   scaleExpression?: string;
 }): string[] {
-  const { source, bg, outputLabel, transform, effects, width, height, fps, chromaKey, colorGrading, lutPath, pixelEffect, flipHorizontal, flipVertical, mask, rotationExpressionDegrees, offsetXExpression, offsetYExpression, scaleExpression } = params;
+  const { source, bg, outputLabel, transform, effects, width, height, fps, chromaKey, outline, colorGrading, lutPath, pixelEffect, flipHorizontal, flipVertical, mask, rotationExpressionDegrees, offsetXExpression, offsetYExpression, scaleExpression } = params;
   const { crop } = transform;
   const clipLabel = `${outputLabel}_src`;
   const bgLabel = `${outputLabel}_bg`;
@@ -748,10 +751,24 @@ function buildTransformFilters(params: {
     needsCommaBefore = true;
   }
 
+  const hasOutline = !isIdentityOutline(outline);
+  // The outline is drawn on the FINISHED shape (after scale, crop padding and rotation), so its thickness is in real output
+  // pixels and follows the rotated edge. It adds an even transparent margin on every side, which keeps the clip centred
+  // where it was: the overlay below centres on the clip's own size.
+  const geometryChain =
+    `${mainChain}${needsCommaBefore ? "," : ""}${eqFilter}${curvesFilter ? `,${curvesFilter}` : ""}${lutFilter}${pixelEffectFilter}${flipFilter},${scaleFilter}${blurFilter}${padFilter}${animatedScale ? "" : `,${rotateFilter}`}`;
+  const finishTail = `setsar=1,fps=${fps},setpts=PTS-STARTPTS[${clipLabel}]`;
+  const clipLines = hasOutline
+    ? [
+        `${geometryChain}[${outputLabel}_prol]`,
+        ...buildOutlineLines(`${outputLabel}_prol`, `${outputLabel}_olout`, outline!, n),
+        `[${outputLabel}_olout]${opacityFilter ? `${opacityFilter.slice(1)},` : ""}${finishTail}`,
+      ]
+    : [`${geometryChain}${opacityFilter},${finishTail}`];
+
   return [
     ...maskLines,
-    `${mainChain}${needsCommaBefore ? "," : ""}${eqFilter}${curvesFilter ? `,${curvesFilter}` : ""}${lutFilter}${pixelEffectFilter}${flipFilter},${scaleFilter}${blurFilter}${padFilter}${animatedScale ? "" : `,${rotateFilter}`}${opacityFilter},` +
-      `setsar=1,fps=${fps},setpts=PTS-STARTPTS[${clipLabel}]`,
+    ...clipLines,
     // The background is its own lavfi input (pushed alongside this), not an inline `color=` source
     // filter — matching the pattern gap segments already use elsewhere in this function, so there's
     // only one way black/silence sources get created in this file, not two.
@@ -2276,6 +2293,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       (!transform || isIdentityTransform(transform)) &&
       (!effects || isIdentityEffects(effects)) &&
       !clip.chromaKey &&
+      isIdentityOutline(clip.outline) &&
       (!clip.colorGrading || isIdentityColorGrading(clip.colorGrading)) &&
       !clip.lutId &&
       !clip.pixelEffect &&
@@ -2318,6 +2336,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           height,
           fps,
           chromaKey: clip.chromaKey,
+          outline: clip.outline,
           colorGrading: clip.colorGrading,
           lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId, clip.lutIntensity) : undefined,
           pixelEffect: clip.pixelEffect,
@@ -2399,6 +2418,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           height,
           fps,
           chromaKey: clip.chromaKey,
+          outline: clip.outline,
           colorGrading: clip.colorGrading,
           lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId, clip.lutIntensity) : undefined,
           pixelEffect: clip.pixelEffect,
@@ -2493,6 +2513,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           height,
           fps,
           chromaKey: clip.chromaKey,
+          outline: clip.outline,
           colorGrading: slice.colorGrading,
           lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId, clip.lutIntensity) : undefined,
           pixelEffect: clip.pixelEffect,

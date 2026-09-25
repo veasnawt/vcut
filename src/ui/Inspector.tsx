@@ -28,6 +28,7 @@ import {
   BatchCommand,
   SetClipBlendModeCommand,
   SetClipChromaKeyCommand,
+  SetClipOutlineCommand,
   SetClipColorGradingCommand,
   SetClipColorGradingKeyframesCommand,
   SetClipEffectsCommand,
@@ -1258,7 +1259,7 @@ export function Inspector() {
    *  extra clicks, while every secondary section (Styles, Animation, Effects, Color Grading, LUT,
    *  Chroma Key, Transition Out, Auto Captions, Remove Object) stays out of the way until asked for. */
   const [collapsed, setCollapsed] = useState<Set<string>>(
-    () => new Set(["Details", "Styles", "Animation", "Filters", "Color Grading", "LUT", "Chroma Key", "Transition Out", "Auto Captions"])
+    () => new Set(["Details", "Styles", "Animation", "Filters", "Color Grading", "LUT", "Chroma Key", "Outline & Glow", "Transition Out", "Auto Captions"])
   );
   function toggleSection(name: string) {
     setCollapsed((prev) => {
@@ -2973,6 +2974,81 @@ export function Inspector() {
                         await importLut(file);
                       }}
                     />
+                  </CollapsibleSection>
+                )}
+
+                {/* Outline & Glow — a coloured edge and soft glow around the clip's visible shape (the subject of an AI
+                    cutout, a sticker, a photo with transparency; a plain clip gets a rectangle). Drawn the same way in the
+                    preview and the export; sizes are in sequence pixels. */}
+                {activeTab === "transform" && track.kind === "video" && (
+                  <CollapsibleSection
+                    title={t("Outline & Glow")}
+                    accent="bg-rose-400"
+                    open={!collapsed.has("Outline & Glow")}
+                    onToggle={() => toggleSection("Outline & Glow")}
+                  >
+                    {clip.outline ? (
+                      <>
+                        <label className="flex items-center justify-between gap-2 py-1.5">
+                          <span className="text-[12px] text-white/50">{t("Outline color")}</span>
+                          <input
+                            type="color"
+                            value={clip.outline.color}
+                            onChange={(e) => run(new SetClipOutlineCommand(clip.id, { ...clip.outline!, color: e.target.value }))}
+                            className="h-7 w-11 cursor-pointer rounded border border-white/10 bg-transparent"
+                          />
+                        </label>
+                        <NumberField
+                          label={t("Thickness")}
+                          value={clip.outline.width}
+                          suffix="px"
+                          step={1}
+                          min={0}
+                          max={24}
+                          onCommit={(v) => run(new SetClipOutlineCommand(clip.id, { ...clip.outline!, width: v }))}
+                        />
+                        <NumberField
+                          label={t("Glow")}
+                          value={clip.outline.glow}
+                          suffix="px"
+                          step={2}
+                          min={0}
+                          max={60}
+                          onCommit={(v) => run(new SetClipOutlineCommand(clip.id, { ...clip.outline!, glow: v }))}
+                        />
+                        <label className="flex items-center justify-between gap-2 py-1.5">
+                          <span className="text-[12px] text-white/50">{t("Glow color")}</span>
+                          <input
+                            type="color"
+                            value={clip.outline.glowColor ?? clip.outline.color}
+                            onChange={(e) => run(new SetClipOutlineCommand(clip.id, { ...clip.outline!, glowColor: e.target.value }))}
+                            className="h-7 w-11 cursor-pointer rounded border border-white/10 bg-transparent"
+                          />
+                        </label>
+                        <button
+                          onClick={() => run(new SetClipOutlineCommand(clip.id, null))}
+                          className="mt-2.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/60 transition hover:bg-white/10 hover:text-white"
+                        >
+                          {t("Remove outline")}
+                        </button>
+                      </>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {[
+                          { name: "Red glow", outline: { color: "#ff2a2a", width: 4, glow: 24 } },
+                          { name: "White edge", outline: { color: "#ffffff", width: 6, glow: 0 } },
+                          { name: "Neon", outline: { color: "#ffffff", width: 3, glow: 30, glowColor: "#22d3ee" } },
+                        ].map((preset) => (
+                          <button
+                            key={preset.name}
+                            onClick={() => run(new SetClipOutlineCommand(clip.id, preset.outline))}
+                            className="rounded bg-white/5 py-2 text-[11px] text-white/70 transition hover:bg-white/10 hover:text-white"
+                          >
+                            {t(preset.name)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </CollapsibleSection>
                 )}
 

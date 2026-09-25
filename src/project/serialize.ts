@@ -1,6 +1,7 @@
 import { newId } from "./createProject.ts";
 import type {
   AiRecipeStep,
+  ClipOutline,
   Asset,
   ChromaKeySettings,
   Clip,
@@ -245,6 +246,17 @@ function parseAiSteps(value: unknown): AiRecipeStep[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const steps = value.map(parseAiStep).filter((step): step is AiRecipeStep => Boolean(step)).slice(0, 6);
   return steps.length > 0 ? steps : undefined;
+}
+
+function parseOutline(value: unknown): ClipOutline | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const r = value as Record<string, unknown>;
+  const hex = (v: unknown, fallback: string | undefined) => (typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v) ? v : fallback);
+  const width = typeof r.width === "number" && Number.isFinite(r.width) ? Math.min(24, Math.max(0, r.width)) : 0;
+  const glow = typeof r.glow === "number" && Number.isFinite(r.glow) ? Math.min(60, Math.max(0, r.glow)) : 0;
+  if (width <= 0 && glow <= 0) return undefined;
+  const glowColor = hex(r.glowColor, undefined);
+  return { color: hex(r.color, "#ffffff")!, width, glow, ...(glowColor ? { glowColor } : null) };
 }
 
 function parseAsset(raw: Record<string, unknown>): Asset {
@@ -752,6 +764,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
   const textAnimationIn = parseClipTextInOut(raw.textAnimationIn);
   const textAnimationOut = parseClipTextInOut(raw.textAnimationOut);
   const templateAiSteps = parseAiSteps(raw.templateAiSteps);
+  const outline = parseOutline(raw.outline);
   const wordTimings = parseClipWordTimings(raw.wordTimings);
   const pixelEffect = parseClipPixelEffect(raw.pixelEffect);
   const faceEffects = parseClipFaceEffects(raw.faceEffects);
@@ -795,6 +808,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
     ...(textAnimationIn ? { textAnimationIn } : null),
     ...(textAnimationOut ? { textAnimationOut } : null),
     ...(templateAiSteps ? { templateAiSteps } : null),
+    ...(outline ? { outline } : null),
     ...(wordTimings ? { wordTimings } : null),
     ...(pixelEffect ? { pixelEffect } : null),
     ...(faceEffects ? { faceEffects } : null),
