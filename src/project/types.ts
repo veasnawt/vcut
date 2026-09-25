@@ -205,6 +205,9 @@ export interface AiRecipeStep {
   prompt?: string;
   strength?: "subtle" | "balanced" | "creative";
   region?: { x: number; y: number; width: number; height: number };
+  /** Video cutout: seconds into the ORIGINAL asset where the cutout file starts, so the preview can keep the cutout locked to
+   *  the original's own picture (their files are not the same length or frame rate). */
+  sourceStart?: number;
   /** Video cutout: the matted clip carries the original's sound (a replacement) rather than sitting silently above it. */
   keepAudio?: boolean;
   /** This clip is an extra layer above a raw copy of the same footage (Text Behind Subject's cutout layer): if the AI

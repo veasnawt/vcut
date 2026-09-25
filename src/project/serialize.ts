@@ -229,6 +229,7 @@ function parseAiStep(value: unknown): AiRecipeStep | undefined {
     ...(typeof r.prompt === "string" ? { prompt: r.prompt.slice(0, 500) } : null),
     ...(r.strength === "subtle" || r.strength === "balanced" || r.strength === "creative" ? { strength: r.strength } : null),
     ...(validRegion ? { region: validRegion } : null),
+    ...(typeof r.sourceStart === "number" && Number.isFinite(r.sourceStart) && r.sourceStart >= 0 ? { sourceStart: r.sourceStart } : null),
     ...(r.keepAudio === true ? { keepAudio: true } : null),
     ...(r.overlay === true ? { overlay: true } : null),
   };

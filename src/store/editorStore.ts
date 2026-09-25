@@ -1815,7 +1815,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
         if (asset.kind === "video") {
           // A video clip is cut out frame by frame (not from one still), keeping its audio.
           const cutout = await api.cutoutVideoClip(projectId, clipId, true);
-          const tagged = withAiOrigin(cutout.asset, asset.id, { tool: "video-cutout", keepAudio: true });
+          const tagged = withAiOrigin(cutout.asset, asset.id, { tool: "video-cutout", keepAudio: true, sourceStart: found.clip.sourceIn });
           get().run(new ApplyVideoCutoutCommand(clipId, tagged, { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds }));
         } else {
           const newAsset = await api.removeBackground(projectId, asset.id, clipId, sourceTimeAtPlayhead(found.clip, get().playhead));
@@ -1847,7 +1847,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
         if (asset.kind === "video") {
           // The subject layer sits above the text, over the original clip, which keeps the sound.
           const cutout = await api.cutoutVideoClip(projectId, clipId, false);
-          cutoutAsset = withAiOrigin(cutout.asset, asset.id, { tool: "video-cutout", keepAudio: false, overlay: true });
+          cutoutAsset = withAiOrigin(cutout.asset, asset.id, { tool: "video-cutout", keepAudio: false, overlay: true, sourceStart: found.clip.sourceIn });
           videoCutout = { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds };
         } else if (!isCutout) {
           cutoutAsset = withAiOrigin(
@@ -1967,7 +1967,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
         if (step.tool === "cutout" || step.tool === "video-cutout") {
           if (asset.kind === "video") {
             const cutout = await api.cutoutVideoClip(projectId, clipId, step.keepAudio ?? false);
-            const tagged = withAiOrigin(cutout.asset, asset.id, step);
+            const tagged = withAiOrigin(cutout.asset, asset.id, { ...step, sourceStart: found.clip.sourceIn });
             get().run(new ApplyVideoCutoutCommand(clipId, tagged, { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds }));
           } else {
             const result = await api.removeBackground(projectId, asset.id, clipId);

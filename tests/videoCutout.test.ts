@@ -129,3 +129,20 @@ describe("chroma key despill (AI cutout edges)", () => {
     assert.ok(on.data[5] < 110, `green not reduced: ${on.data[5]}`);
   });
 });
+
+import { planMediaSync } from "../src/playback/PlaybackEngine.ts";
+
+describe("cutout layer locked to its original (tight sync)", () => {
+  const state = (drift: number) => ({ currentTime: 10 + drift, playbackRate: 1, seeking: false, seekingForMs: 0 });
+
+  it("leaves an ordinary element alone at 0.5 s of drift on Safari (no rate correction, 1.5 s seek limit)", () => {
+    assert.deepEqual(planMediaSync(state(-0.5), 10, true, false), { playbackRate: null, seekTo: null });
+  });
+
+  it("re-seeks a tight layer that has fallen 0.5 s behind, and eases the rate for small drift even on Safari", () => {
+    assert.deepEqual(planMediaSync(state(-0.5), 10, true, false, 0.02, 1, true), { playbackRate: null, seekTo: 10 });
+    const eased = planMediaSync(state(-0.1), 10, true, false, 0.02, 1, true);
+    assert.ok(eased.seekTo === null && eased.playbackRate !== null && eased.playbackRate > 1, JSON.stringify(eased));
+    assert.deepEqual(planMediaSync(state(0.01), 10, true, false, 0.02, 1, true), { playbackRate: null, seekTo: null });
+  });
+});

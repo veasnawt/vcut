@@ -131,6 +131,8 @@ function deviceScaleOf(context: CanvasRenderingContext2D): number {
  *  animation, a window resize) would reallocate it every frame — a handful of stable steps keeps that
  *  to the rare frame a step boundary is actually crossed. */
 const PIPELINE_SCALE_STEPS = [0.125, 0.25, 0.375, 0.5, 0.75, 1];
+/** Most pixels a chroma-keyed clip's readback pipeline processes per frame during playback (see `drawTransformed`). */
+const PLAYING_KEY_MAX_PIXELS = 500_000;
 
 /** The smallest `PIPELINE_SCALE_STEPS` entry that still gives the readback pipeline at least as many
  *  pixels as the clip actually occupies on the canvas's own backing store — never fewer, so nothing
@@ -474,6 +476,10 @@ const PAUSED_SEEK_TOLERANCE = 0.02;
  *  wasted `playbackRate` churn for no audible benefit. Between this and `DRIFT_TOLERANCE`, `syncMedia`
  *  gently speeds up or slows down the element instead of seeking. */
 const DRIFT_CORRECTION_TOLERANCE = 0.03;
+/** For a silent layer locked to another video (an AI cutout over its original): hard re-seek past 0.3 s, and start easing the
+ *  rate at ~half a frame, so the two stay within a frame or two of each other. */
+const TIGHT_SEEK_TOLERANCE = 0.3;
+const TIGHT_CORRECTION_TOLERANCE = 0.02;
 /** The STRONGEST `playbackRate` offset the proportional correction below will ever apply — reached only
  *  as drift approaches `DRIFT_TOLERANCE` itself (see `syncMedia`'s own interpolation between the two
  *  tolerances). Scaled by how far off the element actually is, rather than one flat nudge regardless of
@@ -554,7 +560,10 @@ export function planMediaSync(
   playing: boolean,
   allowRateCorrection = true,
   pausedSeekTolerance = DRIFT_TOLERANCE,
-  targetPlaybackRate = 1
+  targetPlaybackRate = 1,
+  /** A silent layer that must line up with another video's picture: re-seek past `TIGHT_SEEK_TOLERANCE` and nudge the rate from
+   *  `TIGHT_CORRECTION_TOLERANCE`, on every browser (no audio to click). */
+  tight = false
 ): MediaSyncAction {
   const none: MediaSyncAction = { playbackRate: null, seekTo: null };
 
@@ -568,16 +577,18 @@ export function planMediaSync(
   const drift = state.currentTime - sourceTime;
   const absDrift = Math.abs(drift);
 
-  if (absDrift > (playing ? DRIFT_TOLERANCE : pausedSeekTolerance)) {
+  const seekTolerance = tight && playing ? TIGHT_SEEK_TOLERANCE : DRIFT_TOLERANCE;
+  const correctionTolerance = tight ? TIGHT_CORRECTION_TOLERANCE : DRIFT_CORRECTION_TOLERANCE;
+  if (absDrift > (playing ? seekTolerance : pausedSeekTolerance)) {
     // A real jump (scrub, clip switch, a tab that was throttled/backgrounded) — nothing gradual could
     // close a gap this size fast enough to matter, so snap, resetting any in-progress nudge first.
     return { playbackRate: state.playbackRate !== targetPlaybackRate ? targetPlaybackRate : null, seekTo: sourceTime };
   }
 
-  if (playing && allowRateCorrection && absDrift > DRIFT_CORRECTION_TOLERANCE) {
+  if (playing && (allowRateCorrection || tight) && absDrift > correctionTolerance) {
     // Proportional, not flat — see `MAX_DRIFT_CORRECTION_RATE_DELTA`'s own doc comment. Interpolates
     // from ~0 at the dead-zone edge up to the max rate at `DRIFT_TOLERANCE` itself.
-    const t = Math.min(1, (absDrift - DRIFT_CORRECTION_TOLERANCE) / (DRIFT_TOLERANCE - DRIFT_CORRECTION_TOLERANCE));
+    const t = Math.min(1, (absDrift - correctionTolerance) / (seekTolerance - correctionTolerance));
     const delta = MAX_DRIFT_CORRECTION_RATE_DELTA * t;
     const target = targetPlaybackRate * (drift > 0 ? Math.max(0.1, 1 - delta) : 1 + delta);
     return Math.abs(target - state.playbackRate) >= PLAYBACK_RATE_EPSILON ? { playbackRate: target, seekTo: null } : none;
@@ -966,19 +977,27 @@ export function applyChromaKey(imageData: ImageData, settings: ChromaKeySettings
   const despill = keyG >= Math.max(keyR, keyB) ? (settings.despill ?? 0) : 0;
   const data = imageData.data;
   const norm = Math.sqrt(3) * 255;
+  // Compare squared distances so the per-pixel square root is only taken inside the (thin) feathered band. This runs on every
+  // video frame on the main thread; the square root on ~900k pixels was a large part of its cost.
+  const clearSq = similarity * norm * (similarity * norm);
+  const edge = (similarity + smoothness) * norm;
+  const edgeSq = edge * edge;
   for (let i = 0; i < data.length; i += 4) {
     const dr = data[i] - keyR;
     const dg = data[i + 1] - keyG;
     const db = data[i + 2] - keyB;
-    const diff = Math.sqrt(dr * dr + dg * dg + db * db) / norm;
-    let keyAlpha: number;
-    if (diff <= similarity) keyAlpha = 0;
-    else if (smoothness > 0 && diff < similarity + smoothness) keyAlpha = (diff - similarity) / smoothness;
-    else keyAlpha = 1;
-    if (keyAlpha < 1) data[i + 3] = Math.round(data[i + 3] * keyAlpha);
+    const distanceSq = dr * dr + dg * dg + db * db;
+    if (distanceSq <= clearSq) {
+      data[i + 3] = 0;
+      continue;
+    }
+    if (smoothness > 0 && distanceSq < edgeSq) {
+      const keyAlpha = (Math.sqrt(distanceSq) / norm - similarity) / smoothness;
+      data[i + 3] = Math.round(data[i + 3] * keyAlpha);
+    }
     // Spill: an edge pixel that survived the key is still a mix with the key colour. Pull its green down toward the larger
-    // of red and blue (only when the key is green-ish, and only where green really leads), so no green outline is left.
-    if (despill > 0 && keyAlpha > 0) {
+    // of red and blue (only where green really leads), so no green outline is left.
+    if (despill > 0) {
       const lead = data[i + 1] - Math.max(data[i], data[i + 2]);
       if (lead > 0) data[i + 1] = Math.round(data[i + 1] - lead * despill);
     }
@@ -1631,7 +1650,7 @@ export class PlaybackEngine {
    *  through `AudioMixEngine.syncVideoClipAudio` instead (called separately, right after this, from
    *  `drawVideoClip`), since `createMediaElementSource` captures the element's native output entirely —
    *  setting `.volume` on an element already routed through Web Audio would have no audible effect. */
-  private syncMedia(clipId: string, element: HTMLVideoElement, sourceTime: number, playing: boolean, targetPlaybackRate = 1, reverse = false): void {
+  private syncMedia(clipId: string, element: HTMLVideoElement, sourceTime: number, playing: boolean, targetPlaybackRate = 1, reverse = false, tight = false): void {
     if (reverse) {
       if (!element.paused) element.pause();
       if (element.readyState === 0) return;
@@ -1726,7 +1745,8 @@ export class PlaybackEngine {
       // Ignored by `planMediaSync` itself whenever `playing` is true (it always uses `DRIFT_TOLERANCE`
       // then) — passed unconditionally rather than re-deriving that same branch here too.
       PAUSED_SEEK_TOLERANCE,
-      targetPlaybackRate
+      targetPlaybackRate,
+      tight
     );
     // Rate BEFORE seek, never after: a rate change issued right behind a seek lands while that seek is
     // still in flight, which is exactly the interruption `planMediaSync` exists to stop.
@@ -2058,13 +2078,18 @@ export class PlaybackEngine {
           sourceHeight = element.naturalHeight;
         }
       } else if (element instanceof HTMLVideoElement) {
+        // An AI cutout layer follows its ORIGINAL clip's own picture when both are on the timeline: two separate video files
+        // drift apart on their own (Safari only re-seeks past 1.5 s), which read as the cutout lagging behind the person.
+        const followed = this.host.isPlaying() && !activeTransition ? this.cutoutFollowTime(clip, time) : null;
         const sourceTime =
-          activeTransition?.kind === "junction" && activeTransition.toSourceTime !== undefined
-            ? activeTransition.toSourceTime
-            : Math.max(0, clipSourceTimeAtElapsed(clip, time - clip.timelineStart));
+          followed !== null
+            ? followed
+            : activeTransition?.kind === "junction" && activeTransition.toSourceTime !== undefined
+              ? activeTransition.toSourceTime
+              : Math.max(0, clipSourceTimeAtElapsed(clip, time - clip.timelineStart));
         // The track's own visibility no longer needs checking here: `drawVideoLayer` already skips
         // hidden tracks entirely before this is ever called.
-        this.syncMedia(clip.id, element, sourceTime, this.host.isPlaying(), clipSpeedAtElapsed(clip, time - clip.timelineStart), clip.reverse === true);
+        this.syncMedia(clip.id, element, sourceTime, this.host.isPlaying(), clipSpeedAtElapsed(clip, time - clip.timelineStart), clip.reverse === true, followed !== null);
         // A video clip's own audio is silenced/scaled when the clip itself is muted/gained, OR when the
         // whole track it's on is muted — matching what export does (`buildExportPlan.ts`'s own
         // `buildTrackStreams` folds `track.muted` into the same `hasAudio` check), so preview and output
@@ -2422,10 +2447,41 @@ export class PlaybackEngine {
       // keep running at full resolution to look the same — everything else here is either per-pixel
       // color math or expressed in resolution-independent fractions (mask, crop), so it's exactly as
       // correct at the reduced resolution. See `pipelineScaleFor`.
-      const workScale = pixelEffect ? 1 : pipelineScaleFor((box.width * deviceScaleOf(context)) / box.cropWidth);
+      let workScale = pixelEffect ? 1 : pipelineScaleFor((box.width * deviceScaleOf(context)) / box.cropWidth);
+      // While playing, a keyed clip's per-pixel work is capped at ~0.5 megapixels — a phone keeps up with that at video speed,
+      // and the picture is drawn into a panel that small anyway. Paused, it renders at full quality.
+      if (!pixelEffect && chromaKey && this.host.isPlaying()) {
+        for (const step of [...PIPELINE_SCALE_STEPS].reverse()) {
+          if (step > workScale) continue;
+          workScale = step;
+          if (sourceWidth * sourceHeight * step * step <= PLAYING_KEY_MAX_PIXELS) break;
+        }
+      }
       const workWidth = Math.max(1, Math.round(sourceWidth * workScale));
       const workHeight = Math.max(1, Math.round(sourceHeight * workScale));
-      const scratch = this.chromaKeyCanvas(workWidth, workHeight);
+      // A chroma-keyed VIDEO clip with nothing else in the pixel pipeline is redrawn every display refresh, but its picture only
+      // changes when the video presents a new frame. Keep the keyed result per clip and reuse it until then (the render loop
+      // runs faster than a 24 fps cutout), instead of re-reading and re-keying ~1M pixels each time.
+      const cacheable =
+        Boolean(chromaKey) && clipId !== undefined && element instanceof HTMLVideoElement && !needsColorGrading && !needsLut && !pixelEffect && !needsManualEffects;
+      let cacheEntry: { canvas: HTMLCanvasElement; signature: string } | undefined;
+      let signature = "";
+      if (cacheable) {
+        signature = `${(element as HTMLVideoElement).currentSrc}|${this.videoFrameToken(element as HTMLVideoElement)}|${workWidth}x${workHeight}|${JSON.stringify(chromaKey)}|${mask ? JSON.stringify(mask) + JSON.stringify(transform.crop) : ""}`;
+        cacheEntry = this.keyedFrameCache.get(clipId!);
+        if (!cacheEntry) {
+          cacheEntry = { canvas: document.createElement("canvas"), signature: "" };
+          this.keyedFrameCache.set(clipId!, cacheEntry);
+        }
+        if (cacheEntry.canvas.width !== workWidth || cacheEntry.canvas.height !== workHeight) {
+          cacheEntry.canvas.width = workWidth;
+          cacheEntry.canvas.height = workHeight;
+          cacheEntry.signature = "";
+        }
+      }
+      const cacheHit = cacheEntry !== undefined && cacheEntry.signature === signature && (element as HTMLVideoElement).readyState >= 2;
+      const scratch = cacheHit ? null : cacheEntry ? cacheEntry.canvas.getContext("2d", { willReadFrequently: true }) : this.chromaKeyCanvas(workWidth, workHeight);
+      if (cacheHit) source = cacheEntry!.canvas;
       if (scratch) {
         scratch.clearRect(0, 0, workWidth, workHeight);
         scratch.drawImage(element, 0, 0, workWidth, workHeight);
@@ -2461,6 +2517,7 @@ export class PlaybackEngine {
         if (needsManualEffects) applyManualEffects(imageData, { ...effects, blur: 0 });
         scratch.putImageData(imageData, 0, 0);
         source = scratch.canvas;
+        if (cacheEntry) cacheEntry.signature = signature;
         if (needsManualEffects && effects.blur > 0) {
           // `effects.blur` is in sequence pixels (export blurs AFTER scaling the clip to its on-screen
           // size) but this buffer is still at SOURCE resolution — convert, or a 4K source would get a
@@ -2505,6 +2562,51 @@ export class PlaybackEngine {
       box.height
     );
     context.restore();
+  }
+
+  /** For an AI video-cutout clip playing over its own original clip: the cutout file's time that matches the frame the ORIGINAL's
+   *  video element is showing right now, or `null` when they can't be paired (no original overlapping, speed changes, the
+   *  original isn't ready, or a cutout made before `sourceStart` was recorded) — then the cutout follows the master clock. */
+  private cutoutFollowTime(clip: Clip, time: number): number | null {
+    const project = this.host.getProject();
+    if (!project || clip.reverse || (clip.speed !== undefined && clip.speed !== 1) || (clip.speedCurve && clip.speedCurve.length >= 2)) return null;
+    const origin = project.assets.find((a) => a.id === clip.assetId)?.aiOrigin;
+    if (!origin || origin.step.tool !== "video-cutout" || origin.step.sourceStart === undefined) return null;
+    for (const track of project.sequence.tracks) {
+      if (track.kind !== "video") continue;
+      for (const other of track.clips) {
+        if (other.id === clip.id || other.assetId !== origin.sourceAssetId || other.reverse) continue;
+        if ((other.speed !== undefined && other.speed !== 1) || (other.speedCurve && other.speedCurve.length >= 2)) continue;
+        if (time < other.timelineStart || time >= other.timelineStart + (other.sourceOut - other.sourceIn)) continue;
+        const pooled = this.pool.get(other.id)?.element;
+        if (!(pooled instanceof HTMLVideoElement) || pooled.seeking || pooled.readyState < 2) return null;
+        const matched = pooled.currentTime - origin.step.sourceStart;
+        return matched >= 0 ? matched : null;
+      }
+    }
+    return null;
+  }
+
+  /** Per clip: the last keyed frame and what it was made from (see `drawTransformed`). Dropped with the clip's pooled element. */
+  private keyedFrameCache = new Map<string, { canvas: HTMLCanvasElement; signature: string }>();
+  private frameCounters = new WeakMap<HTMLVideoElement, number>();
+
+  /** A value that changes whenever the video presents a NEW frame. Uses `requestVideoFrameCallback` where the browser has it (a
+   *  loop is started on first use); otherwise the playback time, which changes on every read while playing and so never
+   *  gives a cache hit — the pre-cache behaviour. */
+  private videoFrameToken(video: HTMLVideoElement): string {
+    const withCallback = video as HTMLVideoElement & { requestVideoFrameCallback?: (callback: (now: number, metadata: { presentedFrames: number }) => void) => number };
+    if (typeof withCallback.requestVideoFrameCallback !== "function") return `t${video.currentTime}`;
+    if (!this.frameCounters.has(video)) {
+      this.frameCounters.set(video, 0);
+      const tick = (_now: number, metadata: { presentedFrames: number }) => {
+        this.frameCounters.set(video, metadata.presentedFrames);
+        withCallback.requestVideoFrameCallback!(tick);
+      };
+      withCallback.requestVideoFrameCallback(tick);
+    }
+    // While paused/seeking no frames are presented; the current time tells a seek apart from a repeat.
+    return `f${this.frameCounters.get(video)}@${video.paused ? video.currentTime : ""}`;
   }
 
   private outlineCanvasEl: HTMLCanvasElement | null = null;
