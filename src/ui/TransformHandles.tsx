@@ -8,7 +8,7 @@ import { findAsset, findClip } from "../project/createProject.ts";
 import { DEFAULT_CLIP_MASK, type ClipMask, type ClipTransform } from "../project/types.ts";
 import type { AlignBox, AlignmentGuide } from "../playback/alignmentGuides.ts";
 import { computeAlignmentGuides } from "../playback/alignmentGuides.ts";
-import { clampPointToRect, computeTransformedBox, cropAfterEdgeDrag, rotatedPoint, type CropEdge } from "../playback/transformGeometry.ts";
+import { clampPointToRect, computeTransformedBox, cropAfterEdgeDrag, rotatedPoint, snapRotationDegrees, type CropEdge } from "../playback/transformGeometry.ts";
 import { computeVisibleClipBoxes } from "../playback/visibleClips.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
@@ -27,6 +27,13 @@ import { useIsMobile } from "./useIsMobile.ts";
  *  must come to another clip's or the frame's before a guide line appears and the drag snaps to it —
  *  same reasoning and same value as the timeline's own `SNAP_PIXELS`. */
 const ALIGN_SNAP_PIXELS = 8;
+
+/** Degrees a free-rotate drag may land from a cardinal angle (0/90/180/270/360, and every quarter
+ *  turn beyond in a multi-turn spin) and still snap to it exactly — see `beginDrag`'s own "rotate"
+ *  branch. Loose enough to catch a natural drag stopping "around" a right angle without hunting for
+ *  the exact pixel, tight enough that a deliberate off-angle rotation (say, 80°) is never dragged
+ *  into snapping unintentionally. */
+const ROTATION_SNAP_DEGREES = 4;
 
 /** Pixels the pointer must travel before a press counts as a drag rather than a stray click — same
  *  reasoning and same threshold as `TimelineClip`'s own `DRAG_THRESHOLD`: without it, a slightly-shaky
@@ -232,6 +239,11 @@ export function TransformHandles({
   }
 
   const [guides, setGuides] = useState<AlignmentGuide[]>([]);
+  /** Only used to render the live degree readout during a free rotate drag (see `beginDrag`'s own
+   *  "rotate" branch) — `dragRef` itself is imperative and doesn't trigger a re-render on its own, but
+   *  every rotate-drag tick already calls `updatePreview` (a real `setState`), so this piggybacks on
+   *  that same render cycle rather than needing its own polling. */
+  const [isRotating, setIsRotating] = useState(false);
 
   // The playhead already drives a re-render every animation frame during playback, so the handles'
   // position (which reads `canvas.getBoundingClientRect()` fresh on every render) stays correct while
@@ -420,6 +432,7 @@ export function TransformHandles({
   function beginDrag(startEvent: React.MouseEvent | React.TouchEvent, mode: DragMode, corner?: { x: number; y: number }) {
     startEvent.stopPropagation();
     preventDefaultIfMouse(startEvent);
+    if (mode === "rotate") setIsRotating(true);
     const origin = resolved!.savedTransform;
     const start = clientPoint(startEvent);
     const startAngle = Math.atan2(start.y - cssCenterY, start.x - cssCenterX);
@@ -551,7 +564,8 @@ export function TransformHandles({
       } else if (drag.mode === "rotate") {
         setGuides([]);
         const angle = Math.atan2(point.y - drag.centerScreenY, point.x - drag.centerScreenX);
-        updatePreview({ ...drag.origin, rotationDeg: ((angle - drag.startAngleOffset) * 180) / Math.PI });
+        const rawDeg = ((angle - drag.startAngleOffset) * 180) / Math.PI;
+        updatePreview({ ...drag.origin, rotationDeg: snapRotationDegrees(rawDeg, ROTATION_SNAP_DEGREES) });
       }
     }
 
@@ -562,6 +576,7 @@ export function TransformHandles({
       const final = previewRef.current;
       updatePreview(null);
       setGuides([]);
+      setIsRotating(false);
       if (!drag?.moved || !final) return;
 
       // A group move: this clip is one of SEVERAL selected, all live-tracked together during the
@@ -712,7 +727,8 @@ export function TransformHandles({
       const dx = point.x - start.x;
       if (!moved && Math.abs(dx) < DRAG_THRESHOLD) return;
       moved = true;
-      updatePreview({ ...origin, rotationDeg: origin.rotationDeg + dx * 0.25 });
+      const rawDeg = origin.rotationDeg + dx * 0.25;
+      updatePreview({ ...origin, rotationDeg: snapRotationDegrees(rawDeg, ROTATION_SNAP_DEGREES) });
       if ("cancelable" in moveEvent && moveEvent.cancelable) moveEvent.preventDefault();
     }
 
@@ -1215,6 +1231,25 @@ export function TransformHandles({
           >
             <CanvasRotateHandleIcon />
           </div>
+          {/* Live angle readout — same "small dark pill, tabular-nums" style crop mode's own rotation
+              ruler already uses for the identical purpose, just anchored to the free-rotate handle's
+              own position instead of a fixed corner, since this handle can be anywhere around the
+              clip. Only rendered while actively dragging it — a static label sitting there at rest
+              would just be visual noise for a clip that isn't rotated at all. */}
+          {isRotating && (
+            <div
+              aria-hidden
+              style={{
+                position: "fixed",
+                left: Math.round(rotatePoint.x),
+                top: Math.round(rotatePoint.y) - HANDLE_SIZE / 2 - 22,
+                zIndex: 41,
+              }}
+              className="pointer-events-none -translate-x-1/2 whitespace-nowrap rounded bg-black/70 px-1.5 py-0.5 text-[11px] tabular-nums text-white shadow"
+            >
+              {transform.rotationDeg.toFixed(1)}°
+            </div>
+          )}
         </>
       )}
     </>

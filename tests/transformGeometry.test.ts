@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { IDENTITY_TRANSFORM } from "../src/project/types.ts";
-import { clampPointToRect, computeTransformedBox, cropAfterEdgeDrag, rotatedPoint } from "../src/playback/transformGeometry.ts";
+import { clampPointToRect, computeTransformedBox, cropAfterEdgeDrag, rotatedPoint, snapRotationDegrees } from "../src/playback/transformGeometry.ts";
 import { closeTo } from "./fixture.ts";
 
 describe("computeTransformedBox", () => {
@@ -172,5 +172,32 @@ describe("cropAfterEdgeDrag", () => {
   it("never crosses the opposing edge or produces a negative crop", () => {
     assert.equal(cropAfterEdgeDrag(base, "left", -1000, 0, 200, 100).left, 0);
     assert.ok(closeTo(cropAfterEdgeDrag(base, "left", 1000, 0, 200, 100).left, 0.88));
+  });
+});
+
+describe("snapRotationDegrees", () => {
+  it("snaps to a cardinal angle within tolerance", () => {
+    assert.equal(snapRotationDegrees(2, 4), 0);
+    assert.equal(snapRotationDegrees(-2, 4), 0);
+    assert.equal(snapRotationDegrees(88, 4), 90);
+    assert.equal(snapRotationDegrees(92, 4), 90);
+    assert.equal(snapRotationDegrees(178, 4), 180);
+    assert.equal(snapRotationDegrees(272, 4), 270);
+    assert.equal(snapRotationDegrees(357, 4), 360);
+  });
+
+  it("leaves a deliberate off-angle rotation untouched, just outside tolerance", () => {
+    assert.equal(snapRotationDegrees(85, 4), 85);
+    assert.equal(snapRotationDegrees(45, 4), 45);
+  });
+
+  it("snaps every quarter turn of a multi-turn (unwrapped) spin, not just the first", () => {
+    assert.equal(snapRotationDegrees(451, 4), 450);
+    assert.equal(snapRotationDegrees(-451, 4), -450);
+  });
+
+  it("is exact at zero tolerance — only a perfect cardinal angle snaps", () => {
+    assert.equal(snapRotationDegrees(90, 0), 90);
+    assert.equal(snapRotationDegrees(90.5, 0), 90.5);
   });
 });

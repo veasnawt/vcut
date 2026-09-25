@@ -128,3 +128,18 @@ export function clampPointToRect(
     y: Math.min(rect.bottom - marginY, Math.max(rect.top + marginY, point.y)),
   };
 }
+
+/** Snaps a raw (possibly multi-turn, unwrapped — see `ClipTransform.rotationDeg`'s own doc comment)
+ *  rotation to the nearest quarter turn (0/90/180/270/360, and every multiple of 90 beyond via plain
+ *  `Math.round` on the unwrapped value, which handles a multi-turn spin for free) whenever it lands
+ *  within `toleranceDeg` of one. Returns `rawDeg` unchanged otherwise. Shared by `TransformHandles`'
+ *  free-rotate handle and its crop-mode straighten ruler, so the two drags can never disagree on when
+ *  a rotation counts as "basically a right angle." */
+export function snapRotationDegrees(rawDeg: number, toleranceDeg: number): number {
+  // `|| 0` folds a `-0` result (a small negative `rawDeg` rounding to `-0 * 90`) back to plain `0` —
+  // behaviorally identical either way (`-0 === 0`, and a CSS `rotate(-0deg)` renders the same as
+  // `rotate(0deg)`), but `-0` is a genuine surprise for anything comparing the RETURNED value with
+  // `Object.is`/strict-equal test assertions, so it's worth not leaking past this function at all.
+  const nearestQuarterTurn = Math.round(rawDeg / 90) * 90 || 0;
+  return Math.abs(rawDeg - nearestQuarterTurn) <= toleranceDeg ? nearestQuarterTurn : rawDeg;
+}
