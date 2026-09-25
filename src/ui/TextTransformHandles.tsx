@@ -9,6 +9,7 @@ import type { TextStyle } from "../project/types.ts";
 import { DEFAULT_TEXT_STYLE } from "../project/types.ts";
 import type { AlignBox, AlignmentGuide } from "../playback/alignmentGuides.ts";
 import { computeAlignmentGuides } from "../playback/alignmentGuides.ts";
+import { scaleTextStyle } from "../project/textStyleScale.ts";
 import { computeTextBlock } from "../playback/textLayout.ts";
 import { clampPointToRect, rotatedPoint } from "../playback/transformGeometry.ts";
 import { computeVisibleClipBoxes } from "../playback/visibleClips.ts";
@@ -328,7 +329,7 @@ export function TextTransformHandles({
       const current = pinchStyleRef.current;
       if (!current) return;
       const fontSize = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, current.fontSize * factor));
-      const next = { ...current, fontSize };
+      const next = scaleTextStyle(current, fontSize);
       pinchStyleRef.current = next;
       previewRef.current = next;
       setPreview(next);
@@ -518,7 +519,7 @@ export function TextTransformHandles({
         const distance = Math.hypot(point.x - drag.centerScreenX, point.y - drag.centerScreenY);
         const ratio = drag.startDistance > 0 ? distance / drag.startDistance : 1;
         const fontSize = Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, drag.origin.fontSize * ratio));
-        updatePreview({ ...drag.origin, fontSize });
+        updatePreview(scaleTextStyle(drag.origin, fontSize));
       } else {
         setGuides([]);
         const angle = Math.atan2(point.y - drag.centerScreenY, point.x - drag.centerScreenX);
