@@ -34,7 +34,7 @@ Last updated 2026-09-25.
 | P1-13 Long audio can run the browser out of memory | Done — tracks whose decoded size would exceed ~200MB (about 8.7 min stereo) play through an `<audio>` element instead of being decoded; the decoded-buffer cache now has a byte budget (scaled by device memory) and never evicts a buffer that is playing. Proven with a 12-minute file (0 decodes) vs a 1-minute file (decoded). Reversed clips of huge files still need a decode |
 | P1-14 Mobile import loads the whole file into memory | Done in code — native import now writes the file in 4MB slices (first written, rest appended), so memory stays flat instead of ~2.3x the file size; a failed import removes the partial file. Unit-tested with a fake filesystem; NOT run on a real device, and it only reaches phones with the next mobile app release |
 | P1-15 No CI | Done — `.github/workflows/vcut-ci.yml` runs typecheck, the full suite (with a full-featured FFmpeg), studio lint and the production build on every push / PR |
-| P1-16 BP Studio embed may be blocked by `frame-ancestors` | Unchecked |
+| P1-16 BP Studio embed may be blocked | Fixed — BP does embed VCut, and the blanket `frame-ancestors 'none'` + `X-Frame-Options: DENY` blocked it everywhere. Off the hosted deployment VCut is now framable from loopback origins only; vcut.io stays un-framable |
 
 ## Shipped since the audit (not in the original list)
 
