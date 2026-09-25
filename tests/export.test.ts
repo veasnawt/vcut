@@ -12,6 +12,7 @@ import {
   setClipEffectsKeyframes,
   setClipGain,
   setClipLut,
+  setClipMask,
   setClipPixelEffect,
   setClipMuted,
   setClipTextAnimation,
@@ -3441,5 +3442,69 @@ describe("buildExportPlan routes a styled (non-Khmer) text clip through the brow
     const withoutWindows = buildExportPlan(project, options);
     const graphWithout = filterGraph(withoutWindows.args);
     assert.ok(graphWithout.includes("drawtext="), "with no windows supplied, a styled clip still falls through to drawtext rather than failing");
+  });
+});
+
+// A clip mask used to run a single full-resolution geq=r=..:g=..:b=..:a=.. pass -- expensive, since
+// geq's per-pixel cost scales with the buffer it's given, and a masked clip is routed through this
+// SAME full "transform" chain (buildTransformFilters) as every transform/effects/LUT clip, so the
+// buffer is the clip's own cropped SOURCE resolution, which can be 4K+. Replaced with a quarter-
+// resolution alpha computation (the mask's own expression is resolution-independent, expressed in
+// X/W,Y/H fractions) upscaled back via scale2ref -- verified directly against the real bundled FFmpeg
+// binary before this shipped (average alpha-channel error under 1/255 against a full-res reference).
+describe("buildExportPlan with a clip mask", () => {
+  it("keeps the untransformed scale+pad chain when no clip has a mask (regression)", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+
+    const graph = filterGraph(plan(project).args);
+
+    assert.ok(!graph.includes("alphamerge"), "a mask-less clip must not go through the mask chain");
+    assert.ok(!graph.includes("rotate="), "a mask-less clip must not go through the full transform chain");
+  });
+
+  it("routes a masked clip through split -> quarter-res geq -> scale2ref -> alphamerge, not a single full-res geq", () => {
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    project = setClipMask(project, clip.id, { shape: "ellipse", centerX: 0.5, centerY: 0.5, width: 0.6, height: 0.6, feather: 0.1, invert: false });
+
+    const graph = filterGraph(plan(project).args);
+
+    assert.ok(graph.includes("split=2"), "expects the cropped clip to be split into a color and a mask-source branch");
+    assert.ok(graph.includes("alphaextract"), "expects the source's own real alpha to be preserved (and multiplied by the mask), not discarded");
+    assert.ok(graph.includes("scale=iw*0.25:ih*0.25"), "expects the mask's own alpha to be computed at reduced resolution");
+    assert.ok(graph.includes("scale2ref="), "expects the small alpha plane to be upscaled back via scale2ref");
+    assert.ok(graph.includes("alphamerge"), "expects the upscaled alpha to be merged back onto the full-resolution color");
+    assert.ok(!/geq=r=.*g=.*b=.*a=/.test(graph), "the old single-pass full-resolution geq=r:g:b:a= form should no longer appear");
+    assert.match(graph, /geq=lum='lum\(X,Y\)\*\(/, "the new mask geq multiplies the source's real alpha by the mask factor, not just a grayscale alpha plane");
+    // No leading comma between the fresh `[..._masked]` label and the filter that continues from it
+    // -- a real, confirmed bug caught only by a real FFmpeg run (`editingTools.test.ts`'s own
+    // "renders flip + reverse + feathered mask + speed curve" test), not by any string-shape
+    // assertion before this one: `[label],filtername=` is invalid FFmpeg syntax (an empty filter
+    // name between the comma and the label) and failed outright with "No such filter: ''" the moment
+    // a masked clip combined with anything else (reverse + a speed curve, in the case that found it).
+    assert.ok(!/_masked\],/.test(graph), "must not emit a comma directly after the masked-clip label");
+  });
+
+  it("computes the same ellipse/rectangle, feather, and invert expressions as before, just as a lum= plane", () => {
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+
+    const ellipse = filterGraph(plan(setClipMask(project, clip.id, { shape: "ellipse", centerX: 0.5, centerY: 0.5, width: 0.6, height: 0.6, feather: 0, invert: false })).args);
+    assert.match(ellipse, /hypot\(/, "an ellipse mask should use hypot() for its radial falloff");
+
+    const rectangle = filterGraph(plan(setClipMask(project, clip.id, { shape: "rectangle", centerX: 0.5, centerY: 0.5, width: 0.6, height: 0.6, feather: 0, invert: false })).args);
+    assert.ok(!rectangle.includes("hypot("), "a rectangle mask should not use hypot()");
+
+    const feathered = filterGraph(plan(setClipMask(project, clip.id, { shape: "ellipse", centerX: 0.5, centerY: 0.5, width: 0.6, height: 0.6, feather: 0.2, invert: false })).args);
+    assert.ok(feathered.includes("clip("), "a feathered mask should soften via clip(), not a hard gte() cutoff");
+
+    const hardEdge = filterGraph(plan(setClipMask(project, clip.id, { shape: "ellipse", centerX: 0.5, centerY: 0.5, width: 0.6, height: 0.6, feather: 0, invert: false })).args);
+    assert.ok(hardEdge.includes("gte("), "an unfeathered mask should use a hard gte() cutoff");
+
+    const inverted = filterGraph(plan(setClipMask(project, clip.id, { shape: "ellipse", centerX: 0.5, centerY: 0.5, width: 0.6, height: 0.6, feather: 0, invert: true })).args);
+    assert.match(inverted, /lum\(X,Y\)\*\(1-\(/, "an inverted mask should wrap the amount expression in 1-(...)");
   });
 });

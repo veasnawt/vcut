@@ -81,7 +81,11 @@ describe("end-to-end clip editing tools", () => {
     const mask = { ...DEFAULT_CLIP_MASK, shape: "ellipse" as const, centerX: 0.4, feather: 0.08 };
     const changed = stack.execute(project, new SetClipMaskCommand(clip.id, mask));
     assert.deepEqual(deserializeProject(serializeProject(changed)).sequence.tracks[0].clips[0].mask, mask);
-    assert.match(graph(changed), /geq=.*alpha\(X,Y\)/);
+    // Computed at reduced resolution (see buildExportPlan.ts's own doc comment on why), so the mask's
+    // own alpha expression now lives inside a `geq=lum=` call multiplying the source's real,
+    // `alphaextract`ed alpha (`lum(X,Y)`) rather than the old single-pass `geq=...:a='alpha(X,Y)*...'`.
+    assert.match(graph(changed), /alphaextract/);
+    assert.match(graph(changed), /geq=lum='lum\(X,Y\)\*/);
     assert.equal(stack.undo(changed).sequence.tracks[0].clips[0].mask, undefined);
   });
 
