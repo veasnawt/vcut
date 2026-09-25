@@ -236,6 +236,15 @@ export interface TextStyle {
   wordTiltDeg?: number;
   /** Pixels each word is lifted or dropped from the baseline, alternating (odd words up, even words down). */
   wordBounce?: number;
+  /** A filled bubble drawn behind words, cycled like `wordColors` (word 1 gets the first entry, and so on).
+   *  `"transparent"` (or any empty entry) means no badge for that word — so `["transparent", "#ffe066"]` puts a
+   *  yellow bubble behind every second word, the "MY" in "SKINCARE MY DAY". Drawn under the outlines, with the
+   *  word's own lean and lift. */
+  wordBadgeColors?: string[];
+  /** The badge's shape: a rounded `pill` (default) or an `oval`. */
+  wordBadgeShape?: "pill" | "oval";
+  /** Colour of a thin outline around each badge; absent = no outline. */
+  wordBadgeOutline?: string;
   /** Hex; absent means no drop shadow. */
   shadowColor?: string;
   /** Pixels; only meaningful when `shadowColor` is set. FFmpeg's `drawtext` shadow is a hard-edged

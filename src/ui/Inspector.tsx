@@ -93,6 +93,7 @@ import { defaultFontIdFor, FontPickerGrid } from "./FontPickerGrid.tsx";
 import { FlipHorizontalIcon, FlipVerticalIcon, MaskEllipseIcon, MaskRectangleIcon } from "./TransformHandles.tsx";
 import { KeyframeTrack } from "./KeyframeTrack.tsx";
 import { NumberField } from "./NumberField.tsx";
+import { WordStyleControls } from "./WordStyleControls.tsx";
 import { PickerTabs } from "./PickerTabs.tsx";
 import { SpeedCurveEditor } from "./SpeedCurveEditor.tsx";
 import { TextAnimationPickerGrid } from "./TextAnimationPickerGrid.tsx";
@@ -1832,6 +1833,7 @@ export function Inspector() {
                               />
                             </label>
                           )}
+                          <WordStyleControls style={style} onPatch={(patch) => patchTextStyle(asset.id, content, patch)} />
                           <label className="flex items-center justify-between gap-2 py-1.5 text-[12px] text-white/70">
                             <span>{t("Outline")}</span>
                             <input

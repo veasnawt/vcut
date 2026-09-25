@@ -83,6 +83,9 @@ export interface TextStylePreset {
   wordColors?: string[];
   wordTiltDeg?: number;
   wordBounce?: number;
+  wordBadgeColors?: string[];
+  wordBadgeShape?: "pill" | "oval";
+  wordBadgeOutline?: string;
 
   // Shadows & Glow
   shadowColor?: string;
@@ -495,6 +498,117 @@ export const TEXT_STYLE_PRESETS: TextStylePreset[] = [
     strokeColor2: "#a3306b",
     strokeWidth2: 2,
     shadows: [{ color: "rgba(163,48,107,0.4)", offsetX: 0, offsetY: 6, blur: 8 }],
+  },
+
+  {
+    id: "sticker-skincare-badge",
+    label: "Skincare Bubble",
+    category: "sticker",
+    tags: ["sticker","words","badge","bubble","lockup"],
+    fontFamily: "fredoka",
+    bold: true,
+    color: "#ff5f8f",
+    wordColors: ["#ff5f8f", "#4a1d3a", "#ff9a3d"],
+    wordTiltDeg: 3,
+    wordBounce: 4,
+    wordBadgeColors: ["transparent", "#ffe066", "transparent"],
+    wordBadgeShape: "oval",
+    wordBadgeOutline: "#ffffff",
+    strokeColor: "#ffffff",
+    strokeWidth: 6,
+    strokeColor2: "#7a1f4a",
+    strokeWidth2: 2,
+    shadows: [{ color: "rgba(122,31,74,0.45)", offsetX: 0, offsetY: 6, blur: 8 }],
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  {
+    id: "sticker-purple-badge",
+    label: "Lilac Bubble",
+    category: "sticker",
+    tags: ["sticker","words","badge","purple","lockup"],
+    fontFamily: "fredoka",
+    bold: true,
+    color: "#8b5cf6",
+    wordColors: ["#8b5cf6", "#3b1a72"],
+    wordTiltDeg: 3,
+    wordBounce: 4,
+    wordBadgeColors: ["transparent", "#c4b5fd"],
+    wordBadgeShape: "pill",
+    wordBadgeOutline: "#ffffff",
+    strokeColor: "#ffffff",
+    strokeWidth: 6,
+    strokeColor2: "#3b1a72",
+    strokeWidth2: 2,
+    shadows: [{ color: "rgba(59,26,114,0.45)", offsetX: 0, offsetY: 6, blur: 8 }],
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  {
+    id: "sticker-mint-badge",
+    label: "Mint Bubble",
+    category: "sticker",
+    tags: ["sticker","words","badge","mint","lockup"],
+    fontFamily: "fredoka",
+    bold: true,
+    color: "#0f766e",
+    wordColors: ["#0f766e", "#0b3d3a"],
+    wordTiltDeg: 3,
+    wordBounce: 4,
+    wordBadgeColors: ["transparent", "#6ee7b7"],
+    wordBadgeShape: "pill",
+    wordBadgeOutline: "#ffffff",
+    strokeColor: "#ffffff",
+    strokeWidth: 6,
+    strokeColor2: "#1f5a49",
+    strokeWidth2: 2,
+    shadows: [{ color: "rgba(31,90,73,0.4)", offsetX: 0, offsetY: 6, blur: 8 }],
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  {
+    id: "sticker-blush-badge",
+    label: "Blush Label",
+    category: "sticker",
+    tags: ["sticker","words","badge","pink","lockup"],
+    fontFamily: "fredoka",
+    bold: true,
+    color: "#ff5f8f",
+    wordColors: ["#ff5f8f", "#ffffff"],
+    wordTiltDeg: 3,
+    wordBounce: 4,
+    wordBadgeColors: ["transparent", "#ff5f8f"],
+    wordBadgeShape: "pill",
+    wordBadgeOutline: "#ffffff",
+    strokeColor: "#ffffff",
+    strokeWidth: 6,
+    strokeColor2: "#a3306b",
+    strokeWidth2: 2,
+    shadows: [{ color: "rgba(163,48,107,0.45)", offsetX: 0, offsetY: 6, blur: 8 }],
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  {
+    id: "sticker-sunny-badge",
+    label: "Sunny Bubble",
+    category: "sticker",
+    tags: ["sticker","words","badge","yellow","lockup"],
+    fontFamily: "fredoka",
+    bold: true,
+    color: "#ff7a45",
+    wordColors: ["#ff7a45", "#5a2a00", "#ff7a45"],
+    wordTiltDeg: 3,
+    wordBounce: 4,
+    wordBadgeColors: ["transparent", "#ffe066", "transparent"],
+    wordBadgeShape: "oval",
+    wordBadgeOutline: "#ffffff",
+    strokeColor: "#ffffff",
+    strokeWidth: 6,
+    strokeColor2: "#8a3b00",
+    strokeWidth2: 2,
+    shadows: [{ color: "rgba(138,59,0,0.4)", offsetX: 0, offsetY: 6, blur: 8 }],
+    textTransform: "uppercase",
+    letterSpacing: 1,
   },
 
   // ─── 1. Trending & Popular ───────────────────────────────────────────────
@@ -1861,6 +1975,9 @@ export function validateTextStylePreset(raw: unknown): { valid: boolean; preset?
     ...(Array.isArray(r.wordColors) ? { wordColors: (r.wordColors as unknown[]).filter((c): c is string => typeof c === "string").slice(0, 8) } : null),
     ...(typeof r.wordTiltDeg === "number" && Number.isFinite(r.wordTiltDeg) ? { wordTiltDeg: r.wordTiltDeg } : null),
     ...(typeof r.wordBounce === "number" && Number.isFinite(r.wordBounce) ? { wordBounce: r.wordBounce } : null),
+    ...(Array.isArray(r.wordBadgeColors) ? { wordBadgeColors: (r.wordBadgeColors as unknown[]).filter((c): c is string => typeof c === "string").slice(0, 8) } : null),
+    ...(r.wordBadgeShape === "pill" || r.wordBadgeShape === "oval" ? { wordBadgeShape: r.wordBadgeShape } : null),
+    ...(typeof r.wordBadgeOutline === "string" ? { wordBadgeOutline: r.wordBadgeOutline } : null),
     ...(typeof r.shadowColor === "string" ? { shadowColor: r.shadowColor } : null),
     ...(typeof r.shadowOffsetX === "number" && Number.isFinite(r.shadowOffsetX) ? { shadowOffsetX: r.shadowOffsetX } : null),
     ...(typeof r.shadowOffsetY === "number" && Number.isFinite(r.shadowOffsetY) ? { shadowOffsetY: r.shadowOffsetY } : null),
@@ -1978,6 +2095,17 @@ export function applyTextStylePreset(
   else delete next.wordTiltDeg;
   if (preset.wordBounce) next.wordBounce = preset.wordBounce;
   else delete next.wordBounce;
+  if (preset.wordBadgeColors && preset.wordBadgeColors.length > 0) {
+    next.wordBadgeColors = [...preset.wordBadgeColors];
+    if (preset.wordBadgeShape) next.wordBadgeShape = preset.wordBadgeShape;
+    else delete next.wordBadgeShape;
+    if (preset.wordBadgeOutline) next.wordBadgeOutline = preset.wordBadgeOutline;
+    else delete next.wordBadgeOutline;
+  } else {
+    delete next.wordBadgeColors;
+    delete next.wordBadgeShape;
+    delete next.wordBadgeOutline;
+  }
 
   if (preset.shadowColor) {
     next.shadowColor = preset.shadowColor;

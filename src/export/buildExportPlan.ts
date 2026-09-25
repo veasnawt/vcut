@@ -1217,7 +1217,8 @@ export function needsTextStyleBrowserRender(style: TextStyle): boolean {
       // Per-word colour / tilt / bounce: `drawtext` has one fill colour per call and can't rotate single words.
       Boolean(style.wordColors && style.wordColors.length > 0) ||
       Boolean(style.wordTiltDeg) ||
-      Boolean(style.wordBounce)
+      Boolean(style.wordBounce) ||
+      Boolean(style.wordBadgeColors && style.wordBadgeColors.some((c) => c && c !== "transparent"))
   );
 }
 

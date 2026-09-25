@@ -287,7 +287,8 @@ export function drawTextFrame(
   // Per-word lettering (`wordColors` / `wordTiltDeg` / `wordBounce`): each word is drawn on its own with its own
   // fill colour, lean and lift — the look of a designed text sticker. It shares the per-unit drawing a cascade
   // animation uses (the two compose: a cascade in letter mode still knows which word each letter belongs to).
-  const wordStyled = !wordHighlight && Boolean((style.wordColors && style.wordColors.length > 0) || style.wordTiltDeg || style.wordBounce);
+  const hasBadges = Boolean(style.wordBadgeColors && style.wordBadgeColors.some((c) => c && c !== "transparent"));
+  const wordStyled = !wordHighlight && Boolean((style.wordColors && style.wordColors.length > 0) || style.wordTiltDeg || style.wordBounce || hasBadges);
   const unitMode: "letter" | "word" | null = unitAnimation && !wordHighlight ? unitAnimation.mode : wordStyled ? "word" : null;
   const unitLayout = unitMode ? layoutUnits(block.lines, unitMode) : null;
   const wordFill = (wordIndex: number): string | undefined =>
@@ -340,6 +341,56 @@ export function drawTextFrame(
     context.shadowOffsetX = style.shadowOffsetX;
     context.shadowOffsetY = style.shadowOffsetY;
     context.shadowBlur = style.shadowBlur ?? 0;
+  }
+
+  // Word badges (`wordBadgeColors`): a filled bubble behind chosen words, drawn FIRST so every outline, shadow
+  // and fill lands on top of it. Each badge leans and lifts with its word.
+  if (hasBadges && !wordHighlight) {
+    const badgeLayout = layoutUnits(block.lines, "word");
+    const padX = style.fontSize * 0.28;
+    const padY = style.fontSize * 0.1;
+    block.lines.forEach((line, i) => {
+      const y = firstBaseline + block.lineHeight * i;
+      const baseX = lineX(i);
+      for (const unit of badgeLayout[i]) {
+        const color = style.wordBadgeColors![unit.info.wordIndex % style.wordBadgeColors!.length];
+        if (!color || color === "transparent") continue;
+        const text = unit.text.trimEnd();
+        const x = baseX + context.measureText(line.slice(0, unit.start)).width;
+        const width = context.measureText(text).width;
+        const parity = unit.info.wordIndex % 2 === 0 ? 1 : -1;
+        const tilt = (style.wordTiltDeg ?? 0) * -parity;
+        const lift = (style.wordBounce ?? 0) * -parity;
+        const left = x - padX;
+        const top = y - style.fontSize * 0.86 - padY;
+        const w = width + padX * 2;
+        const h = style.fontSize * 1.06 + padY * 2;
+        context.save();
+        context.shadowColor = "transparent"; // the text's own shadow settings must not bleed onto the bubble
+        context.translate(0, lift);
+        context.translate(left + w / 2, top + h / 2);
+        if (tilt !== 0) context.rotate((tilt * Math.PI) / 180);
+        context.translate(-(left + w / 2), -(top + h / 2));
+        context.beginPath();
+        if (style.wordBadgeShape === "oval") {
+          const ellipse = (context as unknown as { ellipse?: (...args: number[]) => void }).ellipse;
+          if (typeof ellipse === "function") ellipse.call(context, left + w / 2, top + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+          else context.rect(left, top, w, h);
+        } else {
+          const roundRect = (context as unknown as { roundRect?: (...args: number[]) => void }).roundRect;
+          if (typeof roundRect === "function") roundRect.call(context, left, top, w, h, h / 2);
+          else context.rect(left, top, w, h);
+        }
+        context.fillStyle = color;
+        context.fill();
+        if (style.wordBadgeOutline) {
+          context.strokeStyle = style.wordBadgeOutline;
+          context.lineWidth = Math.max(2, style.fontSize * 0.06);
+          context.stroke();
+        }
+        context.restore();
+      }
+    });
   }
 
   // Secondary outer stroke (layered outlines)

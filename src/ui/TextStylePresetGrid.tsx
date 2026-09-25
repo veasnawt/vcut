@@ -71,6 +71,7 @@ function PresetThumbnail({
   );
   // A per-word style (multi-coloured lettering) needs at least two words to show what it does.
   const wordColors = preset.wordColors && preset.wordColors.length > 0 ? preset.wordColors : null;
+  const badgeColors = preset.wordBadgeColors && preset.wordBadgeColors.length > 0 ? preset.wordBadgeColors : null;
   const sampleText = wordColors
     ? preset.textTransform === "uppercase" || isAllCapFont
       ? "AB CD"
@@ -207,7 +208,17 @@ function PresetThumbnail({
           {wordColors
             ? sampleText.split(" ").map((word, i, all) => (
                 // Each word in its own colour, as the real style draws it (the gradient clip doesn't apply here).
-                <span key={i} style={{ color: wordColors[i % wordColors.length], WebkitTextFillColor: wordColors[i % wordColors.length], backgroundImage: "none" }}>
+                <span
+                  key={i}
+                  style={{
+                    color: wordColors[i % wordColors.length],
+                    WebkitTextFillColor: wordColors[i % wordColors.length],
+                    backgroundImage: "none",
+                    ...(badgeColors && badgeColors[i % badgeColors.length] && badgeColors[i % badgeColors.length] !== "transparent"
+                      ? { backgroundColor: badgeColors[i % badgeColors.length], borderRadius: preset.wordBadgeShape === "oval" ? "50%" : "999px", padding: "0 3px" }
+                      : null),
+                  }}
+                >
                   {word}
                   {i < all.length - 1 ? " " : ""}
                 </span>

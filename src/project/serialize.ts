@@ -152,6 +152,11 @@ function parseTextStyle(raw: unknown): TextStyle {
     ...(typeof r.wordBounce === "number" && Number.isFinite(r.wordBounce) && r.wordBounce !== 0
       ? { wordBounce: Math.max(-200, Math.min(200, r.wordBounce)) }
       : null),
+    ...(Array.isArray(r.wordBadgeColors) && r.wordBadgeColors.some((c) => typeof c === "string" && c && c !== "transparent")
+      ? { wordBadgeColors: (r.wordBadgeColors as unknown[]).map((c) => (typeof c === "string" && c ? c : "transparent")).slice(0, 8) }
+      : null),
+    ...(r.wordBadgeShape === "oval" ? { wordBadgeShape: "oval" as const } : null),
+    ...(typeof r.wordBadgeOutline === "string" && r.wordBadgeOutline ? { wordBadgeOutline: r.wordBadgeOutline } : null),
     ...(typeof r.shadowColor === "string" ? { shadowColor: r.shadowColor } : null),
     shadowOffsetX: num(r.shadowOffsetX, "text shadow offset", DEFAULT_TEXT_STYLE.shadowOffsetX),
     shadowOffsetY: num(r.shadowOffsetY, "text shadow offset", DEFAULT_TEXT_STYLE.shadowOffsetY),

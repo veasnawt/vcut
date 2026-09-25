@@ -11,6 +11,9 @@ import { emptyProject } from "./fixture.ts";
  *  the fill colour and total rotation in force when it happened. */
 function recordingContext() {
   const fills: { text: string; color: string; rotated: number }[] = [];
+  const events: string[] = [];
+  const badges: { color: string; shape: string }[] = [];
+  let pendingShape = "";
   let rotationTotal = 0;
   const stack: number[] = [];
   let fillStyle: unknown = "#000";
@@ -44,13 +47,23 @@ function recordingContext() {
     lineTo: () => {},
     stroke: () => {},
     fillRect: () => {},
-    strokeText: () => {},
-    fillText: (text: string) => void fills.push({ text, color: String(fillStyle), rotated: rotationTotal }),
+    rect: () => void (pendingShape = "rect"),
+    roundRect: () => void (pendingShape = "pill"),
+    ellipse: () => void (pendingShape = "oval"),
+    fill: () => {
+      badges.push({ color: String(fillStyle), shape: pendingShape });
+      events.push("badge");
+    },
+    strokeText: () => void events.push("stroke"),
+    fillText: (text: string) => {
+      events.push("text");
+      fills.push({ text, color: String(fillStyle), rotated: rotationTotal });
+    },
     measureText: (text: string) => ({ width: text.length * 10, actualBoundingBoxAscent: 20, actualBoundingBoxDescent: 5 }),
     createLinearGradient: () => ({ addColorStop: () => {} }),
     createRadialGradient: () => ({ addColorStop: () => {} }),
   };
-  return { ctx: ctx as unknown as CanvasRenderingContext2D, fills };
+  return { ctx: ctx as unknown as CanvasRenderingContext2D, fills, badges, events };
 }
 
 const plainStyle: TextStyle = { ...DEFAULT_TEXT_STYLE, color: "#111111" };
@@ -85,6 +98,58 @@ describe("per-word lettering (designed text stickers)", () => {
     drawTextFrame(ctx, 1080, 1920, "one two three", plainStyle, undefined, []);
     assert.deepEqual(fills.map((f) => f.text), ["one two three"]);
     assert.equal(fills[0].rotated, 0);
+  });
+});
+
+describe("word badges (a bubble behind chosen words)", () => {
+  const words = "skin my day";
+
+  it("draws a bubble only behind the words that have a colour, cycling the list", () => {
+    const { ctx, badges } = recordingContext();
+    drawTextFrame(ctx, 1080, 1920, words, { ...plainStyle, wordBadgeColors: ["transparent", "#ffe066", "transparent"] }, undefined, []);
+    assert.deepEqual(badges.map((b) => b.color), ["#ffe066"]);
+  });
+
+  it("honours the shape (pill by default, oval when asked)", () => {
+    const pill = recordingContext();
+    drawTextFrame(pill.ctx, 1080, 1920, words, { ...plainStyle, wordBadgeColors: ["#ffe066"] }, undefined, []);
+    assert.ok(pill.badges.every((b) => b.shape === "pill"));
+    const oval = recordingContext();
+    drawTextFrame(oval.ctx, 1080, 1920, words, { ...plainStyle, wordBadgeColors: ["#ffe066"], wordBadgeShape: "oval" }, undefined, []);
+    assert.ok(oval.badges.every((b) => b.shape === "oval"));
+  });
+
+  it("is drawn BEFORE the text, so the letters sit on top of it", () => {
+    const { ctx, events } = recordingContext();
+    drawTextFrame(ctx, 1080, 1920, words, { ...plainStyle, strokeColor: "#fff", wordBadgeColors: ["transparent", "#ffe066"] }, undefined, []);
+    assert.ok(events.indexOf("badge") >= 0 && events.indexOf("badge") < events.indexOf("stroke"), "badge before outlines");
+    assert.ok(events.indexOf("badge") < events.indexOf("text"), "badge before fill");
+  });
+
+  it("draws nothing extra when every entry is transparent", () => {
+    const { ctx, badges } = recordingContext();
+    drawTextFrame(ctx, 1080, 1920, words, { ...plainStyle, wordBadgeColors: ["transparent", "transparent"] }, undefined, []);
+    assert.equal(badges.length, 0);
+  });
+
+  it("routes badges through the browser-render export path", () => {
+    assert.equal(needsTextStyleBrowserRender({ ...plainStyle, wordBadgeColors: ["transparent", "#ffe066"] }), true);
+    assert.equal(needsTextStyleBrowserRender({ ...plainStyle, wordBadgeColors: ["transparent"] }), false);
+  });
+
+  it("survives a save and reload, and a plain preset clears it", () => {
+    const badgePreset = TEXT_STYLE_PRESETS.find((p) => p.id === "sticker-skincare-badge")!;
+    const styled = applyTextStylePreset(DEFAULT_TEXT_STYLE, badgePreset);
+    assert.deepEqual(styled.wordBadgeColors, badgePreset.wordBadgeColors);
+    assert.equal(styled.wordBadgeShape, "oval");
+    const project = emptyProject();
+    const asset = { id: "t", kind: "text" as const, name: "t", relPath: "", duration: 0, hasAudio: false, sizeBytes: 0, importedAt: 0, textContent: "hi", textStyle: styled };
+    const reloaded = deserializeProject(serializeProject({ ...project, assets: [...project.assets, asset] })).assets.find((a) => a.id === "t")!.textStyle!;
+    assert.deepEqual(reloaded.wordBadgeColors, badgePreset.wordBadgeColors);
+    const plain = TEXT_STYLE_PRESETS.find((p) => !p.wordColors && !p.wordBadgeColors && !p.wordTiltDeg && !p.wordBounce)!;
+    const cleared = applyTextStylePreset(styled, plain);
+    assert.equal(cleared.wordBadgeColors, undefined);
+    assert.equal(cleared.wordBadgeShape, undefined);
   });
 });
 
