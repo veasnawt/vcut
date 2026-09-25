@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { createClip } from "../src/project/createProject.ts";
 import { IDENTITY_COLOR_GRADING, IDENTITY_EFFECTS, IDENTITY_TEXT_CROP, IDENTITY_TRANSFORM } from "../src/project/types.ts";
 import type { Clip, ClipTransform, ColorGradingKeyframe, EffectsKeyframe, GainKeyframe, TextCropKeyframe, TransformKeyframe } from "../src/project/types.ts";
-import { hasColorGradingKeyframes, hasEffectsKeyframes, hasGainKeyframes, hasTextCropKeyframes, hasTransformKeyframes, resolveClipColorGrading, resolveClipEffects, resolveClipGain, resolveClipTransform, resolveTextCrop, upsertKeyframe } from "../src/timeline/keyframes.ts";
+import { clipHasAnyKeyframes, hasColorGradingKeyframes, hasEffectsKeyframes, hasGainKeyframes, hasTextCropKeyframes, hasTransformKeyframes, resolveClipColorGrading, resolveClipEffects, resolveClipGain, resolveClipTransform, resolveTextCrop, upsertKeyframe } from "../src/timeline/keyframes.ts";
 
 function clip(overrides: Partial<Clip> = {}): Clip {
   return { ...createClip({ assetId: "asset1", sourceIn: 0, sourceOut: 10, timelineStart: 0 }), ...overrides };
@@ -268,4 +268,23 @@ describe("upsertKeyframe", () => {
     const kfs = upsertKeyframe<ClipTransform>([], 1.0037, transform(), fps);
     assert.equal(kfs[0].time, Math.round(1.0037 * fps) / fps);
   });
+});
+
+// `Inspector` subscribes to the playhead only for a clip where this is true (a clip with none has no
+// value that can change as the playhead moves) -- a property group missing from this predicate would
+// leave that group's Inspector display frozen during playback, with no error. One case per field.
+describe("clipHasAnyKeyframes", () => {
+  const kf = [{ id: "k1", time: 1, value: {} }];
+  const fields = ["transformKeyframes", "effectsKeyframes", "colorGradingKeyframes", "textStyleKeyframes", "textCropKeyframes", "gainKeyframes"] as const;
+
+  it("is false for a clip with no keyframes, or only empty arrays", () => {
+    assert.equal(clipHasAnyKeyframes(clip()), false);
+    for (const field of fields) assert.equal(clipHasAnyKeyframes(clip({ [field]: [] } as Partial<Clip>)), false, `${field}: []`);
+  });
+
+  for (const field of fields) {
+    it(`is true when only ${field} has entries`, () => {
+      assert.equal(clipHasAnyKeyframes(clip({ [field]: kf } as Partial<Clip>)), true);
+    });
+  }
 });

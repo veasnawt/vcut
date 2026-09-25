@@ -27,6 +27,21 @@ export function hasTextCropKeyframes(clip: Clip): boolean {
   return (clip.textCropKeyframes?.length ?? 0) > 0;
 }
 
+/** Whether ANY of the six keyframe-able property groups has keyframes — i.e. whether a value derived
+ *  from this clip can change as the playhead moves at all. `Inspector` uses this to subscribe to the
+ *  playhead only when that's true (see its own comment). Must list every `*Keyframes` field on `Clip`:
+ *  a missed one would leave that property's Inspector display frozen during playback. */
+export function clipHasAnyKeyframes(clip: Clip): boolean {
+  return (
+    hasTransformKeyframes(clip) ||
+    hasGainKeyframes(clip) ||
+    hasEffectsKeyframes(clip) ||
+    hasColorGradingKeyframes(clip) ||
+    hasTextStyleKeyframes(clip) ||
+    hasTextCropKeyframes(clip)
+  );
+}
+
 function lerp(a: number, b: number, p: number): number {
   return a + (b - a) * p;
 }

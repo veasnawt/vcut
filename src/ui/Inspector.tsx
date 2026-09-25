@@ -63,6 +63,7 @@ import { useTranslation } from "../i18n/useTranslation.ts";
 import { formatTimecode } from "../timeline/time.ts";
 import { DEFAULT_WORD_HIGHLIGHT_COLOR } from "../timeline/textAnimation.ts";
 import {
+  clipHasAnyKeyframes,
   hasColorGradingKeyframes,
   hasEffectsKeyframes,
   hasGainKeyframes,
@@ -1173,11 +1174,18 @@ export function Inspector() {
   const applyTextAnimationToSelection = useEditorStore((s) => s.applyTextAnimationToSelection);
   const patchTextStyleForSelection = useEditorStore((s) => s.patchTextStyleForSelection);
   const fps = project?.sequence.fps ?? 30;
-  // Needed for the keyframe-armed branch below (`patchTransform`/`patchEffects`/their `preview*`
-  // siblings, and `KeyframeTrack`'s own live playhead tick) to know WHICH instant an edit targets.
-  // Same live re-render-during-playback cost `TransformHandles.tsx` already accepts for the identical
-  // reason — there's no way to know "is the playhead currently over a keyframe" without it.
-  const playhead = useEditorStore((s) => s.playhead);
+  // Reactive ONLY when the selected clip has keyframes of some kind: that's the one case where a value
+  // rendered below (`resolveClipTransform(clip, playhead - start)` etc.) actually changes as the
+  // playhead moves. For every other clip those resolvers ignore elapsed time entirely, so subscribing
+  // unconditionally re-rendered this whole ~3,000-line component on every animation frame during
+  // playback for nothing (`playhead` is written to the store 30-60x/sec — see `PlaybackEngine`). The
+  // constant 0 returned otherwise is never read for its value. Event handlers below that need the
+  // exact current instant (`patchTransform`, `previewTransform`, ...) call `livePlayhead()` instead
+  // of trusting this render-time snapshot, so they're correct in both cases; `KeyframeTrack` subscribes
+  // to the playhead itself for its own ruler marker and add/delete targets.
+  const selectedHasKeyframes = found ? clipHasAnyKeyframes(found.clip) : false;
+  const playhead = useEditorStore((s) => (selectedHasKeyframes ? s.playhead : 0));
+  const livePlayhead = () => useEditorStore.getState().playhead;
 
   /** Which sections are collapsed — shared across every clip selected in this session (collapse one
    *  once, it stays collapsed switching to the next clip too, which is what makes collapsing worth
@@ -1247,7 +1255,7 @@ export function Inspector() {
   function patchTransform(clipId: string, patch: Partial<ClipTransform>) {
     const clip = found?.clip;
     if (clip && hasTransformKeyframes(clip)) {
-      const elapsed = playhead - clip.timelineStart;
+      const elapsed = livePlayhead() - clip.timelineStart;
       const next = { ...resolveClipTransform(clip, elapsed), ...patch };
       run(new SetClipTransformKeyframesCommand(clipId, upsertKeyframe(clip.transformKeyframes!, elapsed, next, fps)));
     } else {
@@ -1267,14 +1275,14 @@ export function Inspector() {
    *  correctly whether or not keyframing is armed — no branch needed here, unlike `patchTransform`. */
   function previewTransform(clipId: string, patch: Partial<ClipTransform>) {
     const clip = found?.clip;
-    const current = clip ? resolveClipTransform(clip, playhead - clip.timelineStart) : IDENTITY_TRANSFORM;
+    const current = clip ? resolveClipTransform(clip, livePlayhead() - clip.timelineStart) : IDENTITY_TRANSFORM;
     setLivePreviewOverrides([{ clipId, transform: { ...current, ...patch } }]);
   }
 
   function patchCrop(clipId: string, patch: Partial<ClipTransform["crop"]>) {
     const clip = found?.clip;
     if (clip && hasTransformKeyframes(clip)) {
-      const elapsed = playhead - clip.timelineStart;
+      const elapsed = livePlayhead() - clip.timelineStart;
       const current = resolveClipTransform(clip, elapsed);
       const next = { ...current, crop: { ...current.crop, ...patch } };
       run(new SetClipTransformKeyframesCommand(clipId, upsertKeyframe(clip.transformKeyframes!, elapsed, next, fps)));
@@ -1287,7 +1295,7 @@ export function Inspector() {
 
   function previewCrop(clipId: string, patch: Partial<ClipTransform["crop"]>) {
     const clip = found?.clip;
-    const current = clip ? resolveClipTransform(clip, playhead - clip.timelineStart) : IDENTITY_TRANSFORM;
+    const current = clip ? resolveClipTransform(clip, livePlayhead() - clip.timelineStart) : IDENTITY_TRANSFORM;
     setLivePreviewOverrides([{ clipId, transform: { ...current, crop: { ...current.crop, ...patch } } }]);
   }
 
@@ -1300,7 +1308,7 @@ export function Inspector() {
   function patchEffects(clipId: string, patch: Partial<ClipEffects>) {
     const clip = found?.clip;
     if (clip && hasEffectsKeyframes(clip)) {
-      const elapsed = playhead - clip.timelineStart;
+      const elapsed = livePlayhead() - clip.timelineStart;
       const next = { ...resolveClipEffects(clip, elapsed), ...patch };
       run(new SetClipEffectsKeyframesCommand(clipId, upsertKeyframe(clip.effectsKeyframes!, elapsed, next, fps)));
     } else {
@@ -1316,7 +1324,7 @@ export function Inspector() {
   function setGain(clipId: string, gain: number) {
     const clip = found?.clip;
     if (clip && hasGainKeyframes(clip)) {
-      const elapsed = playhead - clip.timelineStart;
+      const elapsed = livePlayhead() - clip.timelineStart;
       run(new SetClipGainKeyframesCommand(clipId, upsertKeyframe(clip.gainKeyframes!, elapsed, gain, fps)));
     } else {
       run(new SetClipGainCommand(clipId, gain));
@@ -1326,7 +1334,7 @@ export function Inspector() {
   /** Same pattern as `previewTransform`, for `ClipEffects` instead. */
   function previewEffects(clipId: string, patch: Partial<ClipEffects>) {
     const clip = found?.clip;
-    const current = clip ? resolveClipEffects(clip, playhead - clip.timelineStart) : IDENTITY_EFFECTS;
+    const current = clip ? resolveClipEffects(clip, livePlayhead() - clip.timelineStart) : IDENTITY_EFFECTS;
     setLivePreviewOverrides([{ clipId, effects: { ...current, ...patch } }]);
   }
 
@@ -1336,7 +1344,7 @@ export function Inspector() {
   function patchColorGrading(clipId: string, next: ColorGrading) {
     const clip = found?.clip;
     if (clip && hasColorGradingKeyframes(clip)) {
-      const elapsed = playhead - clip.timelineStart;
+      const elapsed = livePlayhead() - clip.timelineStart;
       run(new SetClipColorGradingKeyframesCommand(clipId, upsertKeyframe(clip.colorGradingKeyframes!, elapsed, next, fps)));
     } else {
       run(new SetClipColorGradingCommand(clipId, next));
@@ -1361,7 +1369,7 @@ export function Inspector() {
     const baseStyle = project?.assets.find((a) => a.id === assetId)?.textStyle ?? DEFAULT_TEXT_STYLE;
     const clip = found?.clip;
     if (clip && hasTextStyleKeyframes(clip)) {
-      const elapsed = playhead - clip.timelineStart;
+      const elapsed = livePlayhead() - clip.timelineStart;
       const next = { ...resolveTextStyle(clip, elapsed, baseStyle), ...patch };
       run(new SetClipTextStyleKeyframesCommand(clip.id, upsertKeyframe(clip.textStyleKeyframes!, elapsed, next, fps)));
     } else {
@@ -1378,7 +1386,7 @@ export function Inspector() {
   function previewTextStyle(clipId: string, assetId: string, patch: Partial<TextStyle>) {
     const baseStyle = project?.assets.find((a) => a.id === assetId)?.textStyle ?? DEFAULT_TEXT_STYLE;
     const clip = found?.clip;
-    const current = clip ? resolveTextStyle(clip, playhead - clip.timelineStart, baseStyle) : baseStyle;
+    const current = clip ? resolveTextStyle(clip, livePlayhead() - clip.timelineStart, baseStyle) : baseStyle;
     setLivePreviewOverrides([{ clipId, textStyle: { ...current, ...patch } }]);
   }
 
@@ -1386,7 +1394,7 @@ export function Inspector() {
   function patchTextCrop(clipId: string, patch: Partial<TextCrop>) {
     const clip = found?.clip;
     if (clip && hasTextCropKeyframes(clip)) {
-      const elapsed = playhead - clip.timelineStart;
+      const elapsed = livePlayhead() - clip.timelineStart;
       const next = { ...resolveTextCrop(clip, elapsed), ...patch };
       run(new SetClipTextCropKeyframesCommand(clipId, upsertKeyframe(clip.textCropKeyframes!, elapsed, next, fps)));
     } else {
@@ -1400,7 +1408,7 @@ export function Inspector() {
    *  a keyframed value at draw time, so this needs no keyframe branch either. */
   function previewTextCrop(clipId: string, patch: Partial<TextCrop>) {
     const clip = found?.clip;
-    const current = clip ? resolveTextCrop(clip, playhead - clip.timelineStart) : IDENTITY_TEXT_CROP;
+    const current = clip ? resolveTextCrop(clip, livePlayhead() - clip.timelineStart) : IDENTITY_TEXT_CROP;
     setLivePreviewOverrides([{ clipId, textCrop: { ...current, ...patch } }]);
   }
 
@@ -1650,7 +1658,6 @@ export function Inspector() {
                           <KeyframeTrack
                             clip={clip}
                             property="textStyle"
-                            playhead={playhead}
                             fps={fps}
                             run={run}
                             textAsset={{ id: asset.id, content, style: baseStyle }}
@@ -1939,7 +1946,7 @@ export function Inspector() {
                               Left/Right), and the same `KeyframeTrack` stopwatch-arming pattern the
                               Transform/Effects/Color-Grading sections already use. */}
                           <p className="mb-1 mt-3 text-[11px] font-semibold uppercase tracking-wide text-white/30">{t("Crop")}</p>
-                          <KeyframeTrack clip={clip} property="textCrop" playhead={playhead} fps={fps} run={run} />
+                          <KeyframeTrack clip={clip} property="textCrop" fps={fps} run={run} />
                           <div className="flex gap-3">
                             <div className="flex-1">
                               <NumberField
@@ -2104,7 +2111,7 @@ export function Inspector() {
                     open={!collapsed.has("Transform")}
                     onToggle={() => toggleSection("Transform")}
                   >
-                    <KeyframeTrack clip={clip} property="transform" playhead={playhead} fps={fps} run={run} />
+                    <KeyframeTrack clip={clip} property="transform" fps={fps} run={run} />
                     {(() => {
                       // Resolved at the CURRENT PLAYHEAD — for a keyframed clip this is the
                       // interpolated value for whatever frame is actually showing, matching
@@ -2689,7 +2696,7 @@ export function Inspector() {
                     open={!collapsed.has("Filters")}
                     onToggle={() => toggleSection("Filters")}
                   >
-                    <KeyframeTrack clip={clip} property="effects" playhead={playhead} fps={fps} run={run} />
+                    <KeyframeTrack clip={clip} property="effects" fps={fps} run={run} />
                     {(() => {
                       // Resolved at the CURRENT PLAYHEAD — see the Transform section's own identical
                       // comment above.
@@ -2780,7 +2787,7 @@ export function Inspector() {
                     open={!collapsed.has("Color Grading")}
                     onToggle={() => toggleSection("Color Grading")}
                   >
-                    <KeyframeTrack clip={clip} property="colorGrading" playhead={playhead} fps={fps} run={run} />
+                    <KeyframeTrack clip={clip} property="colorGrading" fps={fps} run={run} />
                     {(() => {
                       // Resolved at the CURRENT PLAYHEAD — same reasoning as the Effects section's own
                       // identical comment above.
@@ -3109,7 +3116,7 @@ export function Inspector() {
                         through `AudioMixEngine`'s Web Audio graph rather than a plain element's native
                         `.volume`, so real amplification (not just attenuation) is genuinely possible;
                         see `setClipGain`'s own comment for why 400 specifically. */}
-                    <KeyframeTrack clip={clip} property="gain" playhead={playhead} fps={fps} run={run} />
+                    <KeyframeTrack clip={clip} property="gain" fps={fps} run={run} />
                     <NumberField
                       label={t("Volume")}
                       value={resolveClipGain(clip, playhead - clip.timelineStart)}

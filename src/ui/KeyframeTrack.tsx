@@ -43,9 +43,6 @@ import { frameDuration, snapToFrame } from "../timeline/time.ts";
 interface Props {
   clip: Clip;
   property: "transform" | "effects" | "gain" | "colorGrading" | "textStyle" | "textCrop";
-  /** The CURRENT playhead position, in the SAME absolute-timeline seconds `clip.timelineStart` is —
-   *  converted to clip-window-relative time internally, matching every other consumer of `Keyframe.time`. */
-  playhead: number;
   fps: number;
   run: (command: Command) => void;
   /** Required when `property === "textStyle"` — TextStyle's static value lives on the ASSET (not the
@@ -66,8 +63,13 @@ interface Props {
  *  `patchEffects`) automatically inserts-or-updates a keyframe at the CURRENT playhead instead of
  *  overwriting the single static value — this component only needs to render the ruler/diamonds and
  *  the stopwatch/add/delete/prev/next controls, not duplicate that auto-key logic. */
-export function KeyframeTrack({ clip, property, playhead, fps, run, textAsset }: Props) {
+export function KeyframeTrack({ clip, property, fps, run, textAsset }: Props) {
   const t = useTranslation();
+  // Subscribed HERE, not passed down from `Inspector` — this small component genuinely needs the live
+  // playhead (its ruler marker, add/delete/prev/next targets), but `Inspector` (~3,000 lines) didn't:
+  // it used to subscribe and pass this in, re-rendering that whole component every animation frame
+  // during playback purely to feed this one leaf. See `Inspector`'s own `playhead` comment.
+  const playhead = useEditorStore((s) => s.playhead);
   const duration = clipDuration(clip);
   const keyframes =
     property === "transform"
