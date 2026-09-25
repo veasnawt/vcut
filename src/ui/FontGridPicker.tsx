@@ -9,6 +9,7 @@ interface FontGridEntry {
   id: string;
   label: string;
   cssFamily: string;
+  khmer?: boolean;
 }
 
 /** General-purpose font grid+search picker for the Inspector's Properties panel (both the single-clip
@@ -46,7 +47,7 @@ export function FontGridPicker({
   const entries = useMemo<FontGridEntry[]>(
     () => [
       ...customFonts.map((f) => ({ id: f.id, label: f.name, cssFamily: f.cssFamily })),
-      ...FONT_REGISTRY.map((f) => ({ id: f.id, label: f.label, cssFamily: f.cssFamily })),
+      ...FONT_REGISTRY.map((f) => ({ id: f.id, label: f.label, cssFamily: f.cssFamily, khmer: f.khmer })),
     ],
     [customFonts]
   );
@@ -78,7 +79,7 @@ export function FontGridPicker({
               className="flex h-[42px] w-full items-center justify-center overflow-hidden rounded border border-white/10 bg-black/40 px-1 text-[15px] text-white"
               style={{ fontFamily: `"${font.cssFamily}"` }}
             >
-              {sampleTextFor(font.label, (font as { khmer?: boolean }).khmer)}
+              {sampleTextFor(font.label, font.khmer)}
             </span>
             <span className="truncate text-[10px] text-white/60">{font.label}</span>
           </button>

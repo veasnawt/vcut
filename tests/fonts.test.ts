@@ -131,3 +131,12 @@ describe("readAssFontMetrics", () => {
     assert.equal(readAssFontMetrics(new Uint8Array([1, 2, 3, 4])), null);
   });
 });
+
+describe("Khmer font flag", () => {
+  it("flags Khmer faces so pickers preview them with Khmer sample text (labels carry no tag)", () => {
+    const battambang = FONT_REGISTRY.find((f) => f.id === "battambang")!;
+    assert.equal(battambang.khmer, true);
+    assert.ok(!battambang.label.includes("Khmer"));
+    assert.ok(FONT_REGISTRY.filter((f) => f.khmer).length >= 25);
+  });
+});
