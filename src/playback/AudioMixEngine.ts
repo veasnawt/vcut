@@ -239,6 +239,26 @@ export class AudioMixEngine {
    *  clips' elements right away (`prepareElementClip`) — an element made only inside the Play tap has
    *  loaded nothing yet, and on an iPhone its first `play()` was aborted and the clip stayed silent. */
   private onElementFallback: ((assetId: string) => void) | undefined;
+  private onDecodeFailed: ((assetId: string) => void) | undefined;
+
+  /** Called when a file downloaded fine but `decodeAudioData` refused it (see `elementFallbackAssets`). */
+  setOnDecodeFailed(callback: (assetId: string) => void): void {
+    this.onDecodeFailed = callback;
+  }
+
+  /** Forget that `assetId` couldn't be decoded and try again from its (new) URL: the `<audio>`-element stand-in is stopped and the
+   *  clip goes back to the sample-accurate buffer path once decoding succeeds. */
+  retryAsset(assetId: string): void {
+    if (!this.elementFallbackAssets.delete(assetId)) return;
+    this.bufferCache.delete(assetId);
+    this.bufferInfo.delete(assetId);
+    this.bufferRetryAfter.delete(assetId);
+    this.bufferReported.delete(assetId);
+    for (const [clipId, node] of this.elementClipNodes) {
+      if (!node.element.paused) node.element.pause();
+      void clipId;
+    }
+  }
 
   constructor(
     getMediaUrl: (assetId: string) => string | null,
@@ -838,6 +858,7 @@ export class AudioMixEngine {
       if (info.bytes !== undefined) {
         this.elementFallbackAssets.add(assetId);
         this.onElementFallback?.(assetId);
+        this.onDecodeFailed?.(assetId);
       } else {
         this.bufferRetryAfter.set(assetId, performance.now() + BUFFER_RETRY_DELAY_MS);
       }

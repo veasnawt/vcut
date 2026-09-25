@@ -254,9 +254,12 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
         // project's own media.
         if (asset.bundledSfx) return sfxAssetUrl(asset.relPath);
         // A preview proxy (made when the browser couldn't play the original) replaces it for playback only.
-        return mediaUrl(state.projectId, (asset.kind === "video" && asset.proxyRelPath) || asset.relPath, Boolean(asset.libraryMediaId));
+        return mediaUrl(state.projectId, ((asset.kind === "video" || asset.kind === "audio") && asset.proxyRelPath) || asset.relPath, Boolean(asset.libraryMediaId));
       },
       onVideoUnplayable: (assetId) => void useEditorStore.getState().requestPlaybackProxy(assetId),
+      // An audio file Safari can play but not decode (AAC extracted from a video, most often) gets an MP3 copy so it can be mixed and
+      // scheduled exactly like other audio instead of drifting behind the picture through an <audio> element.
+      onAudioUndecodable: (assetId) => useEditorStore.getState().requestPlaybackProxy(assetId),
       spriteUrlFor: (assetId) => {
         const state = useEditorStore.getState();
         const asset = state.project?.assets.find((a) => a.id === assetId);

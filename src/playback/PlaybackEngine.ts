@@ -1031,6 +1031,9 @@ export interface PlaybackHost {
    *  asset. The host can respond by preparing a playable preview copy; the engine picks it up on its own once
    *  `mediaUrlFor` starts returning the new URL. */
   onVideoUnplayable?: (assetId: string) => void;
+  /** An audio file downloaded but couldn't be decoded here. Resolves once a decodable copy exists (its `proxyRelPath` is set), at
+   *  which point the engine tries decoding again from the new URL. */
+  onAudioUndecodable?: (assetId: string) => Promise<void> | void;
   /** Called once per page load, three seconds into playback over an audio-track clip, with the audio
    *  engine's own state (`phase: "playing-3s"` — see `maybeReportAudio`), and once per audio file whose
    *  load was slow, retried or failed (`phase: "buffer-settled"`). */
@@ -1217,6 +1220,15 @@ export class PlaybackEngine {
       (assetId) => this.prepareElementClips(assetId),
       (assetId) => this.host.getProject()?.assets.find((a) => a.id === assetId)?.duration ?? null
     );
+    this.audioMixEngine.setOnDecodeFailed((assetId) => {
+      if (this.audioProxyRequested.has(assetId) || !this.host.onAudioUndecodable) return;
+      this.audioProxyRequested.add(assetId);
+      void Promise.resolve(this.host.onAudioUndecodable(assetId)).then(() => {
+        // Only worth retrying if the asset now has a different (proxy) URL than the one that failed.
+        const asset = this.host.getProject()?.assets.find((a) => a.id === assetId);
+        if (asset?.proxyRelPath) this.audioMixEngine.retryAsset(assetId);
+      });
+    });
   }
 
   /** See `lastFrameComplete`. Read by the export dialog (`ExportDialog.tsx`), which scrubs this engine
@@ -2637,6 +2649,9 @@ export class PlaybackEngine {
     // While paused/seeking no frames are presented; the current time tells a seek apart from a repeat.
     return `f${this.frameCounters.get(video)}@${video.paused ? video.currentTime : ""}`;
   }
+
+  /** Audio assets already sent for an MP3 preview copy (see `host.onAudioUndecodable`). */
+  private audioProxyRequested = new Set<string>();
 
   private outlineCanvasEl: HTMLCanvasElement | null = null;
 

@@ -146,3 +146,34 @@ describe("cutout layer locked to its original (tight sync)", () => {
     assert.deepEqual(planMediaSync(state(0.01), 10, true, false, 0.02, 1, true), { playbackRate: null, seekTo: null });
   });
 });
+
+import { audioProxyRelPathFor, buildAudioProxyArgs } from "../src/export/proxyCommands.ts";
+
+describe("audio preview proxy", () => {
+  it("names the copy next to the original", () => {
+    assert.equal(audioProxyRelPathFor("voice.m4a"), "voice-proxy.mp3");
+    assert.equal(audioProxyRelPathFor("voice-proxy.m4a"), "voice-proxy.mp3");
+  });
+
+  it("turns an AAC .m4a into an MP3 of the same length (real FFmpeg)", { skip: !bundledFfmpeg() }, () => {
+    const ffmpeg = bundledFfmpeg()!;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vcut-audio-proxy-"));
+    try {
+      const m4a = path.join(dir, "in.m4a");
+      const mp3 = path.join(dir, "out.mp3");
+      execFileSync(ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:a", "aac", "-movflags", "+faststart", "-y", m4a]);
+      execFileSync(ffmpeg, buildAudioProxyArgs(m4a, mp3), { stdio: "ignore" });
+      let info = "";
+      try {
+        execFileSync(ffmpeg, ["-hide_banner", "-i", mp3], { stdio: ["ignore", "pipe", "pipe"] });
+      } catch (error) {
+        info = String((error as { stderr?: Buffer | string }).stderr ?? "");
+      }
+      assert.match(info, /Audio: mp3/);
+      const seconds = /Duration: 00:00:0(\d\.\d+)/.exec(info);
+      assert.ok(seconds && Math.abs(Number(seconds[1]) - 3) < 0.15, info.slice(0, 300));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

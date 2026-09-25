@@ -1237,7 +1237,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     async requestPlaybackProxy(assetId) {
       const { project, projectId, language } = get();
       const asset = project?.assets.find((a) => a.id === assetId);
-      if (!project || !projectId || !asset || asset.kind !== "video" || asset.proxyRelPath || proxiesInFlight.has(assetId)) return;
+      if (!project || !projectId || !asset || (asset.kind !== "video" && asset.kind !== "audio") || asset.proxyRelPath || proxiesInFlight.has(assetId)) return;
       proxiesInFlight.add(assetId);
       get().setStatus(translateText(language, "Preparing a preview-compatible copy of {name}…", { name: asset.name }));
       try {

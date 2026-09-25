@@ -394,7 +394,7 @@ export async function createPlaybackProxy(projectId: string, asset: Asset): Prom
   const response = await apiFetch(`${BASE}/media/proxy?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ relPath: asset.relPath, ...(asset.libraryMediaId ? { library: true } : null) }),
+    body: JSON.stringify({ relPath: asset.relPath, ...(asset.kind === "audio" ? { kind: "audio" } : null), ...(asset.libraryMediaId ? { library: true } : null) }),
   });
   const { proxyRelPath } = await unwrap<{ proxyRelPath: string }>(response);
   return proxyRelPath;

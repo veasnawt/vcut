@@ -56,3 +56,18 @@ export function buildProxyArgs(input: string, output: string, fps?: number): str
     output,
   ];
 }
+
+/** `voice.m4a` -> `voice-proxy.mp3`, next to the original. */
+export function audioProxyRelPathFor(relPath: string): string {
+  const dot = relPath.lastIndexOf(".");
+  const stem = dot > 0 ? relPath.slice(0, dot) : relPath;
+  return stem.endsWith("-proxy") ? `${stem}.mp3` : `${stem}-proxy.mp3`;
+}
+
+/** FFmpeg arguments for an audio preview proxy: plain stereo MP3. Safari's `decodeAudioData` rejects many AAC `.m4a` files that
+ *  its own `<audio>` plays ("EncodingError: Decoding failed" — e.g. audio extracted from a video), and the editor then falls back to
+ *  playing that clip through an `<audio>` element, which can't be scheduled to the sample and drifts from the picture. An MP3 copy
+ *  decodes everywhere, so the clip is mixed and scheduled like any other. Export never uses it. */
+export function buildAudioProxyArgs(input: string, output: string): string[] {
+  return ["-y", "-hide_banner", "-loglevel", "error", "-i", input, "-vn", "-ac", "2", "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k", output];
+}
