@@ -11,13 +11,17 @@ const SHORTCUT_GROUPS = [
       ["Play / pause", "Space"],
       ["Previous / next frame", "← / →"],
       ["Jump 10 frames", "Shift + ← / →"],
-      ["Go to start", "Home"],
+      ["Go to start / end", "Home / End"],
+      ["Previous / next edit point", "↑ / ↓"],
+      ["Deselect", "Esc"],
     ],
   },
   {
     title: "Editing",
     shortcuts: [
       ["Split at playhead", "S"],
+      ["Copy / cut / paste clips", "Ctrl/⌘ + C / X / V"],
+      ["Select all clips", "Ctrl/⌘ + A"],
       ["Duplicate selected clips", "Ctrl/⌘ + D"],
       ["Delete selected clips", "Delete / Backspace"],
       ["Undo", "Ctrl/⌘ + Z"],

@@ -29,7 +29,7 @@ Last updated 2026-09-25.
 | P1-8 Jobs only in memory; restart loses spent credits | Done for credits — `job_holds` table (migration 0013, must be applied) records credits spent on in-memory AI video / Remove Object / Captions jobs; holds from a dead process are refunded once. Provider-side predictions of a killed job may still run (not cancelled) |
 | P1-9 Two tabs/devices silently overwrite each other | Open |
 | P1-10 Stripe webhook out-of-order events | Done — plan derived from the customer's CURRENT subscriptions (order/redelivery-independent); free users no longer refilled by repeated non-active events; unmatched/failed writes answer 5xx so Stripe retries. Not exercised against live Stripe |
-| P1-11 Copy/paste + standard shortcuts (`PasteClipsCommand` is unused) | Open |
+| P1-11 Copy/paste + standard shortcuts | Done — Ctrl/⌘ + C / X / V / A, End, ↑/↓ to previous/next edit point, Esc to deselect (J/K/L not added) |
 | P1-12 Undo edge cases | Open |
 | P1-13 Long audio can exhaust browser memory | Open |
 | P1-14 Mobile import loads the whole file into memory | Open |

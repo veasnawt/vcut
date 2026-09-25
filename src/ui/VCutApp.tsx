@@ -1920,6 +1920,31 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         state.redo();
         return;
       }
+      // Standard clipboard shortcuts. Only reached when focus is NOT in a text field (`isTypingTarget`
+      // above), so Ctrl+C/V/X/A keep their ordinary text meaning inside inputs.
+      if (modifier && event.key.toLowerCase() === "c") {
+        if (state.selectedClipIds.length === 0) return;
+        event.preventDefault();
+        state.copySelectedClips();
+        return;
+      }
+      if (modifier && event.key.toLowerCase() === "x") {
+        if (state.selectedClipIds.length === 0) return;
+        event.preventDefault();
+        state.cutSelectedClips();
+        return;
+      }
+      if (modifier && event.key.toLowerCase() === "v") {
+        if (state.clipboardCount === 0) return;
+        event.preventDefault();
+        state.pasteClips();
+        return;
+      }
+      if (modifier && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        state.selectAllClips();
+        return;
+      }
       if (modifier && event.key.toLowerCase() === "d") {
         // Standard NLE shortcut — most editors, desktop and mobile-first alike, use Ctrl/⌘+D for this.
         event.preventDefault();
@@ -1978,6 +2003,27 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
         case "Home": {
           event.preventDefault();
           state.setPlayhead(0);
+          break;
+        }
+        case "End": {
+          event.preventDefault();
+          state.setPlayhead(state.duration());
+          break;
+        }
+        // Previous / next edit point (the nearest clip start or end). The timeline ruler already handles
+        // ↑/↓ as single-frame steps when IT has focus, so leave that alone rather than doing both.
+        case "ArrowUp":
+        case "ArrowDown": {
+          if (event.target instanceof HTMLElement && event.target.closest('[role="slider"]')) return;
+          event.preventDefault();
+          state.jumpToEditPoint(event.key === "ArrowUp" ? -1 : 1);
+          break;
+        }
+        // Deselect — but not while a menu or dialog is open: Escape belongs to closing that.
+        case "Escape": {
+          if (state.selectedClipIds.length === 0) return;
+          if (document.querySelector('[role="menu"], [role="dialog"], [aria-modal="true"]')) return;
+          state.select([]);
           break;
         }
         // Universal NLE convention: mark the export range's in/out points at the CURRENT playhead.
