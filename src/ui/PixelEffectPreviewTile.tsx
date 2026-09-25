@@ -8,6 +8,7 @@ import type { PixelEffectType } from "../project/types.ts";
  *  (`MediaLibrary.tsx`) already use elsewhere in this app. */
 const ACCENT_CLASS: Record<PixelEffectType, string> = {
   glitch: "bg-rose-400",
+  sliceGlitch: "bg-fuchsia-400",
   waterRipple: "bg-sky-400",
 };
 

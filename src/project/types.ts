@@ -748,7 +748,7 @@ export interface TextInOutAnimation {
  *  `TransitionType`'s own `glitchCut`/`waterRippleCut` — those are one-shot events at a clip's own
  *  edges; this instead plays across a clip's ENTIRE visible duration, same relationship
  *  `TextAnimationType` has to `transitionIn`/`transitionOut`. */
-export type PixelEffectType = "glitch" | "waterRipple";
+export type PixelEffectType = "glitch" | "sliceGlitch" | "waterRipple";
 
 /** Stable id for a face-effect definition. Kept as a string in saved projects so a preset supplied
  * by a licensed provider can be added or retired without requiring a project-schema migration. The

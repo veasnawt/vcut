@@ -54,6 +54,7 @@ import {
   WHIP_PAN_BLUR_RADIUS_PX,
   ZOOM_BLUR_SCALE,
   ZOOM_BLUR_SIGMA_PX,
+  sliceGlitchGeqExpression,
 } from "../timeline/pixelEffects.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { findTransitionOut, findTransitionPartner } from "../timeline/transitions.ts";
@@ -673,6 +674,11 @@ function buildTransformFilters(params: {
       const rate = (2 * Math.PI) / WATER_RIPPLE_PERIOD_SECONDS;
       const expr = `p(X+${n(WATER_RIPPLE_AMPLITUDE_PX)}*sin(Y/${n(WATER_RIPPLE_WAVELENGTH_PX)}+T*${n(rate)}*${n(speed)}),Y)`;
       return `,geq=lum='${expr}':cb='${expr}':cr='${expr}'`;
+    }
+    if (pixelEffect.type === "sliceGlitch") {
+      // The alpha plane is shifted too (`a=`), so a cutout's outline and shape travel with each strip.
+      const expr = sliceGlitchGeqExpression(speed);
+      return `,geq=lum='${expr}':cb='${expr}':cr='${expr}':a='${expr}'`;
     }
     // "glitch"
     const shift = Math.round(GLITCH_SHIFT_PX * speed) || GLITCH_SHIFT_PX;

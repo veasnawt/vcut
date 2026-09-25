@@ -8,7 +8,7 @@ import { applyColorGrading, buildCurveLut, composeLuts } from "../timeline/color
 import { resolveClipColorGrading, resolveClipEffects, resolveClipGain, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
 import { applyLut3D, blendLut3D, normalizeLutIntensity, parseCubeLut } from "../timeline/lut.ts";
 import type { Lut3D } from "../timeline/lut.ts";
-import { applyGlitch, applyGlitchCut, applyHorizontalBlur, applyWaterRipple, FLASH_ZOOM_PEAK, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
+import { applyGlitch, applyGlitchCut, applySliceGlitch, applyHorizontalBlur, applyWaterRipple, FLASH_ZOOM_PEAK, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
 import {
   easeTransition,
   glitchCutBurst,
@@ -2446,6 +2446,7 @@ export class PlaybackEngine {
         if (pixelEffect) {
           const speed = pixelEffect.speed ?? 1;
           if (pixelEffect.type === "glitch") applyGlitch(imageData, elapsedSeconds, speed);
+          else if (pixelEffect.type === "sliceGlitch") applySliceGlitch(imageData, elapsedSeconds, speed);
           else applyWaterRipple(imageData, elapsedSeconds, speed);
         }
         if (mask) applyClipMask(imageData, mask, transform.crop);

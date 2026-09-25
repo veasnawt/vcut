@@ -4,10 +4,11 @@ import { GLITCH_CUT_BAND_HEIGHT_FRACTION, type GlitchCutBurst } from "./transiti
 /** Every `PixelEffectType`, in the order shown in the picker — mirrors `TEXT_ANIMATION_TYPE_OPTIONS`'s
  *  own role as the one shared source of truth a UI iterates rather than hardcoding its own copy of the
  *  union's values. */
-export const PIXEL_EFFECT_TYPE_OPTIONS: PixelEffectType[] = ["glitch", "waterRipple"];
+export const PIXEL_EFFECT_TYPE_OPTIONS: PixelEffectType[] = ["glitch", "sliceGlitch", "waterRipple"];
 
 export const PIXEL_EFFECT_TYPE_LABEL: Record<PixelEffectType, string> = {
   glitch: "Glitch",
+  sliceGlitch: "Slice Glitch",
   waterRipple: "Water Ripple",
 };
 
@@ -18,6 +19,14 @@ export const PIXEL_EFFECT_TYPE_LABEL: Record<PixelEffectType, string> = {
 export const WATER_RIPPLE_AMPLITUDE_PX = 10;
 export const WATER_RIPPLE_WAVELENGTH_PX = 180;
 export const WATER_RIPPLE_PERIOD_SECONDS = 2.5;
+
+/** Slice Glitch: a few THIN horizontal strips of the picture jump sideways by a lot for an instant, then snap back — no
+ *  colour split, no noise. The look of a datamosh / edit-template glitch. Bursts are short (three frames at 30 fps) so it
+ *  flickers rather than drifts. Fractions are of the frame's own width/height, so it looks the same at any resolution. */
+export const SLICE_GLITCH_BURST_SECONDS = 0.1;
+export const SLICE_GLITCH_COUNT = 3;
+export const SLICE_GLITCH_HEIGHT_FRACTION = 0.03;
+export const SLICE_GLITCH_MAX_SHIFT_FRACTION = 0.09;
 
 export const GLITCH_BURST_PERIOD_SECONDS = 0.4;
 export const GLITCH_SHIFT_PX = 8;
@@ -95,6 +104,60 @@ export function applyWaterRipple(imageData: ImageData, elapsedSeconds: number, s
       data[to + 3] = source[from + 3];
     }
   }
+}
+
+/** Where Slice Glitch's strips are during one burst: each strip's top row and sideways shift, both as fractions (so the same
+ *  numbers drive the preview here and the export's `geq` expression). `burst` is `floor(time * speed / period)`. */
+export function sliceGlitchSlices(burst: number, index: number): { topFraction: number; shiftFraction: number } {
+  const seed = burst * 7 + index * 3;
+  return {
+    topFraction: pseudoRandom(seed) * (1 - SLICE_GLITCH_HEIGHT_FRACTION),
+    shiftFraction: (pseudoRandom(seed + 1) * 2 - 1) * SLICE_GLITCH_MAX_SHIFT_FRACTION,
+  };
+}
+
+/** Mutates `imageData` in place with the Slice Glitch look (see `SLICE_GLITCH_*`): thin horizontal strips jump sideways for a
+ *  few frames. `intensity` scales how far they jump (0 = none). Like the other pixel effects it is a pure function of time. */
+export function applySliceGlitch(imageData: ImageData, elapsedSeconds: number, speed = 1, intensity = 1): void {
+  const { width, height, data } = imageData;
+  const source = data.slice();
+  const burst = Math.floor((elapsedSeconds * speed) / SLICE_GLITCH_BURST_SECONDS);
+  const band = Math.max(1, Math.round(height * SLICE_GLITCH_HEIGHT_FRACTION));
+  for (let index = 0; index < SLICE_GLITCH_COUNT; index++) {
+    const { topFraction, shiftFraction } = sliceGlitchSlices(burst, index);
+    const top = Math.round(topFraction * height);
+    const shift = Math.round(shiftFraction * width * intensity);
+    if (shift === 0) continue;
+    for (let y = top; y < Math.min(height, top + band); y++) {
+      const rowStart = y * width * 4;
+      for (let x = 0; x < width; x++) {
+        const sampleX = Math.min(width - 1, Math.max(0, x + shift));
+        const from = rowStart + sampleX * 4;
+        const to = rowStart + x * 4;
+        data[to] = source[from];
+        data[to + 1] = source[from + 1];
+        data[to + 2] = source[from + 2];
+        data[to + 3] = source[from + 3];
+      }
+    }
+  }
+}
+
+/** The same Slice Glitch as an FFmpeg `geq` expression of the plane's own `X`/`Y`/`W`/`H` and time `T`, so an export renders
+ *  the strips the preview shows (same hash, same burst clock). */
+export function sliceGlitchGeqExpression(speed = 1): string {
+  const num = (v: number) => String(Math.round(v * 1e6) / 1e6);
+  const burst = `floor(T*${num(speed)}/${num(SLICE_GLITCH_BURST_SECONDS)})`;
+  const rand = (seedExpr: string) => `((sin((${seedExpr})*12.9898)*43758.5453)-floor(sin((${seedExpr})*12.9898)*43758.5453))`;
+  const terms: string[] = [];
+  for (let index = 0; index < SLICE_GLITCH_COUNT; index++) {
+    const seed = `${burst}*7+${index * 3}`;
+    const top = `${rand(seed)}*${num(1 - SLICE_GLITCH_HEIGHT_FRACTION)}*H`;
+    const shift = `(${rand(`${seed}+1`)}*2-1)*${num(SLICE_GLITCH_MAX_SHIFT_FRACTION)}*W`;
+    // A strip of `band` rows starting at `top`: between() is inclusive, so stop one row short.
+    terms.push(`between(Y,round(${top}),round(${top})+round(${num(SLICE_GLITCH_HEIGHT_FRACTION)}*H)-1)*round(${shift})`);
+  }
+  return `p(X+${terms.join("+")},Y)`;
 }
 
 /** Mutates `imageData` in place with a digital-corruption look: a per-frame RGB channel split (jumps

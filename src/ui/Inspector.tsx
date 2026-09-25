@@ -95,6 +95,7 @@ import { defaultFontIdFor, FontPickerGrid } from "./FontPickerGrid.tsx";
 import { FlipHorizontalIcon, FlipVerticalIcon, MaskEllipseIcon, MaskRectangleIcon } from "./TransformHandles.tsx";
 import { KeyframeTrack } from "./KeyframeTrack.tsx";
 import { NumberField } from "./NumberField.tsx";
+import { OutlineControls } from "./OutlineControls.tsx";
 import { WordStyleControls } from "./WordStyleControls.tsx";
 import { PickerTabs } from "./PickerTabs.tsx";
 import { SpeedCurveEditor } from "./SpeedCurveEditor.tsx";
@@ -2987,68 +2988,7 @@ export function Inspector() {
                     open={!collapsed.has("Outline & Glow")}
                     onToggle={() => toggleSection("Outline & Glow")}
                   >
-                    {clip.outline ? (
-                      <>
-                        <label className="flex items-center justify-between gap-2 py-1.5">
-                          <span className="text-[12px] text-white/50">{t("Outline color")}</span>
-                          <input
-                            type="color"
-                            value={clip.outline.color}
-                            onChange={(e) => run(new SetClipOutlineCommand(clip.id, { ...clip.outline!, color: e.target.value }))}
-                            className="h-7 w-11 cursor-pointer rounded border border-white/10 bg-transparent"
-                          />
-                        </label>
-                        <NumberField
-                          label={t("Thickness")}
-                          value={clip.outline.width}
-                          suffix="px"
-                          step={1}
-                          min={0}
-                          max={24}
-                          onCommit={(v) => run(new SetClipOutlineCommand(clip.id, { ...clip.outline!, width: v }))}
-                        />
-                        <NumberField
-                          label={t("Glow")}
-                          value={clip.outline.glow}
-                          suffix="px"
-                          step={2}
-                          min={0}
-                          max={60}
-                          onCommit={(v) => run(new SetClipOutlineCommand(clip.id, { ...clip.outline!, glow: v }))}
-                        />
-                        <label className="flex items-center justify-between gap-2 py-1.5">
-                          <span className="text-[12px] text-white/50">{t("Glow color")}</span>
-                          <input
-                            type="color"
-                            value={clip.outline.glowColor ?? clip.outline.color}
-                            onChange={(e) => run(new SetClipOutlineCommand(clip.id, { ...clip.outline!, glowColor: e.target.value }))}
-                            className="h-7 w-11 cursor-pointer rounded border border-white/10 bg-transparent"
-                          />
-                        </label>
-                        <button
-                          onClick={() => run(new SetClipOutlineCommand(clip.id, null))}
-                          className="mt-2.5 w-full rounded bg-white/5 py-1.5 text-[12px] text-white/60 transition hover:bg-white/10 hover:text-white"
-                        >
-                          {t("Remove outline")}
-                        </button>
-                      </>
-                    ) : (
-                      <div className="grid grid-cols-3 gap-1.5">
-                        {[
-                          { name: "Red glow", outline: { color: "#ff2a2a", width: 4, glow: 24 } },
-                          { name: "White edge", outline: { color: "#ffffff", width: 6, glow: 0 } },
-                          { name: "Neon", outline: { color: "#ffffff", width: 3, glow: 30, glowColor: "#22d3ee" } },
-                        ].map((preset) => (
-                          <button
-                            key={preset.name}
-                            onClick={() => run(new SetClipOutlineCommand(clip.id, preset.outline))}
-                            className="rounded bg-white/5 py-2 text-[11px] text-white/70 transition hover:bg-white/10 hover:text-white"
-                          >
-                            {t(preset.name)}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    <OutlineControls outline={clip.outline} onChange={(next) => run(new SetClipOutlineCommand(clip.id, next))} />
                   </CollapsibleSection>
                 )}
 

@@ -12,9 +12,12 @@ import { NumberField } from "./NumberField.tsx";
 
 type Tab = "grid" | "stack";
 
-function LayoutThumb({ layout, active }: { layout: GridLayout; active: boolean }) {
+/** A layout drawn in the shape of the project's own frame (portrait, square or landscape), so what you pick is what you get. */
+function LayoutThumb({ layout, active, aspect }: { layout: GridLayout; active: boolean; aspect: number }) {
+  const height = aspect > 1.2 ? 34 : 48;
+  const width = Math.round(Math.min(72, Math.max(30, height * aspect)));
   return (
-    <span className="relative block h-12 w-9 overflow-hidden rounded-sm bg-black/40">
+    <span className="relative block overflow-hidden rounded-sm bg-black/40" style={{ width, height }}>
       {layout.cells.map((cell, i) => (
         <span
           key={i}
@@ -55,8 +58,16 @@ export function CollageDialog({ onClose }: { onClose: () => void }) {
   const [fade, setFade] = useState(40);
   const [delay, setDelay] = useState(0);
 
+  // One-tap starting points for Stacked copies (frame-relative, so they suit any aspect ratio).
+  const STACK_PRESETS = [
+    { name: "Echo", count: 4, x: 0.04, y: -0.02, shrink: 8, fade: 50, delay: 0 },
+    { name: "Trail", count: 6, x: 0.07, y: 0, shrink: 4, fade: 70, delay: 0.1 },
+    { name: "Fan", count: 5, x: 0.05, y: -0.05, shrink: 10, fade: 30, delay: 0 },
+  ];
+
   if (!project || typeof document === "undefined") return null;
   const layout = GRID_LAYOUTS.find((l) => l.id === layoutId) ?? GRID_LAYOUTS[0];
+  const aspect = project.sequence.width / Math.max(1, project.sequence.height);
 
   function applyGrid() {
     const command = new ApplyGridLayoutCommand(pictureIds, layoutId, { gap, fillWithCopies: fill });
@@ -121,7 +132,7 @@ export function CollageDialog({ onClose }: { onClose: () => void }) {
                     aria-pressed={layoutId === l.id}
                     className={`flex flex-col items-center gap-1 rounded-lg border p-2 transition ${layoutId === l.id ? "border-sky-400/40 bg-sky-500/10" : "border-white/10 hover:bg-white/5"}`}
                   >
-                    <LayoutThumb layout={l} active={layoutId === l.id} />
+                    <LayoutThumb layout={l} active={layoutId === l.id} aspect={aspect} />
                     <span className="text-[10px] text-white/60">{t(l.label)}</span>
                   </button>
                 ))}
@@ -139,9 +150,32 @@ export function CollageDialog({ onClose }: { onClose: () => void }) {
             </>
           ) : (
             <>
-              <p className="text-[11px] leading-relaxed text-white/45">
-                {t("Puts copies of the first selected clip behind it, each one stepped, smaller and fainter — an outlined cutout gives outlined copies.")}
-              </p>
+              <ol className="space-y-1 text-[11px] leading-relaxed text-white/50">
+                <li>{t("1. Select one clip — a cutout of a person works best (add Outline & Glow first for the classic look).")}</li>
+                <li>{t("2. Pick a starting point below, or set the steps yourself.")}</li>
+                <li>{t("3. Add copies. They go behind your clip, each one further across, smaller and fainter, on their own tracks.")}</li>
+              </ol>
+              <div className="mt-2.5 grid grid-cols-3 gap-1.5">
+                {STACK_PRESETS.map((preset) => (
+                  <button
+                    key={preset.name}
+                    type="button"
+                    onClick={() => {
+                      const frameW = project.sequence.width;
+                      const frameH = project.sequence.height;
+                      setCount(preset.count);
+                      setOffsetX(Math.round(preset.x * frameW));
+                      setOffsetY(Math.round(preset.y * frameH));
+                      setScaleStep(preset.shrink);
+                      setFade(preset.fade);
+                      setDelay(preset.delay);
+                    }}
+                    className="rounded-md border border-white/10 py-2 text-[12px] text-white/70 transition hover:bg-white/5 hover:text-white"
+                  >
+                    {t(preset.name)}
+                  </button>
+                ))}
+              </div>
               <div className="mt-2">
                 <NumberField label={t("Copies")} value={count} step={1} min={1} max={8} onCommit={(v) => setCount(Math.round(v))} />
                 <NumberField label={t("Move across")} value={offsetX} suffix="px" step={10} min={-600} max={600} onCommit={setOffsetX} />
