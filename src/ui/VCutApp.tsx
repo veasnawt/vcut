@@ -675,6 +675,18 @@ function StatusBar({
                     setShowTextImport(true);
                   },
                 },
+                {
+                  id: "captions",
+ shortLabel: t("Captions"),
+                  label: selectedClipIds.length === 0 || captionsForClipDisabled ? t("Auto Captions") : t("Auto Captions for the selected clips"),
+                  description: t("Turn speech into timed captions"),
+                  icon: <ClosedCaption size={16} />,
+                  onSelect: () => {
+                    if (!canSwitchToolbarTool()) return;
+                    closeAllToolbarTools();
+                    setCaptionsDialog(captionsForClipDisabled ? {} : { clipIds: selectedClipIds });
+                  },
+                },
               ];
 
   const audioGroupItems: ToolGroupItem[] = [
@@ -910,24 +922,9 @@ function StatusBar({
             six separate toolbar buttons. The three selection-scoped ones open the same pickers as before, anchored
             to this button; they only appear in the menu when they have something to act on. */}
         {/* With a text clip selected the toolbar narrows to what edits THAT text — Styles, Font and Animation (beside
-            Split / Duplicate / Transition below) — instead of Captions and the Text group, which add new content. */}
+            Split / Duplicate / Transition below) — instead of the Text group (which holds Add text, Script and Captions), since those add new content. */}
         {animationDisabled ? (
           <>
-        {/* Auto Captions — its own always-visible button (not tucked inside a group): it acts on the selected clips
-            when any has audio, otherwise on the whole sequence. */}
-        <ToolbarButton
-          title={t("Turn speech into timed captions")}
-          label={t("Captions")}
-          active={captionsDialog !== null}
-          pro={CREDITS_ENABLED}
-          onClick={() => {
-            if (!canSwitchToolbarTool()) return;
-            closeAllToolbarTools();
-            setCaptionsDialog(captionsForClipDisabled ? {} : { clipIds: selectedClipIds });
-          }}
-        >
-          <ClosedCaption size={18} />
-        </ToolbarButton>
         <ToolbarButton
           ref={expandedGroup === "text" ? undefined : textButtonRef}
           title={t("Text")}

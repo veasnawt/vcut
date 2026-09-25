@@ -76,6 +76,22 @@ export function buildFirstFramePngArgs(input: string, output: string): string[] 
   return ["-i", input, "-frames:v", "1", "-vf", "format=rgba", "-y", output];
 }
 
+/** One frame of an image or video, sized for an AI model: the long edge is capped at `maxEdge` (never upscaled) and
+ *  both sides are rounded down to a multiple of `multipleOf`. Models like instruct-pix2pix allocate memory in
+ *  proportion to the pixel count, so sending a raw 4K phone frame ran the GPU out of memory ("CUDA out of memory,
+ *  tried to allocate 46.93 GiB"). `atSeconds` seeks into the source first (input-side, so it's fast). */
+export function buildAiFramePngArgs(
+  input: string,
+  output: string,
+  opts: { maxEdge: number; multipleOf?: number; atSeconds?: number; alpha?: boolean }
+): string[] {
+  const multiple = Math.max(1, Math.floor(opts.multipleOf ?? 2));
+  const edge = Math.max(multiple, Math.floor(opts.maxEdge));
+  const scale = `scale='min(${edge},iw)':'min(${edge},ih)':force_original_aspect_ratio=decrease:force_divisible_by=${multiple}`;
+  const seek = opts.atSeconds && opts.atSeconds > 0 ? ["-ss", String(opts.atSeconds)] : [];
+  return [...seek, "-i", input, "-frames:v", "1", "-vf", `${scale},format=${opts.alpha ? "rgba" : "rgb24"}`, "-y", output];
+}
+
 /** How many frames `buildFilmstripArgs` samples, and the fixed size (pixels) each is scaled/cropped to
  *  — fixed, not proportional to the source's own aspect ratio, so every sampled frame is IDENTICALLY
  *  sized and the sprite tiles into a clean, uniform grid regardless of whether the source is portrait,

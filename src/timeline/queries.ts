@@ -1,3 +1,4 @@
+import { clipDuration } from "../project/createProject.ts";
 import { clipEnd } from "../project/createProject.ts";
 import type { Clip, Project, Track, TrackKind } from "../project/types.ts";
 
@@ -122,4 +123,14 @@ export function audibleClips(project: Project): { track: Track; clip: Clip }[] {
     for (const clip of track.clips) out.push({ track, clip });
   }
   return out.sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
+}
+
+/** Where in the SOURCE media the frame under the playhead is, for tools that send one frame to an AI model. A
+ *  playhead outside the clip (or a variable-speed curve, which this doesn't try to invert) falls back to the clip's
+ *  own start; the result never leaves the clip's source window. */
+export function sourceTimeAtPlayhead(clip: Clip, playhead: number): number {
+  const inside = playhead >= clip.timelineStart && playhead < clip.timelineStart + clipDuration(clip);
+  if (!inside || (clip.speedCurve && clip.speedCurve.length >= 2)) return clip.sourceIn;
+  const t = clip.sourceIn + (playhead - clip.timelineStart) * (clip.speed ?? 1);
+  return Math.min(Math.max(t, clip.sourceIn), Math.max(clip.sourceIn, clip.sourceOut - 0.05));
 }

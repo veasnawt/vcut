@@ -645,12 +645,12 @@ export async function importMusicTrack(projectId: string, track: MusicTrack): Pr
 
 /** AI Background Remover — automatically cuts out subjects from an image (or extracts video frame)
  *  and returns a new transparent PNG Asset. */
-export async function removeBackground(projectId: string, assetId?: string, clipId?: string): Promise<Asset> {
+export async function removeBackground(projectId: string, assetId?: string, clipId?: string, timeSeconds?: number): Promise<Asset> {
   const deliverBytes = !HOSTED;
   const response = await centralFetch(`/ai-background-remove?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ assetId, clipId, deliverBytes }),
+    body: JSON.stringify({ assetId, clipId, deliverBytes, timeSeconds }),
   });
   const body = await unwrap<{ asset: Asset; bytesBase64?: string }>(response);
   if (!body.bytesBase64) return body.asset;
@@ -664,13 +664,14 @@ export async function runAiEdit(
   assetId: string,
   clipId: string | undefined,
   prompt: string,
-  strength: "subtle" | "balanced" | "creative" = "balanced"
+  strength: "subtle" | "balanced" | "creative" = "balanced",
+  timeSeconds?: number
 ): Promise<Asset> {
   const deliverBytes = !HOSTED;
   const response = await centralFetch(`/ai-edit?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ assetId, clipId, prompt, strength, deliverBytes }),
+    body: JSON.stringify({ assetId, clipId, prompt, strength, deliverBytes, timeSeconds }),
   });
   const body = await unwrap<{ asset: Asset; bytesBase64?: string }>(response);
   if (!body.bytesBase64) return body.asset;

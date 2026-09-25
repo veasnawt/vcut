@@ -40,7 +40,7 @@ import { IDENTITY_TRANSFORM } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
 import { clampTimelineZoom, DEFAULT_TIMELINE_PIXELS_PER_SECOND } from "../timeline/interaction.ts";
 import { defaultClipDuration, EditError, removeLutReferences, trackKindForAsset } from "../timeline/operations.ts";
-import { clipAtTime, nonOverlappingPointStart, nonOverlappingStart } from "../timeline/queries.ts";
+import { clipAtTime, nonOverlappingPointStart, nonOverlappingStart, sourceTimeAtPlayhead } from "../timeline/queries.ts";
 import { adjacentEditPoint, buildClipboardEntries, editPointTimes } from "../timeline/clipboard.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { refuseOrphanedClips } from "../undo/historyGuards.ts";
@@ -1722,7 +1722,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
 
       get().setStatus(translateText(get().language, "Removing background..."));
       try {
-        const newAsset = await api.removeBackground(projectId, asset.id, clipId);
+        const newAsset = await api.removeBackground(projectId, asset.id, clipId, sourceTimeAtPlayhead(found.clip, get().playhead));
         get().run(new SwapClipAssetCommand(clipId, newAsset));
         get().setStatus(translateText(get().language, "Background removed"));
       } catch (err) {
@@ -1743,7 +1743,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
         let cutoutAsset = asset;
         const isCutout = asset.name.toLowerCase().includes("nobg") || asset.relPath.toLowerCase().includes("nobg");
         if (!isCutout) {
-          cutoutAsset = await api.removeBackground(projectId, asset.id, clipId);
+          cutoutAsset = await api.removeBackground(projectId, asset.id, clipId, sourceTimeAtPlayhead(found.clip, get().playhead));
         }
         const cmd = new CreateTextBehindSubjectCommand(clipId, cutoutAsset, initialText);
         get().run(cmd);
@@ -1766,7 +1766,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const asset = findAsset(project, found.clip.assetId);
       if (!asset) throw new Error("Asset not found");
 
-      const newAsset = await api.runAiEdit(projectId, asset.id, clipId, prompt, strength);
+      const newAsset = await api.runAiEdit(projectId, asset.id, clipId, prompt, strength, sourceTimeAtPlayhead(found.clip, get().playhead));
       const current = get().project;
       if (current) {
         applyProject({ ...current, assets: [...current.assets, newAsset] });
