@@ -251,6 +251,55 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
    *  (not the scroll handler's own throttle) so it clears even if the browser skips firing a `scroll`
    *  event because the value didn't visibly change (e.g. already clamped to the same edge). */
   const programmaticScrollRef = useRef(false);
+  /** True from the moment the user's finger/wheel starts panning the mobile timeline until its scroll
+   *  (momentum fling included) has settled. While set, the playhead-follow effect must not write
+   *  `scrollLeft` — the user's own gesture is the source of truth, and fighting it every frame is what
+   *  made the timeline impossible to move during playback. */
+  const panningRef = useRef(false);
+  /** Whether playback was running when the current pan/scrub began, so it can pick up again at the
+   *  new position afterwards instead of leaving the user paused. */
+  const resumeAfterInteractionRef = useRef(false);
+  const settleTimerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current);
+    },
+    []
+  );
+  /** Pauses playback for the duration of a drag: a moving playhead under a finger/cursor that's also
+   *  moving it is a tug-of-war (the marker jitters, and on mobile the view can't be moved at all). The
+   *  gesture owns the playhead until it ends, then `endInteraction` resumes from wherever it landed. */
+  const beginInteraction = useCallback(() => {
+    if (settleTimerRef.current !== null) {
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = null;
+    }
+    const state = useEditorStore.getState();
+    if (state.playing && !resumeAfterInteractionRef.current) {
+      resumeAfterInteractionRef.current = true;
+      state.setPlaying(false);
+    }
+  }, []);
+  const endInteraction = useCallback(() => {
+    panningRef.current = false;
+    settleTimerRef.current = null;
+    if (!resumeAfterInteractionRef.current) return;
+    resumeAfterInteractionRef.current = false;
+    const state = useEditorStore.getState();
+    // Dragged to (or flung past) the very end: nothing left to play, and `togglePlay`-style rewind
+    // isn't wanted here — the user just parked the playhead there.
+    const end = state.project ? sequenceDuration(state.project) : 0;
+    if (state.playhead < end - 1e-6) state.setPlaying(true);
+  }, []);
+  /** (Re)arms the "scroll has settled" timer: mobile panning ends once no scroll event has arrived for a
+   *  moment after the finger lifts, which covers momentum flings — `touchend` alone fires while the view
+   *  is still gliding. */
+  const armSettle = useCallback(() => {
+    if (settleTimerRef.current !== null) window.clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = window.setTimeout(endInteraction, 160);
+  }, [endInteraction]);
+  const fingerDownRef = useRef(false);
+  const lastScrollLeftRef = useRef(0);
   /** Pending rAF id for the scroll container's own handler below — coalesces `setScrollLeft` to at
    *  most once per animation frame. See that handler's own comment for why this matters. */
   const scrollRafRef = useRef<number | null>(null);
@@ -682,7 +731,7 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
             Math.min(playhead * pixelsPerSecond - centerOffset + leadingPad, container.scrollWidth - container.clientWidth)
           );
           if (markerRef.current) markerRef.current.style.left = `${target + centerOffset}px`;
-          if (Math.abs(container.scrollLeft - target) > 0.5) {
+          if (!panningRef.current && Math.abs(container.scrollLeft - target) > 0.5) {
             programmaticScrollRef.current = true;
             container.scrollLeft = target;
             requestAnimationFrame(() => {
@@ -732,6 +781,7 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
   const scrub = useCallback(
     (event: React.MouseEvent | React.TouchEvent) => {
       isScrubbingRef.current = true;
+      beginInteraction();
       const start = clientPoint(event);
       setPlayhead(timeFromEvent(start.x));
       setHoverX(start.x);
@@ -744,13 +794,14 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
         () => {
           isScrubbingRef.current = false;
           remove();
+          endInteraction();
           // Touch has no hover state to fall back to afterward — a finger lifted off the ruler leaves
           // no cursor sitting there the way a mouse would, so the tooltip has nothing left to track.
           if ("touches" in event) setHoverX(null);
         }
       );
     },
-    [setPlayhead, timeFromEvent]
+    [setPlayhead, timeFromEvent, beginInteraction, endInteraction]
   );
 
   /** Drag either export-range flag to nudge it — the fine-adjustment half of the "I/O sets it at the
@@ -1173,7 +1224,37 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
           // exact gap: the simulated pinch already worked before this change). `touch-action` is the
           // standards-track fix for exactly this race, more reliable than `preventDefault()` alone.
           style={{ touchAction: "pan-x pan-y" }}
+          onTouchStart={(event) => {
+            // Single finger only — a two-finger pinch zooms and shouldn't pause playback.
+            if (!isMobile || event.touches.length !== 1) return;
+            fingerDownRef.current = true;
+            // Only marks the gesture; playback pauses on the first real SCROLL (below), so a plain tap on
+            // a clip during playback doesn't cause an audible stop/start blip.
+            panningRef.current = true;
+          }}
+          onTouchEnd={() => {
+            fingerDownRef.current = false;
+            if (panningRef.current) armSettle();
+          }}
+          onTouchCancel={() => {
+            fingerDownRef.current = false;
+            if (panningRef.current) armSettle();
+          }}
+          onWheel={(event) => {
+            // Trackpad/mouse-wheel panning of the fixed-center timeline. Ctrl+wheel is zoom, not a pan.
+            if (!isMobile || event.ctrlKey || event.deltaX === 0) return;
+            panningRef.current = true;
+            beginInteraction();
+            armSettle();
+          }}
           onScroll={() => {
+            // Horizontal movement only — scrolling the track list up/down mid-playback isn't a scrub.
+            const horizontal = (scrollRef.current?.scrollLeft ?? 0) !== lastScrollLeftRef.current;
+            lastScrollLeftRef.current = scrollRef.current?.scrollLeft ?? 0;
+            if (panningRef.current && horizontal) {
+              beginInteraction();
+              if (!fingerDownRef.current) armSettle();
+            }
             if (headerListRef.current) {
               headerListRef.current.style.transform = `translateY(${-(scrollRef.current?.scrollTop ?? 0)}px)`;
             }
