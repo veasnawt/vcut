@@ -266,7 +266,11 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
   // the lane area/ruler don't stay narrower than the indicator actually growing inside them.
   const total = Math.max(project ? sequenceDuration(project) : 0, recording ? recording.start + recording.elapsedSeconds : 0);
   const contentSeconds = Math.max(total + TRAILING_SECONDS, 30);
-  const contentWidth = contentSeconds * pixelsPerSecond;
+  // Never narrower than the viewport: zoomed far out, `contentSeconds * pixelsPerSecond` can be a sliver
+  // of the visible lanes area, and the ruler (a block child of this width) is what receives the scrub
+  // press — so the empty stretch beside it was dead space where clicking/dragging couldn't move the
+  // playhead. Mobile's `leadingPad` is added on top separately, so it's excluded from the floor here.
+  const contentWidth = Math.max(contentSeconds * pixelsPerSecond, isMobile ? viewportWidth / 2 : viewportWidth);
   // The lanes viewport's own center IS the screen's center on mobile — unlike desktop, there's no
   // fixed track-headers sidebar stealing width from it (track headers scroll WITH the clips on mobile
   // instead, as inline chips — see the per-row header render below), so `scrollRef`'s measured
