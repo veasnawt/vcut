@@ -397,6 +397,9 @@ function StatusBar({
   const pixelEffectButtonRef = useRef<HTMLButtonElement>(null);
   const aiToolsButtonRef = useRef<HTMLButtonElement>(null);
   const textButtonRef = useRef<HTMLButtonElement>(null);
+  const styleButtonRef = useRef<HTMLButtonElement>(null);
+  const fontButtonRef = useRef<HTMLButtonElement>(null);
+  const animationButtonRef = useRef<HTMLButtonElement>(null);
   // Whether the scrollable tool row (below) is scrolled away from its own left edge — drives the
   // Media/Properties cluster's auto-hide (see its own comment for why). `> 4`, not `> 0`: a bounce/
   // rubber-band scroll on iOS Safari can report a few stray sub-pixel values at rest, which would
@@ -672,55 +675,6 @@ function StatusBar({
                     setShowTextImport(true);
                   },
                 },
-                ...(!stylesDisabled
-                  ? [
-                      {
-                        id: "styles",
- shortLabel: t("Styles"),
-                        label: t("Styles"),
-                        description: t("Apply a look to the selected text"),
-                        icon: <Grid size={16} />,
-                        onSelect: () => {
-                          setPickerAnchorSource("button");
-                          closeAllToolbarTools();
-                          setShowStyleMenu(true);
-                        },
-                      },
-                    ]
-                  : []),
-                ...(!fontDisabled
-                  ? [
-                      {
-                        id: "font",
- shortLabel: t("Font"),
-                        label: t("Font"),
-                        description: t("Change the typeface"),
-                        icon: <Text size={16} />,
-                        onSelect: () => {
-                          setPickerAnchorSource("button");
-                          closeAllToolbarTools();
-                          setShowFontMenu(true);
-                        },
-                      },
-                    ]
-                  : []),
-                ...(!animationDisabled
-                  ? [
-                      {
-                        id: "animation",
- shortLabel: t("Animation"),
-                        label: t("Animation"),
-                        description: t("In, out and loop animations"),
-                        icon: <Star size={16} />,
-                        active: Boolean(animationCurrent || animationInCurrent || animationOutCurrent),
-                        onSelect: () => {
-                          setPickerAnchorSource("button");
-                          closeAllToolbarTools();
-                          setShowAnimationMenu(true);
-                        },
-                      },
-                    ]
-                  : []),
               ];
 
   const audioGroupItems: ToolGroupItem[] = [
@@ -955,6 +909,10 @@ function StatusBar({
             clips), Auto Captions, and — when a text clip is selected — Styles, Font and Animation. These used to be
             six separate toolbar buttons. The three selection-scoped ones open the same pickers as before, anchored
             to this button; they only appear in the menu when they have something to act on. */}
+        {/* With a text clip selected the toolbar narrows to what edits THAT text — Styles, Font and Animation (beside
+            Split / Duplicate / Transition below) — instead of Captions and the Text group, which add new content. */}
+        {animationDisabled ? (
+          <>
         {/* Auto Captions — its own always-visible button (not tucked inside a group): it acts on the selected clips
             when any has audio, otherwise on the whole sequence. */}
         <ToolbarButton
@@ -979,6 +937,50 @@ function StatusBar({
         >
           <Text size={18} />
         </ToolbarButton>
+          </>
+        ) : (
+          <>
+            <ToolbarButton
+              ref={styleButtonRef}
+              title={t("Apply a look to the selected text")}
+              label={t("Styles")}
+              active={showStyleMenu}
+              onClick={() => {
+                setPickerAnchorSource("button");
+                closeAllToolbarTools();
+                setShowStyleMenu(true);
+              }}
+            >
+              <Grid size={18} />
+            </ToolbarButton>
+            <ToolbarButton
+              ref={fontButtonRef}
+              title={t("Change the typeface")}
+              label={t("Font")}
+              active={showFontMenu}
+              onClick={() => {
+                setPickerAnchorSource("button");
+                closeAllToolbarTools();
+                setShowFontMenu(true);
+              }}
+            >
+              <Text size={18} />
+            </ToolbarButton>
+            <ToolbarButton
+              ref={animationButtonRef}
+              title={t("In, out and loop animations")}
+              label={t("Animation")}
+              active={showAnimationMenu || Boolean(animationCurrent || animationInCurrent || animationOutCurrent)}
+              onClick={() => {
+                setPickerAnchorSource("button");
+                closeAllToolbarTools();
+                setShowAnimationMenu(true);
+              }}
+            >
+              <Star size={18} />
+            </ToolbarButton>
+          </>
+        )}
         {/* Audio — every audio tool behind one button: Import audio, Music, Sound effects, Record voiceover, the
             Mixer and the preview Mute. These used to be five separate toolbar buttons (Voice, Mute, Music, SFX,
             Mixer). Same gate the standalone Mixer button had: reachable with nothing selected AND once a clip
@@ -1024,7 +1026,7 @@ function StatusBar({
         {/* picker */}
         {showStyleMenu && (
               <StylePickerMenu
-                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : textButtonRef}
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : styleButtonRef}
                 onPick={applyTextStylePresetToSelection}
                 onPreview={(preset) => {
                   if (selectedTextClips.length > 0) {
@@ -1050,7 +1052,7 @@ function StatusBar({
         {/* picker */}
         {showFontMenu && (
               <FontPickerMenu
-                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : textButtonRef}
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : fontButtonRef}
                 selectedId={firstSelectedTextStyle.fontFamily}
                 customFonts={project?.customFonts ?? []}
                 onPick={(fontId) => {
@@ -1083,7 +1085,7 @@ function StatusBar({
         {/* picker */}
         {showAnimationMenu && (
               <AnimationPickerMenu
-                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : textButtonRef}
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : animationButtonRef}
                 current={animationCurrent}
                 onPick={applyTextAnimationToSelection}
                 currentIn={animationInCurrent}
