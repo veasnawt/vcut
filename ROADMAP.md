@@ -25,8 +25,8 @@ Last updated 2026-09-25.
 | P1-4 Inspector re-rendered every frame | Done |
 | P1-5 No codec check / proxies on import | Open |
 | P1-6 Two network lookups per hosted media request | Open |
-| P1-7 Server storage only grows, no backups | Open |
-| P1-8 Jobs only in memory; restart loses spent credits | Open |
+| P1-7 Server storage only grows, no backups | Partly done — hosted exports are deleted after 24h (hourly sweep). Still open: exports/uploads don't count toward quota, and there are no volume backups (a Railway-side setting) |
+| P1-8 Jobs only in memory; restart loses spent credits | Done for credits — `job_holds` table (migration 0013, must be applied) records credits spent on in-memory AI video / Remove Object / Captions jobs; holds from a dead process are refunded once. Provider-side predictions of a killed job may still run (not cancelled) |
 | P1-9 Two tabs/devices silently overwrite each other | Open |
 | P1-10 Stripe webhook out-of-order events | Done — plan derived from the customer's CURRENT subscriptions (order/redelivery-independent); free users no longer refilled by repeated non-active events; unmatched/failed writes answer 5xx so Stripe retries. Not exercised against live Stripe |
 | P1-11 Copy/paste + standard shortcuts (`PasteClipsCommand` is unused) | Open |
@@ -62,7 +62,7 @@ Last updated 2026-09-25.
 
 1. ~~P0-4 autosave reliability~~ (done).
 2. ~~P1-15 CI green~~ (done).
-3. P1-8 + P1-10 + P1-7 money/ops: durable job records with orphan refunds, webhook ordering, export retention.
+3. ~~P1-8 + P1-10 + P1-7 (retention)~~ (done; volume backups and quota-counting exports remain).
 4. P1-1 smooth keyframes in export.
 5. P1-9 multi-tab overwrite protection, P1-11 copy/paste + shortcuts, P1-12 undo edge cases.
 6. P1-5 / P1-6 / P1-13 / P1-14 import + memory work.
