@@ -31,7 +31,7 @@ Last updated 2026-09-25.
 | P1-10 Stripe webhook out-of-order events | Done — plan derived from the customer's CURRENT subscriptions (order/redelivery-independent); free users no longer refilled by repeated non-active events; unmatched/failed writes answer 5xx so Stripe retries. Not exercised against live Stripe |
 | P1-11 Copy/paste + standard shortcuts | Done — Ctrl/⌘ + C / X / V / A, End, ↑/↓ to previous/next edit point, Esc to deselect (J/K/L not added) |
 | P1-12 Undo edge cases | Done — a command that throws no longer vanishes from history (the step is put back and the user is told); undo/redo refuses to resurrect a clip whose media was since removed. Not done: making media removal itself undoable (it deletes the file). The refusal was unit-tested, not driven through the real Media-remove button |
-| P1-13 Long audio can exhaust browser memory | Open |
+| P1-13 Long audio can run the browser out of memory | Done — tracks whose decoded size would exceed ~200MB (about 8.7 min stereo) play through an `<audio>` element instead of being decoded; the decoded-buffer cache now has a byte budget (scaled by device memory) and never evicts a buffer that is playing. Proven with a 12-minute file (0 decodes) vs a 1-minute file (decoded). Reversed clips of huge files still need a decode |
 | P1-14 Mobile import loads the whole file into memory | Open |
 | P1-15 No CI | Done — `.github/workflows/vcut-ci.yml` runs typecheck, the full suite (with a full-featured FFmpeg), studio lint and the production build on every push / PR |
 | P1-16 BP Studio embed may be blocked by `frame-ancestors` | Unchecked |

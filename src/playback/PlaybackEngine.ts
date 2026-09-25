@@ -1172,7 +1172,8 @@ export class PlaybackEngine {
           userAgent: typeof navigator === "undefined" ? null : navigator.userAgent,
         }),
       () => this.host.onPlaybackBlocked(),
-      (assetId) => this.prepareElementClips(assetId)
+      (assetId) => this.prepareElementClips(assetId),
+      (assetId) => this.host.getProject()?.assets.find((a) => a.id === assetId)?.duration ?? null
     );
   }
 

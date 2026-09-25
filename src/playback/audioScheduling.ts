@@ -38,3 +38,45 @@ export function lruEvict(entries: { key: string; lastUsed: number }[], limit: nu
     .slice(0, entries.length - limit)
     .map((e) => e.key);
 }
+
+/** Bytes a decoded `AudioBuffer` occupies: 32-bit floats, one plane per channel. A stereo 48kHz track is about
+ *  384KB per second — so a one-hour track is ~1.4GB, enough to crash a phone's tab on its own. */
+export function estimateDecodedBytes(durationSeconds: number, sampleRate: number, channels = 2): number {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) return 0;
+  return Math.round(durationSeconds * sampleRate * channels * 4);
+}
+
+/** Whether an asset is too large to hold decoded in memory and should be played by an `<audio>` element
+ *  (which streams from the file) instead. `null`/unknown duration returns false: with nothing to judge by, the
+ *  ordinary decode path (which has its own failure fallback) is used. */
+export function shouldStreamInsteadOfDecode(durationSeconds: number | null | undefined, sampleRate: number, thresholdBytes: number): boolean {
+  if (durationSeconds === null || durationSeconds === undefined) return false;
+  return estimateDecodedBytes(durationSeconds, sampleRate) > thresholdBytes;
+}
+
+/** Which cached buffers to drop so the cache fits BOTH a count limit and a byte budget, oldest-used first,
+ *  never touching `protectedKeys` or the most recently used entry (buffers a clip is playing from right now — dropping the cache entry would
+ *  just force a second decode of the same file mid-playback). The old policy counted buffers only, so twelve
+ *  long tracks could pin gigabytes; a byte budget bounds memory whatever the mix of long and short files. If
+ *  everything left is protected the cache may exceed its budget rather than evict something in use. */
+export function lruEvictByBytes(
+  entries: { key: string; lastUsed: number; bytes: number }[],
+  maxCount: number,
+  maxBytes: number,
+  protectedKeys: ReadonlySet<string> = new Set()
+): string[] {
+  const oldestFirst = [...entries].sort((a, b) => a.lastUsed - b.lastUsed);
+  let count = oldestFirst.length;
+  let bytes = oldestFirst.reduce((sum, e) => sum + e.bytes, 0);
+  const evict: string[] = [];
+  // The most recently used entry is never evicted: it is the buffer just requested, and dropping it would only
+  // force the same file to be decoded again immediately (a budget smaller than one buffer must not thrash).
+  for (const entry of oldestFirst.slice(0, -1)) {
+    if (count <= maxCount && bytes <= maxBytes) break;
+    if (protectedKeys.has(entry.key)) continue;
+    evict.push(entry.key);
+    count--;
+    bytes -= entry.bytes;
+  }
+  return evict;
+}

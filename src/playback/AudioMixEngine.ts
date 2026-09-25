@@ -1,5 +1,5 @@
 import type { Clip } from "../project/types.ts";
-import { detectRealSeek, lruEvict } from "./audioScheduling.ts";
+import { detectRealSeek, lruEvictByBytes, shouldStreamInsteadOfDecode } from "./audioScheduling.ts";
 import { holdMediaAtEnd } from "./mediaEnd.ts";
 
 /** Same shape `PlaybackEngine.activeAudioClips` already returns — declared here (not imported from
@@ -40,7 +40,24 @@ const DUCK_RAMP_SECONDS = 0.015;
  *  track raw byte counts; tune-able if real projects prove it too small/large. */
 const BUFFER_CACHE_LIMIT = 12;
 
+/** How many bytes of decoded audio may stay resident. Scales with the device (`navigator.deviceMemory`, in GB,
+ *  where the browser reports it — Chromium only) so a low-memory phone gets a small budget; clamped so even a big
+ *  machine doesn't hoard. The count limit above still applies too. */
+function decodedBufferBudgetBytes(): number {
+  const deviceMemoryGb = typeof navigator === "undefined" ? undefined : (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  const MB = 1024 * 1024;
+  if (!deviceMemoryGb) return 192 * MB;
+  return Math.min(512 * MB, Math.max(96 * MB, deviceMemoryGb * 48 * MB));
+}
+
+/** A single track whose decoded size would exceed this is never decoded into memory: it plays through an
+ *  `<audio>` element, which streams from the file. ~200MB is about 8.7 minutes of stereo 48kHz — a normal song
+ *  decodes as before, a podcast-length or hour-long file (up to ~1.4GB decoded) no longer can take the tab down. */
+const STREAM_INSTEAD_OF_DECODE_BYTES = 200 * 1024 * 1024;
+
 interface TrackClipNode {
+  /** The asset this node plays from — lets the buffer cache spare it from eviction while it's sounding. */
+  assetId?: string;
   source: AudioBufferSourceNode;
   gainNode: GainNode;
   /** Downstream of `gainNode`, upstream of the shared per-track chain (or `masterGain` directly for
@@ -165,6 +182,10 @@ export class AudioMixEngine {
   private reversedBufferCache = new Map<string, Promise<AudioBuffer>>();
   private retimedVideoClipNodes = new Map<string, TrackClipNode>();
   private bufferLastUsed = new Map<string, number>();
+  /** Decoded size of each cached buffer (`bufferCache` holds promises, so the size is recorded once one settles). */
+  private bufferBytes = new Map<string, number>();
+  private readonly bufferBudgetBytes = decodedBufferBudgetBytes();
+  private getAssetDuration: ((assetId: string) => number | null) | undefined;
   private trackClipNodes = new Map<string, TrackClipNode>();
   /** What happened to each audio-track asset's fetch and decode, kept even after a failure clears
    *  `bufferCache` — read only by `diagnostics`, for the preview's on-device audio report. */
@@ -222,9 +243,11 @@ export class AudioMixEngine {
     getMediaUrl: (assetId: string) => string | null,
     onBufferReport?: (details: Record<string, unknown>) => void,
     onElementBlocked?: () => void,
-    onElementFallback?: (assetId: string) => void
+    onElementFallback?: (assetId: string) => void,
+    getAssetDuration?: (assetId: string) => number | null
   ) {
     this.getMediaUrl = getMediaUrl;
+    this.getAssetDuration = getAssetDuration;
     this.onBufferReport = onBufferReport;
     this.onElementBlocked = onElementBlocked;
     this.onElementFallback = onElementFallback;
@@ -565,6 +588,8 @@ export class AudioMixEngine {
   private startTrackClip(trackId: string, clip: Clip, sourceTime: number, gain: number, sourceEnd = clip.sourceOut): void {
     const url = this.getMediaUrl(clip.assetId);
     if (!url) return;
+    // A huge file streams through an element instead; the next tick's sync picks it up on that path.
+    if (this.routeHugeAssetToElement(clip.assetId)) return;
     this.getOrDecodeBuffer(clip.assetId, url)
       .then((buffer) => {
         // The clip may no longer be the CURRENT thing scheduled for this id by the time decode
@@ -592,7 +617,7 @@ export class AudioMixEngine {
 
         const contextTimeAtStart = this.audioContext.currentTime;
         source.start(contextTimeAtStart, offset, remaining);
-        this.trackClipNodes.set(clip.id, { source, gainNode, panNode, contextTimeAtStart, sourceTimeAtStart: offset });
+        this.trackClipNodes.set(clip.id, { assetId: clip.assetId, source, gainNode, panNode, contextTimeAtStart, sourceTimeAtStart: offset });
         this.trackClipStarts.set(clip.id, (this.trackClipStarts.get(clip.id) ?? 0) + 1);
 
         source.onended = () => {
@@ -745,7 +770,21 @@ export class AudioMixEngine {
    *  Safe to call redundantly; `getOrDecodeBuffer` dedupes via its own cache. */
   prefetchAsset(assetId: string, url: string): void {
     if (this.elementFallbackAssets.has(assetId)) return;
+    if (this.routeHugeAssetToElement(assetId)) return;
     void this.getOrDecodeBuffer(assetId, url).catch(() => {});
+  }
+
+  /** A track too long to hold decoded (`STREAM_INSTEAD_OF_DECODE_BYTES`) is switched to `<audio>`-element
+   *  playback — the same path an undecodable file already takes — instead of being decoded into hundreds of
+   *  megabytes. Returns whether it was (or already is) routed that way. Judged from the asset's own duration;
+   *  an unknown duration decodes as before. */
+  private routeHugeAssetToElement(assetId: string): boolean {
+    if (this.elementFallbackAssets.has(assetId)) return true;
+    if (this.bufferCache.has(assetId)) return false; // already decoded and resident — nothing to save
+    if (!shouldStreamInsteadOfDecode(this.getAssetDuration?.(assetId), this.audioContext.sampleRate, STREAM_INSTEAD_OF_DECODE_BYTES)) return false;
+    this.elementFallbackAssets.add(assetId);
+    this.onElementFallback?.(assetId);
+    return true;
   }
 
   private getOrDecodeBuffer(assetId: string, url: string): Promise<AudioBuffer> {
@@ -766,6 +805,7 @@ export class AudioMixEngine {
       .then(
         (buffer) => {
           info.status = "decoded";
+          this.bufferBytes.set(assetId, buffer.length * buffer.numberOfChannels * 4);
           info.duration = buffer.duration;
           info.decodeMs = Math.round(performance.now() - info.startedAt);
           return buffer;
@@ -831,11 +871,17 @@ export class AudioMixEngine {
     this.onBufferReport(this.describeBuffer(info));
   }
 
+  /** Drops least-recently-used decoded buffers until the cache fits its count limit AND its byte budget, sparing
+   *  any asset a clip is playing from right now. Called when a new buffer is requested and again as each one
+   *  finishes decoding (only then is its real size known). */
   private evictStaleBuffers(): void {
-    const entries = [...this.bufferLastUsed.entries()].map(([key, lastUsed]) => ({ key, lastUsed }));
-    for (const assetId of lruEvict(entries, BUFFER_CACHE_LIMIT)) {
+    const playing = new Set<string>();
+    for (const node of this.trackClipNodes.values()) if (node.assetId) playing.add(node.assetId);
+    const entries = [...this.bufferLastUsed.entries()].map(([key, lastUsed]) => ({ key, lastUsed, bytes: this.bufferBytes.get(key) ?? 0 }));
+    for (const assetId of lruEvictByBytes(entries, BUFFER_CACHE_LIMIT, this.bufferBudgetBytes, playing)) {
       this.bufferCache.delete(assetId);
       this.bufferLastUsed.delete(assetId);
+      this.bufferBytes.delete(assetId);
     }
   }
 
