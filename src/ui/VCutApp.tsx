@@ -61,6 +61,7 @@ import { AnimationPickerMenu } from "./AnimationPickerMenu.tsx";
 import { AiTaskBanner } from "./AiTaskBanner.tsx";
 import { BeatSyncDialog } from "./BeatSyncDialog.tsx";
 import { CollageDialog } from "./CollageDialog.tsx";
+import { CollageIcon } from "./CollageIcon.tsx";
 import { AutoCaptionsDialog } from "./AutoCaptionsDialog.tsx";
 import { ClipContextMenu, type ClipContextMenuAction } from "./ClipContextMenu.tsx";
 import { ColorPickerMenu } from "./ColorPickerMenu.tsx";
@@ -1214,7 +1215,7 @@ function StatusBar({
         {/* Collage: arrange the selected clips into a grid layout, or stack offset copies of one behind it. */}
         {project && selectedClipIds.some((id) => findClip(project, id)?.track.kind === "video") && (
           <ToolbarButton title={t("Grid layouts and stacked copies")} label={t("Collage")} active={showCollage} onClick={() => setShowCollage(true)}>
-            <Grid size={18} />
+            <CollageIcon size={18} />
           </ToolbarButton>
         )}
         {project && selectedClipIds.some((id) => findClip(project, id)?.track.kind === "video") && (
