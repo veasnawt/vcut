@@ -27,7 +27,7 @@ function isKhmerFont(font: FontDefinition): boolean {
 }
 
 const KHMER_SAMPLE = "អក្សរខ្មែរ";
-const LATIN_SAMPLE = "Ag";
+const LATIN_SAMPLE = "Abc123";
 
 /** Which sample text a tile should preview a font with, by label/name — shared with
  *  `FontGridPicker.tsx` so the two font grids in this app never pick DIFFERENT sample text for the
