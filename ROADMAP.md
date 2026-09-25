@@ -28,7 +28,7 @@ Last updated 2026-09-25.
 | P1-7 Server storage only grows, no backups | Open |
 | P1-8 Jobs only in memory; restart loses spent credits | Open |
 | P1-9 Two tabs/devices silently overwrite each other | Open |
-| P1-10 Stripe webhook out-of-order events | Open |
+| P1-10 Stripe webhook out-of-order events | Done — plan derived from the customer's CURRENT subscriptions (order/redelivery-independent); free users no longer refilled by repeated non-active events; unmatched/failed writes answer 5xx so Stripe retries. Not exercised against live Stripe |
 | P1-11 Copy/paste + standard shortcuts (`PasteClipsCommand` is unused) | Open |
 | P1-12 Undo edge cases | Open |
 | P1-13 Long audio can exhaust browser memory | Open |
