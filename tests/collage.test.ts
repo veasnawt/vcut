@@ -129,3 +129,52 @@ describe("collage in a real export", () => {
     }
   });
 });
+
+describe("grid: different clips", () => {
+  function sequentialProject() {
+    let project = emptyProject([colorAsset("red", "#ff0000"), colorAsset("blue", "#0000ff"), colorAsset("green", "#00ff00")]);
+    project.sequence.width = 120;
+    project.sequence.height = 120;
+    const base = videoTrackId(project);
+    project = addClip(project, base, "red", 0);
+    project = addClip(project, base, "blue", 10);
+    const ids = clipsOf(project, base).map((c) => c.id);
+    return { project, ids, base };
+  }
+
+  it("without playTogether the clips keep their timing", () => {
+    const { project, ids } = sequentialProject();
+    const result = applyGridLayout(project, ids, "side-by-side", { gap: 0, fillWithCopies: false });
+    assert.equal(findClip(result.project, ids[1])!.clip.timelineStart > 0, true);
+  });
+
+  it("playTogether starts them together, each on its own track, in the order given", () => {
+    const { project, ids, base } = sequentialProject();
+    const result = applyGridLayout(project, [ids[1], ids[0]], "side-by-side", { gap: 0, fillWithCopies: false, playTogether: true });
+    const clips = result.clipIds.map((id) => findClip(result.project, id)!);
+    assert.equal(clips.length, 2);
+    assert.equal(clips[0].clip.timelineStart, clips[1].clip.timelineStart);
+    assert.notEqual(clips[0].track.id, clips[1].track.id);
+    // Cell 1 (left) is the SECOND clip, as ordered.
+    assert.equal(clips[0].clip.assetId, "blue");
+    assert.ok(clips[0].clip.transform!.offsetX < clips[1].clip.transform!.offsetX);
+    assert.ok(result.project.sequence.tracks.some((t) => t.id === base));
+  });
+
+  it("adds media for an empty cell as a new clip that starts with the others and matches their length", () => {
+    const { project, ids } = sequentialProject();
+    const result = applyGridLayout(project, [ids[0], { assetId: "green" }], "side-by-side", { gap: 0, fillWithCopies: false, playTogether: true });
+    assert.equal(result.clipIds.length, 2);
+    const added = findClip(result.project, result.clipIds[1])!.clip;
+    assert.equal(added.assetId, "green");
+    assert.equal(added.timelineStart, findClip(result.project, ids[0])!.clip.timelineStart);
+    assert.equal(added.sourceOut - added.sourceIn, findClip(result.project, ids[0])!.clip.sourceOut - findClip(result.project, ids[0])!.clip.sourceIn);
+  });
+
+  it("media alone can make a grid (nothing selected yet), and an empty plan is refused", () => {
+    const { project } = sequentialProject();
+    const result = applyGridLayout(project, [{ assetId: "red" }, { assetId: "blue" }], "stacked", { gap: 0, fillWithCopies: false });
+    assert.equal(result.clipIds.length, 2);
+    assert.throws(() => applyGridLayout(project, [], "stacked", { gap: 0, fillWithCopies: false }), /Select/);
+  });
+});

@@ -1,4 +1,4 @@
-import { createTrack, findAsset, findClip, newId } from "../project/createProject.ts";
+import { createClip, createTrack, findAsset, findClip, newId } from "../project/createProject.ts";
 import type { Clip, ClipTransform, Project, Track } from "../project/types.ts";
 import { IDENTITY_TRANSFORM } from "../project/types.ts";
 import { EditError } from "./operations.ts";
@@ -114,47 +114,106 @@ export interface GridOptions {
   gap: number;
   /** Cells with no clip get a copy of one of the selected clips (cycling through them) instead of staying empty. */
   fillWithCopies: boolean;
+  /** Make the clips play at the same time: each starts where the earliest one starts, on a track of its own. Without this the
+   *  clips keep their timing, and a collage only shows all its cells while they happen to overlap. */
+  playTogether?: boolean;
 }
 
-/** Arranges the given clips into a layout's cells, in the order given (the selection order). Each picture clip is resized
- *  and cropped to fill its cell; the clips stay on their own tracks and keep their timing, so a collage needs them to
- *  overlap in time. With `fillWithCopies`, leftover cells get copies on new tracks above the topmost source track.
- *  Returns the ids of every clip now in a cell. */
-export function applyGridLayout(project: Project, clipIds: readonly string[], layoutId: string, options: GridOptions): { project: Project; clipIds: string[] } {
+/** One cell's content: an existing clip (by id), or a media file to add as a new clip in that cell. */
+export type CellSource = string | { assetId: string };
+
+const overlaps = (aStart: number, aEnd: number, bStart: number, bEnd: number): boolean => aStart < bEnd - 1e-6 && bStart < aEnd - 1e-6;
+
+/** Arranges clips into a layout's cells, in the order given (cell 1 first). Each entry is an existing clip (resized and cropped
+ *  to fill its cell) or `{ assetId }`, media to add as a new clip in that cell — starting where the earliest existing clip starts
+ *  and lasting as long as it does (a video shorter than that plays through once). With `playTogether`, the existing clips are
+ *  first moved to start together, each on its own track. With `fillWithCopies`, leftover cells get copies on new tracks above
+ *  the topmost source track. Returns the ids of every clip now in a cell, in cell order. */
+export function applyGridLayout(project: Project, sources: readonly CellSource[], layoutId: string, options: GridOptions): { project: Project; clipIds: string[] } {
   const layout = findGridLayout(layoutId);
   if (!layout) throw new EditError("Unknown layout");
   const draft = structuredClone(project);
   const frameW = draft.sequence.width;
   const frameH = draft.sequence.height;
-  const sources = clipIds
-    .map((id) => findClip(draft, id))
-    .filter((found): found is NonNullable<typeof found> => Boolean(found) && isPicture(draft, found!.clip));
-  if (sources.length === 0) throw new EditError("Select a video or image clip first");
+
+  type Found = NonNullable<ReturnType<typeof findClip>>;
+  const slots = sources.slice(0, layout.cells.length).map((entry): { found: Found } | { assetId: string } | null => {
+    if (typeof entry === "string") {
+      const found = findClip(draft, entry);
+      return found && isPicture(draft, found.clip) ? { found } : null;
+    }
+    const asset = findAsset(draft, entry.assetId);
+    return asset && (asset.kind === "video" || asset.kind === "image" || asset.kind === "color") ? { assetId: entry.assetId } : null;
+  });
+  const existing: Found[] = slots.flatMap((slot) => (slot && "found" in slot ? [slot.found] : []));
+  if (existing.length === 0 && !slots.some((slot) => slot && "assetId" in slot)) throw new EditError("Select a video or image clip first");
+
+  const anchorStart = existing.length > 0 ? Math.min(...existing.map((f) => f.clip.timelineStart)) : 0;
+  const anchorLength = existing.length > 0 ? Math.max(...existing.map((f) => f.clip.sourceOut - f.clip.sourceIn)) : 5;
+
+  const trackIndexOf = (id: string) => draft.sequence.tracks.findIndex((t) => t.id === id);
+  const usedTracks = new Set<string>();
+  const insertAbove = () => Math.max(...existing.map((f) => trackIndexOf(f.track.id)), -1) + 1;
+  const addTrackWith = (clip: Clip): void => {
+    const track = createTrack("video", nextVideoTrackName(draft.sequence.tracks));
+    track.clips = [clip];
+    draft.sequence.tracks.splice(insertAbove(), 0, track);
+    usedTracks.add(track.id);
+  };
+  const removeFromOwner = (trackId: string, clipId: string): void => {
+    const owner = draft.sequence.tracks.find((t) => t.id === trackId)!;
+    owner.clips = owner.clips.filter((c) => c.id !== clipId);
+  };
 
   const placed: string[] = [];
-  const cellsForSources = Math.min(sources.length, layout.cells.length);
-  for (let i = 0; i < cellsForSources; i++) {
-    const { clip } = sources[i];
-    const size = sourceSize(draft, clip);
-    const px = cellToPixels(layout.cells[i], frameW, frameH, options.gap);
-    clip.transform = cellFillTransform(size.width, size.height, frameW, frameH, px, clip.transform);
-    delete clip.transformKeyframes;
-    placed.push(clip.id);
-  }
+  slots.forEach((slot, index) => {
+    if (!slot) return;
+    const px = cellToPixels(layout.cells[index], frameW, frameH, options.gap);
+    if ("found" in slot) {
+      const { clip, track } = slot.found;
+      const size = sourceSize(draft, clip);
+      const length = clip.sourceOut - clip.sourceIn;
+      const needsMove = Boolean(options.playTogether) && clip.timelineStart !== anchorStart;
+      const ownTrack = draft.sequence.tracks.find((t) => t.id === track.id)!;
+      const clash = needsMove && ownTrack.clips.some((other) => other.id !== clip.id && overlaps(anchorStart, anchorStart + length, other.timelineStart, other.timelineStart + (other.sourceOut - other.sourceIn)));
+      const sharesTrack = Boolean(options.playTogether) && usedTracks.has(track.id);
+      if (clash || sharesTrack) {
+        // Not free on its own track: take it out and give it a fresh track above the others.
+        removeFromOwner(track.id, clip.id);
+        const relocated: Clip = { ...clip, timelineStart: options.playTogether ? anchorStart : clip.timelineStart };
+        relocated.transform = cellFillTransform(size.width, size.height, frameW, frameH, px, clip.transform);
+        delete relocated.transformKeyframes;
+        addTrackWith(relocated);
+        placed.push(relocated.id);
+        return;
+      }
+      if (needsMove) clip.timelineStart = anchorStart;
+      usedTracks.add(track.id);
+      clip.transform = cellFillTransform(size.width, size.height, frameW, frameH, px, clip.transform);
+      delete clip.transformKeyframes;
+      placed.push(clip.id);
+    } else {
+      const asset = findAsset(draft, slot.assetId)!;
+      const length = asset.kind === "video" ? Math.min(asset.duration, anchorLength) : anchorLength;
+      const added = createClip({ assetId: asset.id, sourceIn: 0, sourceOut: Math.max(0.1, length), timelineStart: anchorStart });
+      const size = { width: asset.width || frameW, height: asset.height || frameH };
+      added.transform = cellFillTransform(size.width, size.height, frameW, frameH, px, IDENTITY_TRANSFORM);
+      addTrackWith(added);
+      placed.push(added.id);
+    }
+  });
 
-  if (options.fillWithCopies && layout.cells.length > cellsForSources) {
-    const topIndex = Math.max(...sources.map((s) => draft.sequence.tracks.findIndex((t) => t.id === s.track.id)));
-    for (let cell = cellsForSources; cell < layout.cells.length; cell++) {
-      const from = sources[cell % sources.length].clip;
+  const filled = slots.length;
+  if (options.fillWithCopies && layout.cells.length > filled && placed.length > 0) {
+    const pool = placed.map((id) => findClip(draft, id)!.clip);
+    for (let cell = filled; cell < layout.cells.length; cell++) {
+      const from = pool[(cell - filled) % pool.length];
       const size = sourceSize(draft, from);
       const px = cellToPixels(layout.cells[cell], frameW, frameH, options.gap);
       const copy: Clip = { ...structuredClone(from), id: newId("c") };
       copy.transform = cellFillTransform(size.width, size.height, frameW, frameH, px, from.transform);
       delete copy.transformKeyframes;
-      const track = createTrack("video", nextVideoTrackName(draft.sequence.tracks));
-      track.clips = [copy];
-      // Above the topmost source track, so copies never sit under the clips they were made from.
-      draft.sequence.tracks.splice(topIndex + 1, 0, track);
+      addTrackWith(copy);
       placed.push(copy.id);
     }
   }

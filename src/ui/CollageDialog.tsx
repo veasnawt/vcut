@@ -6,7 +6,8 @@ import { Close } from "@veasnawt/vicons";
 import { ApplyGridLayoutCommand, StackCopiesCommand } from "../commands/index.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { findAsset, findClip } from "../project/createProject.ts";
-import { GRID_LAYOUTS, type GridLayout } from "../timeline/collage.ts";
+import { thumbnailUrl } from "../api/client.ts";
+import { GRID_LAYOUTS, type CellSource, type GridLayout } from "../timeline/collage.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { NumberField } from "./NumberField.tsx";
 
@@ -38,6 +39,7 @@ export function CollageDialog({ onClose }: { onClose: () => void }) {
   const selectedClipIds = useEditorStore((s) => s.selectedClipIds);
   const run = useEditorStore((s) => s.run);
   const setStatus = useEditorStore((s) => s.setStatus);
+  const projectId = useEditorStore((s) => s.projectId);
 
   const pictureIds = project
     ? selectedClipIds.filter((id) => {
@@ -51,6 +53,20 @@ export function CollageDialog({ onClose }: { onClose: () => void }) {
   const [layoutId, setLayoutId] = useState("grid-2x2");
   const [gap, setGap] = useState(8);
   const [fill, setFill] = useState(pictureIds.length === 1);
+  // Which clip (or media to add) goes in each cell, in cell order. "" is an empty cell.
+  const [plan, setPlan] = useState<CellSource[]>(pictureIds);
+  // Clips that don't already overlap in time need to be moved to start together to show in one grid.
+  const [playTogether, setPlayTogether] = useState(() => {
+    if (!project || pictureIds.length < 2) return false;
+    const spans = pictureIds.flatMap((id) => {
+      const found = findClip(project, id);
+      return found ? [{ start: found.clip.timelineStart, end: found.clip.timelineStart + (found.clip.sourceOut - found.clip.sourceIn) }] : [];
+    });
+    const latestStart = Math.max(...spans.map((x) => x.start));
+    const earliestEnd = Math.min(...spans.map((x) => x.end));
+    return latestStart >= earliestEnd - 1e-6;
+  });
+  const [pickingCell, setPickingCell] = useState<number | null>(null);
   const [count, setCount] = useState(3);
   const [offsetX, setOffsetX] = useState(60);
   const [offsetY, setOffsetY] = useState(-40);
@@ -70,7 +86,7 @@ export function CollageDialog({ onClose }: { onClose: () => void }) {
   const aspect = project.sequence.width / Math.max(1, project.sequence.height);
 
   function applyGrid() {
-    const command = new ApplyGridLayoutCommand(pictureIds, layoutId, { gap, fillWithCopies: fill });
+    const command = new ApplyGridLayoutCommand(plan.slice(0, layout.cells.length), layoutId, { gap, fillWithCopies: fill, playTogether });
     run(command);
     if (command.placedClipIds.length > 0) {
       useEditorStore.setState({ selectedClipIds: command.placedClipIds });
@@ -116,12 +132,12 @@ export function CollageDialog({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-          {pictureIds.length === 0 ? (
+          {pictureIds.length === 0 && tab === "stack" ? (
             <p className="py-6 text-center text-[12px] text-white/50">{t("Select a video or image clip first")}</p>
           ) : tab === "grid" ? (
             <>
               <p className="text-[11px] leading-relaxed text-white/45">
-                {t("Fits your selected clips into the cells, in the order you selected them. Clips should be on different tracks and play at the same time.")}
+                {t("Pick a layout, then choose which clip goes in each cell. Empty cells can take media from your project.")}
               </p>
               <div className="mt-3 grid grid-cols-4 gap-2">
                 {GRID_LAYOUTS.map((l) => (
@@ -144,9 +160,106 @@ export function CollageDialog({ onClose }: { onClose: () => void }) {
                 <span>{t("Fill empty cells with copies")}</span>
                 <input type="checkbox" className="h-4 w-4 accent-sky-400" checked={fill} onChange={(e) => setFill(e.target.checked)} />
               </label>
-              <p className="text-[11px] text-white/35">
-                {t("{a} clips selected · {b} cells", { a: pictureIds.length, b: layout.cells.length })}
-              </p>
+              <label className="flex items-center justify-between gap-2 py-1.5 text-[12px] text-white/70">
+                <span className="min-w-0">
+                  {t("Play all at the same time")}
+                  <span className="block text-[11px] text-white/35">{t("Moves the clips to start together, each on its own track.")}</span>
+                </span>
+                <input type="checkbox" className="h-4 w-4 shrink-0 accent-sky-400" checked={playTogether} onChange={(e) => setPlayTogether(e.target.checked)} />
+              </label>
+
+              <p className="mt-3 text-[11px] font-medium uppercase tracking-wide text-white/40">{t("Cells")}</p>
+              <ul className="mt-1.5 space-y-1.5">
+                {layout.cells.map((_, index) => {
+                  const entry = plan[index];
+                  const clip = typeof entry === "string" && entry ? findClip(project, entry)?.clip : undefined;
+                  const asset = clip
+                    ? findAsset(project, clip.assetId)
+                    : entry && typeof entry !== "string"
+                      ? findAsset(project, entry.assetId)
+                      : undefined;
+                  const thumb = asset && projectId ? thumbnailUrl(projectId, asset) : null;
+                  const move = (delta: number) => {
+                    const next = [...plan];
+                    while (next.length < layout.cells.length) next.push("");
+                    const target = index + delta;
+                    if (target < 0 || target >= layout.cells.length) return;
+                    [next[index], next[target]] = [next[target], next[index]];
+                    setPlan(next);
+                  };
+                  return (
+                    <li key={index}>
+                      <div className="flex items-center gap-2 rounded-lg bg-white/[0.04] px-2 py-1.5">
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-semibold text-white/70">{index + 1}</span>
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded bg-black/40">
+                          {thumb ? <img src={thumb} alt="" className="h-full w-full object-cover" /> : asset?.kind === "color" ? <span className="h-full w-full" style={{ backgroundColor: asset.color }} /> : null}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate text-[12px] text-white/75">
+                          {asset ? asset.name : <span className="text-white/35">{fill && pictureIds.length > 0 ? t("A copy of another clip") : t("Empty")}</span>}
+                        </span>
+                        {asset ? (
+                          <>
+                            <button type="button" aria-label={t("Move up")} onClick={() => move(-1)} disabled={index === 0} className="rounded px-1.5 py-1 text-[12px] text-white/50 hover:bg-white/10 hover:text-white disabled:opacity-25">↑</button>
+                            <button type="button" aria-label={t("Move down")} onClick={() => move(1)} disabled={index === layout.cells.length - 1} className="rounded px-1.5 py-1 text-[12px] text-white/50 hover:bg-white/10 hover:text-white disabled:opacity-25">↓</button>
+                            <button
+                              type="button"
+                              aria-label={t("Remove from this cell")}
+                              onClick={() => {
+                                const next = [...plan];
+                                next[index] = "";
+                                setPlan(next);
+                              }}
+                              className="rounded px-1.5 py-1 text-[12px] text-white/50 hover:bg-white/10 hover:text-white"
+                            >
+                              ✕
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setPickingCell(pickingCell === index ? null : index)}
+                            className="rounded-md bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white transition hover:bg-white/15"
+                          >
+                            {t("Add media")}
+                          </button>
+                        )}
+                      </div>
+                      {pickingCell === index && (
+                        <div className="mt-1.5 grid max-h-40 grid-cols-4 gap-1.5 overflow-y-auto rounded-lg bg-black/30 p-1.5">
+                          {project.assets
+                            .filter((a) => a.kind === "video" || a.kind === "image")
+                            .map((a) => {
+                              const t2 = projectId ? thumbnailUrl(projectId, a) : null;
+                              return (
+                                <button
+                                  key={a.id}
+                                  type="button"
+                                  title={a.name}
+                                  onClick={() => {
+                                    const next = [...plan];
+                                    while (next.length < index) next.push("");
+                                    next[index] = { assetId: a.id };
+                                    setPlan(next);
+                                    setPickingCell(null);
+                                  }}
+                                  className="aspect-square overflow-hidden rounded bg-black/50 ring-sky-400/60 transition hover:ring-2"
+                                >
+                                  {t2 ? <img src={t2} alt="" className="h-full w-full object-cover" /> : <span className="text-[10px] text-white/50">{a.name}</span>}
+                                </button>
+                              );
+                            })}
+                          {project.assets.every((a) => a.kind !== "video" && a.kind !== "image") && (
+                            <p className="col-span-4 py-3 text-center text-[11px] text-white/40">{t("Import a video or photo first (Media).")}</p>
+                          )}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+              {plan.length > layout.cells.length && (
+                <p className="mt-2 text-[11px] text-amber-200/80">{t("This layout has fewer cells than clips — the extra clips are left as they are.", {})}</p>
+              )}
             </>
           ) : (
             <>
@@ -194,7 +307,7 @@ export function CollageDialog({ onClose }: { onClose: () => void }) {
           </button>
           <button
             type="button"
-            disabled={pictureIds.length === 0}
+            disabled={tab === "grid" ? !plan.some((entry) => entry !== "") : pictureIds.length === 0}
             onClick={tab === "grid" ? applyGrid : applyStack}
             className="flex-1 rounded-lg bg-sky-500 py-2.5 text-[13px] font-semibold text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/30"
           >

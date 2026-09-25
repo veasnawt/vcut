@@ -54,7 +54,7 @@ import {
 import type { VideoCutoutInfo } from "../timeline/operations.ts";
 import { applyGridLayout, stackCopies } from "../timeline/collage.ts";
 import { fitClipsToBeats, splitClipAtBeats } from "../timeline/beatSync.ts";
-import type { GridOptions, StackOptions } from "../timeline/collage.ts";
+import type { CellSource, GridOptions, StackOptions } from "../timeline/collage.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { hasTextStyleKeyframes } from "../timeline/keyframes.ts";
 import type { Command } from "./types.ts";
@@ -1858,11 +1858,11 @@ export class ApplyGridLayoutCommand implements Command {
   /** Every clip now sitting in a cell (the arranged ones, then any copies made to fill the rest). */
   placedClipIds: string[] = [];
 
-  private clipIds: string[];
+  private clipIds: CellSource[];
   private layoutId: string;
   private options: GridOptions;
 
-  constructor(clipIds: string[], layoutId: string, options: GridOptions) {
+  constructor(clipIds: CellSource[], layoutId: string, options: GridOptions) {
     this.clipIds = clipIds;
     this.layoutId = layoutId;
     this.options = options;
