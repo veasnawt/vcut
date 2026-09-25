@@ -269,8 +269,8 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
   // Never narrower than the viewport: zoomed far out, `contentSeconds * pixelsPerSecond` can be a sliver
   // of the visible lanes area, and the ruler (a block child of this width) is what receives the scrub
   // press — so the empty stretch beside it was dead space where clicking/dragging couldn't move the
-  // playhead. Mobile's `leadingPad` is added on top separately, so it's excluded from the floor here.
-  const contentWidth = Math.max(contentSeconds * pixelsPerSecond, isMobile ? viewportWidth / 2 : viewportWidth);
+  // playhead. Desktop only: mobile scrolls instead, and gets `trailingPad` (below).
+  const contentWidth = Math.max(contentSeconds * pixelsPerSecond, isMobile ? 0 : viewportWidth);
   // The lanes viewport's own center IS the screen's center on mobile — unlike desktop, there's no
   // fixed track-headers sidebar stealing width from it (track headers scroll WITH the clips on mobile
   // instead, as inline chips — see the per-row header render below), so `scrollRef`'s measured
@@ -291,7 +291,13 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
   // shift absolutely-positioned descendants (they're positioned from the padding edge, not the content
   // edge), so it wouldn't actually move the ruler/clips/markers at all.
   const leadingPad = isMobile ? centerOffset : 0;
-  const scrollableWidth = contentWidth + leadingPad;
+  // Mobile-only empty space kept AFTER the content, the mirror image of `leadingPad`. In fixed-center
+  // mode the playhead only moves by SCROLLING, and reaching time `t` needs `scrollLeft = t * pps`, i.e. a
+  // scroll range of at least `contentWidth`, which means `scrollWidth >= leadingPad + contentWidth +
+  // centerOffset`. Without it, zoomed far out (content narrower than the screen) there was NO scroll
+  // range at all, so scrubbing/playing couldn't move the playhead — it sat frozen at its start.
+  const trailingPad = isMobile ? centerOffset : 0;
+  const scrollableWidth = contentWidth + leadingPad + trailingPad;
 
   // Sorted/clamped the same way the store's own `exportRange()` getter does (see that method's own
   // comment) — kept in sync by hand rather than calling it, since this needs to be a REACTIVE value
