@@ -1006,8 +1006,16 @@ export const useEditorStore = create<EditorState>((set, get) => {
       if (!projectId || !project || !asset) return null;
       const language = get().language;
       try {
-        const url = api.mediaUrl(projectId, asset.relPath, Boolean(asset.libraryMediaId));
-        const analysis = await analyzeAudioUrl(url);
+        // Decoded on the server (FFmpeg): Safari's `decodeAudioData` rejects many playable files with "Decoding failed". The
+        // in-browser decode stays as a fallback for a device with no server (the mobile app).
+        let analysis: { bpm: number; confidence: number; beats: number[] };
+        try {
+          analysis = await api.analyzeMediaBeats(projectId, asset.relPath, Boolean(asset.libraryMediaId));
+        } catch (serverError) {
+          const status = (serverError as { status?: number }).status;
+          if (status === 422 || status === 404) throw serverError;
+          analysis = await analyzeAudioUrl(api.mediaUrl(projectId, asset.relPath, Boolean(asset.libraryMediaId)));
+        }
         const beats = { bpm: analysis.bpm, confidence: analysis.confidence, times: analysis.beats };
         const current = get().project;
         if (current) applyProject({ ...current, assets: current.assets.map((a) => (a.id === assetId ? { ...a, beats } : a)) });

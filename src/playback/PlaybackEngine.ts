@@ -2,6 +2,7 @@ import { clipDuration, clipEnd } from "../project/createProject.ts";
 import { animationFrameIndex, animationFrameRect, type AssetAnimation } from "../project/stickers.ts";
 import type { ChromaKeySettings, Clip, ClipOutline, ClipEffects, ClipMask, ClipTransform, ColorGrading, CustomFontAsset, Project, TextStyle, TransitionType, Track } from "../project/types.ts";
 import { isIdentityOutline } from "../export/outlineFilter.ts";
+import { GlChromaKeyer } from "./glChromaKey.ts";
 import { isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop } from "../project/types.ts";
 import type { ClipOverride } from "../timeline/groupMove.ts";
 import { applyColorGrading, buildCurveLut, composeLuts } from "../timeline/colorCurves.ts";
@@ -2442,7 +2443,34 @@ export class PlaybackEngine {
     // failure by. `applyManualEffects` is the pixel-math equivalent, run through this SAME readback
     // pipeline rather than a separate one.
     const needsManualEffects = !isIdentityEffects(effects) && !supportsCanvasFilter();
-    if (chromaKey || needsColorGrading || needsLut || pixelEffect || needsManualEffects || mask) {
+    // A plain chroma key (nothing else in the pixel pipeline) runs on the GPU: no readback, no per-pixel JavaScript, so a keyed video
+    // (an AI cutout) plays at video speed on a phone. Anything more complex, or a browser without WebGL, uses the CPU path below.
+    let keyedOnGpu = false;
+    if (
+      chromaKey &&
+      !needsColorGrading &&
+      !needsLut &&
+      !pixelEffect &&
+      !needsManualEffects &&
+      !mask &&
+      this.glKeyer.available &&
+      ((element instanceof HTMLVideoElement && element.readyState >= 2) || element instanceof HTMLImageElement)
+    ) {
+      let gpuScale = pipelineScaleFor((box.width * deviceScaleOf(context)) / box.cropWidth);
+      if (this.host.isPlaying()) {
+        for (const step of [...PIPELINE_SCALE_STEPS].reverse()) {
+          if (step > gpuScale) continue;
+          gpuScale = step;
+          if (sourceWidth * sourceHeight * step * step <= PLAYING_KEY_MAX_PIXELS * 2) break;
+        }
+      }
+      const keyed = this.glKeyer.render(element, Math.max(1, Math.round(sourceWidth * gpuScale)), Math.max(1, Math.round(sourceHeight * gpuScale)), chromaKey);
+      if (keyed) {
+        source = keyed;
+        keyedOnGpu = true;
+      }
+    }
+    if (!keyedOnGpu && (chromaKey || needsColorGrading || needsLut || pixelEffect || needsManualEffects || mask)) {
       // A pixel effect (glitch/water ripple) displaces by a fixed number of SOURCE pixels, so it must
       // keep running at full resolution to look the same — everything else here is either per-pixel
       // color math or expressed in resolution-independent fractions (mask, crop), so it's exactly as
@@ -2589,6 +2617,7 @@ export class PlaybackEngine {
 
   /** Per clip: the last keyed frame and what it was made from (see `drawTransformed`). Dropped with the clip's pooled element. */
   private keyedFrameCache = new Map<string, { canvas: HTMLCanvasElement; signature: string }>();
+  private glKeyer = new GlChromaKeyer();
   private frameCounters = new WeakMap<HTMLVideoElement, number>();
 
   /** A value that changes whenever the video presents a NEW frame. Uses `requestVideoFrameCallback` where the browser has it (a

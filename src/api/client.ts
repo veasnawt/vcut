@@ -658,6 +658,16 @@ export async function removeBackground(projectId: string, assetId?: string, clip
   return importMedia(projectId, file);
 }
 
+/** Finds the tempo and beats of a media file on the server (FFmpeg decodes it, so any importable format works). */
+export async function analyzeMediaBeats(projectId: string, relPath: string, library: boolean): Promise<{ bpm: number; confidence: number; beats: number[] }> {
+  const response = await apiFetch(`${BASE}/media/beats?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ relPath, library }),
+  });
+  return unwrap<{ bpm: number; confidence: number; beats: number[] }>(response);
+}
+
 /** Longest video clip (seconds) the video cutout accepts — mirrors `ai-video-cutout/route.ts`. */
 export const MAX_VIDEO_CUTOUT_SECONDS = 15;
 
