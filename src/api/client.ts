@@ -658,6 +658,32 @@ export async function removeBackground(projectId: string, assetId?: string, clip
   return importMedia(projectId, file);
 }
 
+/** Longest video clip (seconds) the video cutout accepts — mirrors `ai-video-cutout/route.ts`. */
+export const MAX_VIDEO_CUTOUT_SECONDS = 15;
+
+export interface VideoCutoutResult {
+  asset: Asset;
+  /** The colour the removed background was painted with; the Chroma Key keys exactly this. */
+  keyColor: string;
+  /** Seconds of the source clip the cutout covers (the new asset starts at 0). */
+  windowSeconds: number;
+}
+
+/** AI video cutout: the subject of a video clip, frame by frame, as a new video asset whose background is one flat
+ *  colour (`keyColor`) for the Chroma Key to remove. `keepAudio` carries the clip's own sound onto it. */
+export async function cutoutVideoClip(projectId: string, clipId: string, keepAudio: boolean): Promise<VideoCutoutResult> {
+  const deliverBytes = !HOSTED;
+  const response = await centralFetch(`/ai-video-cutout?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ clipId, keepAudio, deliverBytes }),
+  });
+  const body = await unwrap<{ asset: Asset; keyColor: string; windowSeconds: number; bytesBase64?: string }>(response);
+  if (!body.bytesBase64) return { asset: body.asset, keyColor: body.keyColor, windowSeconds: body.windowSeconds };
+  const file = new File([base64ToBytes(body.bytesBase64).buffer as ArrayBuffer], body.asset.name, { type: "video/mp4" });
+  return { asset: await importMedia(projectId, file), keyColor: body.keyColor, windowSeconds: body.windowSeconds };
+}
+
 /** AI Edit — applies user's text prompt to an image/video frame using instruction-based editing. */
 export async function runAiEdit(
   projectId: string,

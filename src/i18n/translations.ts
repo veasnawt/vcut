@@ -586,6 +586,7 @@ export const KM_TRANSLATIONS: Record<string, string> = {
   "Remove BG": "លុបផ្ទៃក្រោយ",
   "Removing background...": "កំពុងលុបផ្ទៃខាងក្រោយ...",
   "Background removed": "បានលុបផ្ទៃខាងក្រោយ",
+  "Cutout works on clips up to {n} seconds — split this clip first": "ការកាត់វត្ថុចេញដំណើរការលើឃ្លីបរហូតដល់ {n} វិនាទី — សូមកាត់ឃ្លីបនេះជាមុនសិន",
   "Remove Background (AI)": "លុបផ្ទៃខាងក្រោយ (AI)",
   "Instantly remove the background using AI cutout to create a transparent subject.": "លុបផ្ទៃខាងក្រោយភ្លាមៗដោយប្រើការកាត់រូប AI ដើម្បីបង្កើតរូបភាពថ្លា។",
 

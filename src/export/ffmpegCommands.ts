@@ -92,6 +92,53 @@ export function buildAiFramePngArgs(
   return [...seek, "-i", input, "-frames:v", "1", "-vf", `${scale},format=${opts.alpha ? "rgba" : "rgb24"}`, "-y", output];
 }
 
+/** The slice of a clip's source sent to a video-matting model: `durationSeconds` from `startSeconds`, no audio, the long
+ *  edge capped and the frame rate limited so a 15 s clip stays a few MB and the model runs quickly. */
+export function buildCutoutInputArgs(
+  input: string,
+  output: string,
+  opts: { startSeconds: number; durationSeconds: number; maxEdge?: number; fps?: number }
+): string[] {
+  const edge = Math.max(2, Math.floor(opts.maxEdge ?? 720));
+  const scale = `scale='min(${edge},iw)':'min(${edge},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2`;
+  return [
+    "-ss", String(Math.max(0, opts.startSeconds)),
+    "-i", input,
+    "-t", String(opts.durationSeconds),
+    "-an",
+    "-vf", `fps=${opts.fps ?? 24},${scale},format=yuv420p`,
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+    "-movflags", "+faststart",
+    "-y", output,
+  ];
+}
+
+/** Puts the original clip's audio back on a matted (silent) video, for the "replace this clip" cutout. */
+export function buildMuxAudioArgs(
+  videoInput: string,
+  audioInput: string,
+  output: string,
+  opts: { startSeconds: number; durationSeconds: number }
+): string[] {
+  return [
+    "-i", videoInput,
+    "-ss", String(Math.max(0, opts.startSeconds)),
+    "-t", String(opts.durationSeconds),
+    "-i", audioInput,
+    "-map", "0:v:0", "-map", "1:a:0?",
+    "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+    "-shortest",
+    "-movflags", "+faststart",
+    "-y", output,
+  ];
+}
+
+/** One pixel near the top-left corner of a matted "green screen" frame — the colour the model painted the removed
+ *  background with, so the Chroma Key can key exactly that colour instead of assuming pure green. Raw RGB to stdout. */
+export function buildCornerPixelArgs(input: string): string[] {
+  return ["-i", input, "-frames:v", "1", "-vf", "format=rgb24,crop=1:1:2:2", "-f", "rawvideo", "pipe:1"];
+}
+
 /** How many frames `buildFilmstripArgs` samples, and the fixed size (pixels) each is scaled/cropped to
  *  — fixed, not proportional to the source's own aspect ratio, so every sampled frame is IDENTICALLY
  *  sized and the sprite tiles into a clean, uniform grid regardless of whether the source is portrait,

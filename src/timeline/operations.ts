@@ -638,6 +638,35 @@ export function moveTrackLayer(project: Project, trackId: string, direction: "up
   });
 }
 
+/** What a matted-video cutout needs to be placed as a clip. */
+export interface VideoCutoutInfo {
+  /** The flat colour the removed background was painted with. */
+  keyColor: string;
+  /** Seconds of the source clip the cutout covers. */
+  windowSeconds: number;
+}
+
+/** Clip fields that make a matted video play in place of the clip it was cut from: it starts at 0 (the cutout file
+ *  holds only the clip's own window), keeps the clip's speed, and keys out the flat background colour. */
+export function videoCutoutFields(source: Clip, info: VideoCutoutInfo): Pick<Clip, "sourceIn" | "sourceOut" | "chromaKey" | "speed"> {
+  return {
+    sourceIn: 0,
+    sourceOut: info.windowSeconds,
+    chromaKey: { color: info.keyColor, similarity: 0.2, smoothness: 0.08 },
+    ...(source.speed !== undefined ? { speed: source.speed } : null),
+  };
+}
+
+/** Swaps a clip's video for its matted cutout, in place: same position on the timeline, subject only. */
+export function applyVideoCutout(project: Project, clipId: string, cutoutAsset: Asset, info: VideoCutoutInfo): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (!draft.assets.some((a) => a.id === cutoutAsset.id)) draft.assets.push(cutoutAsset);
+    Object.assign(found.clip, videoCutoutFields(found.clip, info), { assetId: cutoutAsset.id });
+  });
+}
+
 /** Creates the viral 'Text Behind Subject' effect:
  *  1. Inserts a new text track directly after the source track.
  *  2. Adds a bold styled Text clip on that text track matching the source clip's duration and position.
@@ -650,7 +679,9 @@ export function createTextBehindSubject(
   cutoutAsset: Asset,
   initialText = "TEXT BEHIND PERSON",
   customTextClipId?: string,
-  customCutoutClipId?: string
+  customCutoutClipId?: string,
+  /** Set when `cutoutAsset` is a matted VIDEO (see `videoCutoutClip`) rather than a still. */
+  videoCutout?: VideoCutoutInfo
 ): { project: Project; textClipId: string; cutoutClipId: string } {
   const found = findClip(project, sourceClipId);
   if (!found) throw new EditError("Clip not found");
@@ -719,6 +750,7 @@ export function createTextBehindSubject(
           sourceIn: sourceClip.sourceIn,
           sourceOut: sourceClip.sourceOut,
           transform: sourceClip.transform ? { ...sourceClip.transform } : undefined,
+          ...(videoCutout ? videoCutoutFields(sourceClip, videoCutout) : null),
         },
       ],
       locked: false,

@@ -1,0 +1,102 @@
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { describe, it } from "node:test";
+import { buildCornerPixelArgs, buildCutoutInputArgs, buildMuxAudioArgs } from "../src/export/ffmpegCommands.ts";
+import { ApplyVideoCutoutCommand, CreateTextBehindSubjectCommand } from "../src/commands/index.ts";
+import { findClip } from "../src/project/createProject.ts";
+import type { Asset, Project } from "../src/project/types.ts";
+import { emptyProject } from "./fixture.ts";
+
+function bundledFfmpeg(): string | null {
+  try {
+    const require = createRequire(path.resolve(import.meta.dirname, "../../../studios/vcut/package.json"));
+    const binary = require("ffmpeg-static") as string;
+    return fs.existsSync(binary) ? binary : null;
+  } catch {
+    return null;
+  }
+}
+
+const asset = (id: string, hasAudio = false): Asset =>
+  ({ id, kind: "video", name: id, relPath: `${id}.mp4`, duration: 20, hasAudio, sizeBytes: 1, importedAt: 0, width: 720, height: 1280 }) as Asset;
+
+function projectWithClip(): Project {
+  const base = emptyProject();
+  const track = { id: "v1", kind: "video" as const, name: "V1", locked: false, visible: true, muted: false, solo: false, clips: [{ id: "c1", assetId: "src", timelineStart: 4, sourceIn: 6, sourceOut: 12, speed: 2 }] };
+  return { ...base, assets: [...base.assets, asset("src", true)], sequence: { ...base.sequence, tracks: [track] } };
+}
+
+describe("video cutout: clip edits", () => {
+  const info = { keyColor: "#78ff9b", windowSeconds: 6 };
+
+  it("replaces the clip in place with the cutout, keyed on its background colour, and undoes cleanly", () => {
+    const project = projectWithClip();
+    const command = new ApplyVideoCutoutCommand("c1", asset("cut"), info);
+    const next = command.apply(project);
+    const clip = findClip(next, "c1")!.clip;
+    assert.equal(clip.assetId, "cut");
+    assert.equal(clip.timelineStart, 4);
+    assert.equal(clip.sourceIn, 0);
+    assert.equal(clip.sourceOut, 6);
+    assert.equal(clip.speed, 2);
+    assert.equal(clip.chromaKey?.color, "#78ff9b");
+    assert.equal(findClip(command.revert(), "c1")!.clip.assetId, "src");
+  });
+
+  it("text behind subject: the cutout layer starts at 0 with the key, and the original clip is untouched", () => {
+    const project = projectWithClip();
+    const command = new CreateTextBehindSubjectCommand("c1", asset("cut"), "HI", info);
+    const next = command.apply(project);
+    const cutoutClip = findClip(next, command.createdCutoutClipId!)!.clip;
+    assert.equal(cutoutClip.sourceIn, 0);
+    assert.equal(cutoutClip.sourceOut, 6);
+    assert.equal(cutoutClip.chromaKey?.color, "#78ff9b");
+    assert.equal(findClip(next, "c1")!.clip.assetId, "src");
+  });
+
+  it("a still (image) cutout keeps the old behaviour: no chroma key", () => {
+    const project = projectWithClip();
+    const command = new CreateTextBehindSubjectCommand("c1", { ...asset("still"), kind: "image" } as Asset, "HI");
+    const next = command.apply(project);
+    assert.equal(findClip(next, command.createdCutoutClipId!)!.clip.chromaKey, undefined);
+  });
+});
+
+describe("video cutout: FFmpeg steps (real FFmpeg)", () => {
+  const ffmpeg = bundledFfmpeg();
+  it("slices and downsizes the clip, restores its audio, and reads the background colour", { skip: !ffmpeg }, () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vcut-cutout-"));
+    const stderrOf = (args: string[]): string => {
+      try {
+        execFileSync(ffmpeg!, ["-hide_banner", ...args], { stdio: ["ignore", "pipe", "pipe"] });
+        return "";
+      } catch (e) {
+        return String((e as { stderr?: Buffer | string }).stderr ?? "");
+      }
+    };
+    try {
+      const src = path.join(dir, "src.mp4");
+      execFileSync(ffmpeg!, ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=30:duration=4", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-shortest", "-pix_fmt", "yuv420p", "-y", src]);
+      const slice = path.join(dir, "slice.mp4");
+      execFileSync(ffmpeg!, buildCutoutInputArgs(src, slice, { startSeconds: 1, durationSeconds: 2 }), { stdio: "ignore" });
+      const sliceInfo = stderrOf(["-i", slice]);
+      assert.match(sliceInfo, /Video: h264.*40[56]x720/, sliceInfo.slice(-400));
+      assert.ok(!/Audio:/.test(sliceInfo), "the slice has no audio");
+
+      const green = path.join(dir, "green.mp4");
+      execFileSync(ffmpeg!, ["-v", "error", "-f", "lavfi", "-i", "color=c=0x78ff9b:size=64x64:rate=24:duration=2", "-pix_fmt", "yuv420p", "-y", green]);
+      const muxed = path.join(dir, "muxed.mp4");
+      execFileSync(ffmpeg!, buildMuxAudioArgs(green, src, muxed, { startSeconds: 1, durationSeconds: 2 }), { stdio: "ignore" });
+      assert.match(stderrOf(["-i", muxed]), /Audio: aac/);
+
+      const [r, g, b] = [...execFileSync(ffmpeg!, buildCornerPixelArgs(green), { stdio: ["ignore", "pipe", "ignore"] })];
+      assert.ok(Math.abs(r - 0x78) < 8 && Math.abs(g - 0xff) < 8 && Math.abs(b - 0x9b) < 8, `key colour ${r},${g},${b}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

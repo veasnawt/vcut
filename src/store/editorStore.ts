@@ -24,6 +24,7 @@ import {
   RemoveTrackCommand,
   ReplaceClipAssetCommand,
   SetClipTransformCommand,
+  ApplyVideoCutoutCommand,
   SwapClipAssetCommand,
 } from "../commands/index.ts";
 import { OUTRO_DURATION_SECONDS } from "../export/outro.ts";
@@ -1722,8 +1723,21 @@ export const useEditorStore = create<EditorState>((set, get) => {
 
       get().setStatus(translateText(get().language, "Removing background..."));
       try {
-        const newAsset = await api.removeBackground(projectId, asset.id, clipId, sourceTimeAtPlayhead(found.clip, get().playhead));
-        get().run(new SwapClipAssetCommand(clipId, newAsset));
+        if (asset.kind === "video") {
+          // A video clip is cut out frame by frame (not from one still), keeping its audio.
+          const tooLong = found.clip.sourceOut - found.clip.sourceIn > api.MAX_VIDEO_CUTOUT_SECONDS + 0.05;
+          if (tooLong) {
+            return get().setStatus(
+              translateText(get().language, "Cutout works on clips up to {n} seconds — split this clip first", { n: api.MAX_VIDEO_CUTOUT_SECONDS }),
+              "error"
+            );
+          }
+          const cutout = await api.cutoutVideoClip(projectId, clipId, true);
+          get().run(new ApplyVideoCutoutCommand(clipId, cutout.asset, { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds }));
+        } else {
+          const newAsset = await api.removeBackground(projectId, asset.id, clipId, sourceTimeAtPlayhead(found.clip, get().playhead));
+          get().run(new SwapClipAssetCommand(clipId, newAsset));
+        }
         get().setStatus(translateText(get().language, "Background removed"));
       } catch (err) {
         get().setStatus(err instanceof Error ? err.message : String(err), "error");
@@ -1741,11 +1755,23 @@ export const useEditorStore = create<EditorState>((set, get) => {
       get().setStatus(translateText(get().language, "Creating text behind person..."));
       try {
         let cutoutAsset = asset;
+        let videoCutout: { keyColor: string; windowSeconds: number } | undefined;
         const isCutout = asset.name.toLowerCase().includes("nobg") || asset.relPath.toLowerCase().includes("nobg");
-        if (!isCutout) {
+        if (asset.kind === "video") {
+          if (found.clip.sourceOut - found.clip.sourceIn > api.MAX_VIDEO_CUTOUT_SECONDS + 0.05) {
+            return get().setStatus(
+              translateText(get().language, "Cutout works on clips up to {n} seconds — split this clip first", { n: api.MAX_VIDEO_CUTOUT_SECONDS }),
+              "error"
+            );
+          }
+          // The subject layer sits above the text, over the original clip, which keeps the sound.
+          const cutout = await api.cutoutVideoClip(projectId, clipId, false);
+          cutoutAsset = cutout.asset;
+          videoCutout = { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds };
+        } else if (!isCutout) {
           cutoutAsset = await api.removeBackground(projectId, asset.id, clipId, sourceTimeAtPlayhead(found.clip, get().playhead));
         }
-        const cmd = new CreateTextBehindSubjectCommand(clipId, cutoutAsset, initialText);
+        const cmd = new CreateTextBehindSubjectCommand(clipId, cutoutAsset, initialText, videoCutout);
         get().run(cmd);
         if (cmd.createdTextClipId) set({ selectedClipIds: [cmd.createdTextClipId] });
         get().setStatus(translateText(get().language, "Created text behind person"));

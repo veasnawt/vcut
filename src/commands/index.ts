@@ -7,6 +7,7 @@ import {
   addTrack,
   deleteClips,
   EditError,
+  applyVideoCutout,
   createTextBehindSubject,
   moveClip,
   moveTrackLayer,
@@ -49,6 +50,7 @@ import {
   splitClip,
   trimClip,
 } from "../timeline/operations.ts";
+import type { VideoCutoutInfo } from "../timeline/operations.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { hasTextStyleKeyframes } from "../timeline/keyframes.ts";
 import type { Command } from "./types.ts";
@@ -1793,6 +1795,31 @@ export class MoveTrackLayerCommand implements Command {
   }
 }
 
+/** Replaces a video clip with its matted cutout (subject only, background keyed out), keeping its place and audio. */
+export class ApplyVideoCutoutCommand implements Command {
+  label = "Cut Out Subject";
+  private previousProject: Project | null = null;
+  private clipId: string;
+  private cutoutAsset: Asset;
+  private info: VideoCutoutInfo;
+
+  constructor(clipId: string, cutoutAsset: Asset, info: VideoCutoutInfo) {
+    this.clipId = clipId;
+    this.cutoutAsset = cutoutAsset;
+    this.info = info;
+  }
+
+  apply(project: Project): Project {
+    this.previousProject = project;
+    return applyVideoCutout(project, this.clipId, this.cutoutAsset, this.info);
+  }
+
+  revert(): Project {
+    if (!this.previousProject) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return this.previousProject;
+  }
+}
+
 export class CreateTextBehindSubjectCommand implements Command {
   label = "Text Behind Subject";
   private previousProject: Project | null = null;
@@ -1802,15 +1829,18 @@ export class CreateTextBehindSubjectCommand implements Command {
   createdTextClipId: string | null = null;
   createdCutoutClipId: string | null = null;
 
-  constructor(sourceClipId: string, cutoutAsset: Asset, initialText?: string) {
+  private videoCutout?: VideoCutoutInfo;
+
+  constructor(sourceClipId: string, cutoutAsset: Asset, initialText?: string, videoCutout?: VideoCutoutInfo) {
     this.sourceClipId = sourceClipId;
     this.cutoutAsset = cutoutAsset;
     this.initialText = initialText;
+    this.videoCutout = videoCutout;
   }
 
   apply(project: Project): Project {
     this.previousProject = project;
-    const res = createTextBehindSubject(project, this.sourceClipId, this.cutoutAsset, this.initialText);
+    const res = createTextBehindSubject(project, this.sourceClipId, this.cutoutAsset, this.initialText, undefined, undefined, this.videoCutout);
     this.createdTextClipId = res.textClipId;
     this.createdCutoutClipId = res.cutoutClipId;
     return res.project;
