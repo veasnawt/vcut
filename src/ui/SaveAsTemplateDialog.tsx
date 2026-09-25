@@ -4,7 +4,8 @@ import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check } from "@veasnawt/vicons";
 import { thumbnailUrl } from "../api/client.ts";
-import { templateSlotCandidates } from "../project/template.ts";
+import { templateAiSummary } from "../project/aiRecipe.ts";
+import { sanitizeProjectForTemplate, templateSlotCandidates } from "../project/template.ts";
 import { formatDuration } from "../timeline/time.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
@@ -33,6 +34,14 @@ export function SaveAsTemplateDialog({ onClose }: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
 
   const candidates = useMemo(() => (project ? templateSlotCandidates(project) : []), [project]);
+  // The AI tools used in this edit (cutouts, AI edits, object removal) are saved with the template and repeated on the
+  // media people pick, which spends their credits — so say so here, and the template becomes Pro-only to use.
+  const aiSummary = useMemo(() => {
+    if (!project) return null;
+    const sanitized = sanitizeProjectForTemplate(project);
+    const summary = templateAiSummary(sanitized.tracks, sanitized.assets);
+    return summary.steps > 0 ? summary : null;
+  }, [project]);
   const [uncheckedIds, setUncheckedIds] = useState<Set<string>>(new Set());
 
   function toggle(assetId: string) {
@@ -66,6 +75,11 @@ export function SaveAsTemplateDialog({ onClose }: { onClose: () => void }) {
         <p className="mt-2 shrink-0 text-xs leading-relaxed text-white/60">
           {t("Saves the whole edit — timing, effects, transitions, music, text — for anyone to reuse with their own photos and videos.")}
         </p>
+        {aiSummary && (
+          <p className="mt-2 shrink-0 rounded-md bg-amber-300/[0.08] px-2.5 py-2 text-[11px] leading-relaxed text-amber-200">
+            {t("This edit uses AI tools. They'll run again on each person's own media (about {n} credits), and the template will be Pro-only to use.", { n: aiSummary.credits })}
+          </p>
+        )}
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}

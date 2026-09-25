@@ -28,6 +28,8 @@ export interface TemplateRow {
   updatedAt: string;
   isPublic: boolean;
   ownerId: string;
+  /** See `hostedClient.ts`'s own `TemplateRow.aiCredits`. */
+  aiCredits?: number;
   creatorDisplayName?: string | null;
   likeCount?: number;
   commentCount?: number;

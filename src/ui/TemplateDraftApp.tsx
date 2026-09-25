@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { ErrorBoundary } from "./ErrorBoundary.tsx";
+import { startCheckout } from "../api/billing.ts";
 import { TemplateFillScreen } from "./TemplateFillScreen.tsx";
 
 interface TemplateDraftAppProps {
@@ -55,7 +56,14 @@ function TemplateDraftInner({ templateId, onHome, onProjectCreated }: TemplateDr
           {needsSignIn ? t("Your session has expired — sign in again to continue.") : loadError}
         </p>
         <div className="flex items-center gap-2">
-          {needsSignIn ? (
+          {loadErrorStatus === 402 ? (
+            <button
+              onClick={() => void startCheckout().then((url) => (window.location.href = url)).catch(() => {})}
+              className="rounded-md bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-sky-400"
+            >
+              {t("Upgrade to Pro")}
+            </button>
+          ) : needsSignIn ? (
             <button
               onClick={() => (window.location.href = "/login")}
               className="rounded-md bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-sky-400"

@@ -1,5 +1,6 @@
 import { newId } from "./createProject.ts";
 import type {
+  AiRecipeStep,
   Asset,
   ChromaKeySettings,
   Clip,
@@ -210,12 +211,49 @@ function parseTemplatePlaceholder(value: unknown): { slotIndex: number; required
   return { slotIndex: r.slotIndex, requiredDuration: r.requiredDuration };
 }
 
+const AI_TOOLS = ["cutout", "video-cutout", "ai-edit", "remove-object"] as const;
+
+/** Guards one recorded AI step the same "malformed means absent" way as the other additive fields. */
+function parseAiStep(value: unknown): AiRecipeStep | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const r = value as Record<string, unknown>;
+  if (!AI_TOOLS.includes(r.tool as (typeof AI_TOOLS)[number])) return undefined;
+  const region = r.region as Record<string, unknown> | undefined;
+  const validRegion =
+    region && ["x", "y", "width", "height"].every((k) => typeof region[k] === "number" && Number.isFinite(region[k] as number))
+      ? { x: region.x as number, y: region.y as number, width: region.width as number, height: region.height as number }
+      : undefined;
+  return {
+    tool: r.tool as AiRecipeStep["tool"],
+    ...(typeof r.prompt === "string" ? { prompt: r.prompt.slice(0, 500) } : null),
+    ...(r.strength === "subtle" || r.strength === "balanced" || r.strength === "creative" ? { strength: r.strength } : null),
+    ...(validRegion ? { region: validRegion } : null),
+    ...(r.keepAudio === true ? { keepAudio: true } : null),
+    ...(r.overlay === true ? { overlay: true } : null),
+  };
+}
+
+function parseAiOrigin(value: unknown): { sourceAssetId: string; step: AiRecipeStep } | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const r = value as Record<string, unknown>;
+  const step = parseAiStep(r.step);
+  if (typeof r.sourceAssetId !== "string" || !step) return undefined;
+  return { sourceAssetId: r.sourceAssetId, step };
+}
+
+function parseAiSteps(value: unknown): AiRecipeStep[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const steps = value.map(parseAiStep).filter((step): step is AiRecipeStep => Boolean(step)).slice(0, 6);
+  return steps.length > 0 ? steps : undefined;
+}
+
 function parseAsset(raw: Record<string, unknown>): Asset {
   const kind = str(raw.kind, "asset kind");
   if (kind !== "video" && kind !== "audio" && kind !== "image" && kind !== "text" && kind !== "color") {
     throw new ProjectFormatError(`Project file has an unknown asset kind: ${kind}`);
   }
   const aiGeneration = parseAiGeneration(raw.aiGeneration);
+  const aiOrigin = parseAiOrigin(raw.aiOrigin);
   const templatePlaceholder = parseTemplatePlaceholder(raw.templatePlaceholder);
   const animation = kind === "image" ? parseAssetAnimation(raw.animation) : undefined;
   const stickerSource = parseStickerSource(raw.stickerSource);
@@ -243,6 +281,7 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     ...(typeof raw.offline === "boolean" ? { offline: raw.offline } : null),
     ...(typeof raw.hiddenFromLibrary === "boolean" ? { hiddenFromLibrary: raw.hiddenFromLibrary } : null),
     ...(aiGeneration ? { aiGeneration } : null),
+    ...(aiOrigin ? { aiOrigin } : null),
     ...(kind === "text" ? { textContent: str(raw.textContent, "text content", ""), textStyle: parseTextStyle(raw.textStyle) } : null),
     // Same "additive presentation data, not something that defines what the asset fundamentally IS"
     // spirit as `textContent`/`textStyle` above — a missing/malformed color falls back to black rather
@@ -711,6 +750,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
   const textAnimation = parseClipTextAnimation(raw.textAnimation);
   const textAnimationIn = parseClipTextInOut(raw.textAnimationIn);
   const textAnimationOut = parseClipTextInOut(raw.textAnimationOut);
+  const templateAiSteps = parseAiSteps(raw.templateAiSteps);
   const wordTimings = parseClipWordTimings(raw.wordTimings);
   const pixelEffect = parseClipPixelEffect(raw.pixelEffect);
   const faceEffects = parseClipFaceEffects(raw.faceEffects);
@@ -753,6 +793,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
     ...(textAnimation ? { textAnimation } : null),
     ...(textAnimationIn ? { textAnimationIn } : null),
     ...(textAnimationOut ? { textAnimationOut } : null),
+    ...(templateAiSteps ? { templateAiSteps } : null),
     ...(wordTimings ? { wordTimings } : null),
     ...(pixelEffect ? { pixelEffect } : null),
     ...(faceEffects ? { faceEffects } : null),

@@ -75,6 +75,10 @@ export interface Asset {
    *  was sitting right there in `project.assets`, just with nothing left connecting it back to "this
    *  came from a generation, here's the prompt that made it." */
   aiGeneration?: { prompt: string; aspectRatio: string; model?: string };
+  /** Set on an asset an AI tool made FROM another asset (a cutout, an AI edit, an object removal): which asset it came
+   *  from and the recipe that was applied. Lets "Save as template" turn the slot into the ORIGINAL footage and repeat the
+   *  same AI step on whatever media a template user picks. */
+  aiOrigin?: { sourceAssetId: string; step: AiRecipeStep };
   /** Present ONLY on a VIDEO or IMAGE asset inside a saved template's own stored structure (see
    *  `sanitizeProjectForTemplate` in `template.ts`) — and, transiently, on the placeholder a brand-new
    *  project-from-template starts with, before "fill in your media" replaces it with a real asset. NOT
@@ -175,6 +179,20 @@ export interface TextGradient {
   type: "linear" | "radial";
   angleDeg?: number; // Linear angle in degrees (default 180 = top-to-bottom)
   stops: TextGradientStop[];
+}
+
+/** One AI tool application, recorded so a template can run it again. `region` (Remove Object) is normalized 0..1 of the
+ *  source frame so it still lines up on media of another size. */
+export interface AiRecipeStep {
+  tool: "cutout" | "video-cutout" | "ai-edit" | "remove-object";
+  prompt?: string;
+  strength?: "subtle" | "balanced" | "creative";
+  region?: { x: number; y: number; width: number; height: number };
+  /** Video cutout: the matted clip carries the original's sound (a replacement) rather than sitting silently above it. */
+  keepAudio?: boolean;
+  /** This clip is an extra layer above a raw copy of the same footage (Text Behind Subject's cutout layer): if the AI
+   *  step can't run, the layer is dropped instead of covering the original with an identical copy. */
+  overlay?: boolean;
 }
 
 export interface TextShadow {
@@ -875,6 +893,8 @@ export interface Clip {
    *  slide-in, a heartbeat loop and a fade-out at once). Text clips only, same as `textAnimation`. */
   textAnimationIn?: TextInOutAnimation;
   textAnimationOut?: TextInOutAnimation;
+  /** Template clips only: the AI steps to run on whatever media fills this clip's slot, in order (see `Asset.aiOrigin`). */
+  templateAiSteps?: AiRecipeStep[];
   /** Real per-word timing for `textAnimation.type === "wordHighlight"`, CLIP-RELATIVE seconds (same
    *  "elapsed" space every other per-clip timing value in this codebase uses) — one entry per word
    *  `timeline/textAnimation.ts`'s `splitWords(asset.textContent)` finds, in the same order. Only ever

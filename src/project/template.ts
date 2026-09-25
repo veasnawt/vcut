@@ -1,5 +1,6 @@
+import { aiStepLabel, estimateAiStepCredits, resolveAiOrigin } from "./aiRecipe.ts";
 import { clipDuration, createColorAsset, createProject, createTextAsset, createTrack, newId } from "./createProject.ts";
-import type { Asset, Clip, Project, Track } from "./types.ts";
+import type { AiRecipeStep, Asset, Clip, Project, Track } from "./types.ts";
 
 /** What a saved template actually stores — deliberately NOT a full `Project`, but (unlike this
  *  feature's own first version) not a structure-only skeleton either. A template exists to let someone
@@ -74,11 +75,16 @@ export interface TemplateSlot {
  *  knows exactly which file to actually copy into the template's own storage next — this function
  *  itself never touches the filesystem. */
 export function sanitizeProjectForTemplate(project: Project, keepAssetIds: ReadonlySet<string> = new Set()): TemplateProjectData {
+  // An asset an AI tool made from another (`Asset.aiOrigin`) is not itself a slot: the slot is the ORIGINAL footage it
+  // came from, and the clip remembers the AI steps to run on whatever fills that slot (`Clip.templateAiSteps`).
+  const rootOf = (asset: Asset) => resolveAiOrigin(project.assets, asset);
   const mediaClipOrder = project.sequence.tracks
     .flatMap((track) => track.clips.map((clip) => ({ track, clip })))
     .filter(({ clip }) => {
       const asset = project.assets.find((a) => a.id === clip.assetId);
-      return Boolean(asset) && (asset!.kind === "video" || asset!.kind === "image") && !asset!.animation && !keepAssetIds.has(asset!.id);
+      if (!asset) return false;
+      const { root } = rootOf(asset);
+      return (root.kind === "video" || root.kind === "image") && !root.animation && !keepAssetIds.has(root.id) && !keepAssetIds.has(asset.id);
     })
     .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
 
@@ -88,7 +94,7 @@ export function sanitizeProjectForTemplate(project: Project, keepAssetIds: Reado
   // `requiredDuration` grows to the longest clip seen so far for that same asset on every later one.
   const placeholderByOriginalAssetId = new Map<string, Asset>();
   for (const { clip } of mediaClipOrder) {
-    const original = project.assets.find((a) => a.id === clip.assetId)!;
+    const original = rootOf(project.assets.find((a) => a.id === clip.assetId)!).root;
     const existing = placeholderByOriginalAssetId.get(original.id);
     if (existing) {
       existing.templatePlaceholder!.requiredDuration = Math.max(existing.templatePlaceholder!.requiredDuration, clipDuration(clip));
@@ -118,8 +124,11 @@ export function sanitizeProjectForTemplate(project: Project, keepAssetIds: Reado
     ...track,
     clips: track.clips.map((clip): Clip => {
       const asset = project.assets.find((a) => a.id === clip.assetId);
-      const placeholder = asset && placeholderByOriginalAssetId.get(asset.id);
-      if (placeholder) return { ...clip, assetId: placeholder.id };
+      const resolved = asset && rootOf(asset);
+      const placeholder = resolved && placeholderByOriginalAssetId.get(resolved.root.id);
+      if (placeholder) {
+        return { ...clip, assetId: placeholder.id, ...(resolved.steps.length > 0 ? { templateAiSteps: resolved.steps } : null) };
+      }
       keptAssetIds.add(clip.assetId);
       return { ...clip };
     }),
@@ -128,7 +137,11 @@ export function sanitizeProjectForTemplate(project: Project, keepAssetIds: Reado
   const assets: Asset[] = [
     ...project.assets
       .filter((a) => keptAssetIds.has(a.id))
-      .map((a) => (a.kind === "audio" || a.animation || keepAssetIds.has(a.id) ? { ...a, templateBundledAudio: true as const } : a)),
+      .map((a) =>
+        a.kind === "audio" || a.animation || keepAssetIds.has(a.id) || keepAssetIds.has(rootOf(a).root.id)
+          ? { ...a, templateBundledAudio: true as const }
+          : a
+      ),
     ...placeholderByOriginalAssetId.values(),
   ];
 
@@ -147,13 +160,16 @@ export function templateSlotCandidates(project: Project): { asset: Asset; requir
     .flatMap((track) => track.clips)
     .filter((clip) => {
       const asset = project.assets.find((a) => a.id === clip.assetId);
-      return Boolean(asset) && (asset!.kind === "video" || asset!.kind === "image") && !asset!.animation;
+      if (!asset) return false;
+      const { root } = resolveAiOrigin(project.assets, asset);
+      return (root.kind === "video" || root.kind === "image") && !root.animation;
     })
     .sort((a, b) => a.timelineStart - b.timelineStart);
 
   const byAssetId = new Map<string, { asset: Asset; requiredDuration: number }>();
   for (const clip of order) {
-    const asset = project.assets.find((a) => a.id === clip.assetId)!;
+    // The slot is the original footage, not an AI result made from it.
+    const asset = resolveAiOrigin(project.assets, project.assets.find((a) => a.id === clip.assetId)!).root;
     const existing = byAssetId.get(asset.id);
     if (existing) existing.requiredDuration = Math.max(existing.requiredDuration, clipDuration(clip));
     else byAssetId.set(asset.id, { asset, requiredDuration: clipDuration(clip) });
@@ -461,4 +477,81 @@ export function setTemplateClipText(project: Project, assetId: string, textConte
  *  self-describing the same way. */
 export function newTemplateId(): string {
   return newId("tpl");
+}
+
+/** One AI step still waiting to run on a filled template slot. */
+export interface TemplateAiTask {
+  clipId: string;
+  step: AiRecipeStep;
+  /** How many steps this clip still has left, including this one. */
+  remaining: number;
+  label: string;
+  assetName: string;
+  credits: number;
+}
+
+/** The next AI step of every clip whose slot has been filled with real media — what the template run walks through.
+ *  A clip whose slot is still an open placeholder is skipped (nothing to run on yet). */
+export function pendingTemplateAiTasks(project: Project): TemplateAiTask[] {
+  const tasks: TemplateAiTask[] = [];
+  for (const track of project.sequence.tracks) {
+    for (const clip of track.clips) {
+      const step = clip.templateAiSteps?.[0];
+      if (!step) continue;
+      const asset = project.assets.find((a) => a.id === clip.assetId);
+      if (!asset || asset.templatePlaceholder) continue;
+      tasks.push({
+        clipId: clip.id,
+        step,
+        remaining: clip.templateAiSteps!.length,
+        label: aiStepLabel(step),
+        assetName: asset.name,
+        credits: estimateAiStepCredits(step, clipDuration(clip), asset.kind === "image"),
+      });
+    }
+  }
+  return tasks;
+}
+
+/** A step ran: the clip's next step (if any) is now the one to run. */
+export function completeTemplateAiStep(project: Project, clipId: string): Project {
+  return mapClip(project, clipId, (clip) => {
+    const rest = (clip.templateAiSteps ?? []).slice(1);
+    const next = { ...clip };
+    if (rest.length > 0) next.templateAiSteps = rest;
+    else delete next.templateAiSteps;
+    return next;
+  });
+}
+
+/** "Use the original clip": give up on this clip's remaining AI steps and keep whatever it shows now. An extra layer
+ *  that only made sense on top of a raw copy of the same footage (Text Behind Subject's cutout layer) is dropped
+ *  instead, since left as-is it would cover the original with an identical copy. */
+export function skipTemplateAiSteps(project: Project, clipId: string): Project {
+  const found = project.sequence.tracks.flatMap((t) => t.clips).find((c) => c.id === clipId);
+  if (!found) return project;
+  if (found.templateAiSteps?.[0]?.overlay) {
+    return {
+      ...project,
+      sequence: {
+        ...project.sequence,
+        tracks: project.sequence.tracks.map((t) => ({ ...t, clips: t.clips.filter((c) => c.id !== clipId) })),
+      },
+    };
+  }
+  return mapClip(project, clipId, (clip) => {
+    const next = { ...clip };
+    delete next.templateAiSteps;
+    return next;
+  });
+}
+
+function mapClip(project: Project, clipId: string, change: (clip: Clip) => Clip): Project {
+  return {
+    ...project,
+    sequence: {
+      ...project.sequence,
+      tracks: project.sequence.tracks.map((t) => ({ ...t, clips: t.clips.map((c) => (c.id === clipId ? change(c) : c)) })),
+    },
+  };
 }

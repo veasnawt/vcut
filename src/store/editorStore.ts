@@ -34,7 +34,8 @@ import type { PlaybackEngine } from "../playback/PlaybackEngine.ts";
 import { createColorAsset, createTextAsset, findAsset, findClip, sequenceDuration } from "../project/createProject.ts";
 import { assetFromBundledSfx, type SfxDefinition } from "../project/sfx.ts";
 import type { MusicTrack } from "../project/music.ts";
-import { buildProjectFromTemplate, fillTemplateSlot, setTemplateClipText, trimTemplateSlot } from "../project/template.ts";
+import { denormalizeRegion, normalizeRegion, withAiOrigin } from "../project/aiRecipe.ts";
+import { buildProjectFromTemplate, completeTemplateAiStep, fillTemplateSlot, skipTemplateAiSteps as skipTemplateAiStepsInProject, setTemplateClipText, trimTemplateSlot } from "../project/template.ts";
 import type { TextStylePreset } from "../project/textStylePresets.ts";
 import type { Asset, Clip, Project, TextStyle } from "../project/types.ts";
 import { IDENTITY_TRANSFORM } from "../project/types.ts";
@@ -582,6 +583,12 @@ export interface EditorState {
    *  `addLibraryAssetToProject`, a stock download, or an AI generation just produced) — there's no
    *  server round trip of its own here, the asset already exists by the time this is called. */
   fillTemplateSlot: (placeholderAssetId: string, asset: Asset) => void;
+  /** Runs the next recorded AI step of one filled template clip (a cutout, an AI edit, an object removal) on the media
+   *  now in its slot, and moves the clip on to its following step. Resolves with the reason on failure; nothing is
+   *  kept from a failed run and the server refunds its credits. */
+  runTemplateAiStep: (clipId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** "Use the original clip" for one template clip: drops its remaining AI steps (see `skipTemplateAiSteps`). */
+  skipTemplateAiSteps: (clipId: string) => void;
   /** Shifts a picked video's own shared trim start point — `TemplateTrimDialog.tsx`'s only mutation.
    *  See `trimTemplateSlot` (`project/template.ts`) for the full reasoning; this is a thin store
    *  wrapper over that pure function, same shape as `fillTemplateSlot` just above. */
@@ -1667,7 +1674,12 @@ export const useEditorStore = create<EditorState>((set, get) => {
     },
 
     landInpaintedAsset(clipId, asset) {
-      get().run(new ReplaceClipAssetCommand(clipId, asset));
+      const project = get().project;
+      const found = project ? findClip(project, clipId) : null;
+      const source = project && found ? findAsset(project, found.clip.assetId) : undefined;
+      const drawn = get().removeObjectRect;
+      const region = source && drawn && drawn.clipId === clipId ? normalizeRegion(drawn, source) : undefined;
+      get().run(new ReplaceClipAssetCommand(clipId, source ? withAiOrigin(asset, source.id, { tool: "remove-object", ...(region ? { region } : null) }) : asset));
       get().clearRemoveObject();
       get().setStatus(translateText(get().language, 'Replaced clip with "{name}"', { name: asset.name }));
     },
@@ -1733,10 +1745,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
             );
           }
           const cutout = await api.cutoutVideoClip(projectId, clipId, true);
-          get().run(new ApplyVideoCutoutCommand(clipId, cutout.asset, { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds }));
+          const tagged = withAiOrigin(cutout.asset, asset.id, { tool: "video-cutout", keepAudio: true });
+          get().run(new ApplyVideoCutoutCommand(clipId, tagged, { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds }));
         } else {
           const newAsset = await api.removeBackground(projectId, asset.id, clipId, sourceTimeAtPlayhead(found.clip, get().playhead));
-          get().run(new SwapClipAssetCommand(clipId, newAsset));
+          get().run(new SwapClipAssetCommand(clipId, withAiOrigin(newAsset, asset.id, { tool: "cutout" })));
         }
         get().setStatus(translateText(get().language, "Background removed"));
       } catch (err) {
@@ -1766,10 +1779,14 @@ export const useEditorStore = create<EditorState>((set, get) => {
           }
           // The subject layer sits above the text, over the original clip, which keeps the sound.
           const cutout = await api.cutoutVideoClip(projectId, clipId, false);
-          cutoutAsset = cutout.asset;
+          cutoutAsset = withAiOrigin(cutout.asset, asset.id, { tool: "video-cutout", keepAudio: false, overlay: true });
           videoCutout = { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds };
         } else if (!isCutout) {
-          cutoutAsset = await api.removeBackground(projectId, asset.id, clipId, sourceTimeAtPlayhead(found.clip, get().playhead));
+          cutoutAsset = withAiOrigin(
+            await api.removeBackground(projectId, asset.id, clipId, sourceTimeAtPlayhead(found.clip, get().playhead)),
+            asset.id,
+            { tool: "cutout", overlay: true }
+          );
         }
         const cmd = new CreateTextBehindSubjectCommand(clipId, cutoutAsset, initialText, videoCutout);
         get().run(cmd);
@@ -1792,7 +1809,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const asset = findAsset(project, found.clip.assetId);
       if (!asset) throw new Error("Asset not found");
 
-      const newAsset = await api.runAiEdit(projectId, asset.id, clipId, prompt, strength, sourceTimeAtPlayhead(found.clip, get().playhead));
+      const newAsset = withAiOrigin(
+        await api.runAiEdit(projectId, asset.id, clipId, prompt, strength, sourceTimeAtPlayhead(found.clip, get().playhead)),
+        asset.id,
+        { tool: "ai-edit", prompt, strength }
+      );
       const current = get().project;
       if (current) {
         applyProject({ ...current, assets: [...current.assets, newAsset] });
@@ -1859,6 +1880,62 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const { project } = get();
       if (!project) return;
       applyProject(fillTemplateSlot(project, placeholderAssetId, asset));
+    },
+
+    skipTemplateAiSteps(clipId) {
+      const { project } = get();
+      if (!project) return;
+      applyProject(skipTemplateAiStepsInProject(project, clipId));
+    },
+
+    async runTemplateAiStep(clipId) {
+      const { projectId, project } = get();
+      if (!projectId || !project) return { ok: false, error: "Project not loaded" };
+      const found = findClip(project, clipId);
+      const step = found?.clip.templateAiSteps?.[0];
+      const asset = found ? findAsset(project, found.clip.assetId) : undefined;
+      if (!found || !step || !asset) return { ok: false, error: "That clip no longer exists" };
+      try {
+        // The server reads the clip and its source window from the SAVED project.
+        await get().save();
+        if (step.tool === "cutout" || step.tool === "video-cutout") {
+          if (asset.kind === "video") {
+            const cutout = await api.cutoutVideoClip(projectId, clipId, step.keepAudio ?? false);
+            const tagged = withAiOrigin(cutout.asset, asset.id, step);
+            get().run(new ApplyVideoCutoutCommand(clipId, tagged, { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds }));
+          } else {
+            const result = await api.removeBackground(projectId, asset.id, clipId);
+            get().run(new SwapClipAssetCommand(clipId, withAiOrigin(result, asset.id, step)));
+          }
+        } else if (step.tool === "ai-edit") {
+          const result = await api.runAiEdit(projectId, asset.id, clipId, step.prompt ?? "", step.strength ?? "balanced");
+          get().run(new SwapClipAssetCommand(clipId, withAiOrigin(result, asset.id, step)));
+        } else {
+          const rect = step.region ? denormalizeRegion(step.region, asset) : null;
+          if (!rect) return { ok: false, error: "The area to erase can't be worked out for this media" };
+          const result = await new Promise<Asset>((resolve, reject) => {
+            api
+              .startInpaint(projectId, clipId, rect)
+              .then((started) => {
+                api.watchInpaint(
+                  started.jobId,
+                  (update) => {
+                    if (update.status === "done" && update.asset) resolve(update.asset);
+                    else if (update.status === "failed" || update.status === "cancelled") reject(new Error(update.error ?? "Remove Object failed"));
+                  },
+                  (message) => reject(new Error(message))
+                );
+              })
+              .catch(reject);
+          });
+          get().run(new ReplaceClipAssetCommand(clipId, withAiOrigin(result, asset.id, step)));
+        }
+        const after = get().project;
+        if (after) applyProject(completeTemplateAiStep(after, clipId));
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
     },
 
     trimTemplateSlot(assetId, sourceIn) {

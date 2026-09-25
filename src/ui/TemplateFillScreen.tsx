@@ -6,9 +6,10 @@ import { assetFromLibraryMedia, mediaUrl, previewAssetFromLibraryMedia, thumbnai
 import { useTranslation } from "../i18n/useTranslation.ts";
 import type { Asset } from "../project/types.ts";
 import type { PendingTemplatePick } from "../store/editorStore.ts";
-import { templateSlotRequiredLength, templateSlots, type TemplateSlot } from "../project/template.ts";
+import { pendingTemplateAiTasks, templateSlotRequiredLength, templateSlots, type TemplateSlot } from "../project/template.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
+import { TemplateAiRunDialog } from "./TemplateAiRunDialog.tsx";
 import { TemplateTrimDialog } from "./TemplateTrimDialog.tsx";
 import { TemplateScreenHeader } from "./TemplateScreenHeader.tsx";
 import { useLibraryMedia } from "./useLibraryMedia.ts";
@@ -70,6 +71,8 @@ export function TemplateFillScreen({
   // Draft only: the real project is being created for the first pick (see `startProject`).
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  // Templates whose author used AI tools run those steps on the picked media before the preview (see `TemplateAiRunDialog`).
+  const [aiRunOpen, setAiRunOpen] = useState(false);
 
   // The pick made while this template was still a draft, now that its real project is open — applied
   // exactly like a pick made here (see `EditorState.pendingTemplatePick`).
@@ -265,7 +268,11 @@ export function TemplateFillScreen({
 
         {startError && <p className="mt-2 text-center text-xs text-amber-200/80">{startError}</p>}
         <button
-          onClick={() => (draft ? void startProject(null) : onAllFilled())}
+          onClick={() => {
+            if (draft) void startProject(null);
+            else if (project && pendingTemplateAiTasks(project).length > 0) setAiRunOpen(true);
+            else onAllFilled();
+          }}
           disabled={!allFilled || starting}
           className="mt-3 w-full rounded-md bg-sky-500 py-2 text-sm font-semibold text-white transition hover:bg-sky-400 disabled:cursor-default disabled:opacity-40"
         >
@@ -279,6 +286,15 @@ export function TemplateFillScreen({
         </div>
       )}
 
+      {aiRunOpen && (
+        <TemplateAiRunDialog
+          onDone={() => {
+            setAiRunOpen(false);
+            onAllFilled();
+          }}
+          onStop={() => setAiRunOpen(false)}
+        />
+      )}
       {trimmingAsset && projectId && (
         <TemplateTrimDialog
           asset={trimmingAsset}
