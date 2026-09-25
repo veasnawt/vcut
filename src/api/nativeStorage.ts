@@ -58,22 +58,82 @@ export function nativeMediaUrl(projectId: string, relPath: string): string {
   return Capacitor.convertFileSrc(`${base}/${relPath}`);
 }
 
-export async function nativeLoadProject(projectId: string, projectName?: string): Promise<Project> {
-  await primeMediaBaseUri(projectId);
+/** `project.json`'s crash-safety sibling: a save writes here first, then swaps it into place. */
+function projectTempFile(projectId: string): string {
+  return `${projectFile(projectId)}.tmp`;
+}
+
+async function readTextFile(path: string): Promise<string | null> {
   try {
-    const { data } = await Filesystem.readFile({ path: projectFile(projectId), directory: DIRECTORY, encoding: Encoding.UTF8 });
-    return deserializeProject(typeof data === "string" ? data : await data.text());
+    const { data } = await Filesystem.readFile({ path, directory: DIRECTORY, encoding: Encoding.UTF8 });
+    return typeof data === "string" ? data : await data.text();
   } catch {
-    const name = projectName?.trim() ? projectName.trim().slice(0, 120) : undefined;
-    const project = createProject(projectId, name);
-    await Filesystem.mkdir({ path: projectDir(projectId), directory: DIRECTORY, recursive: true }).catch(() => {});
-    await Filesystem.writeFile({ path: projectFile(projectId), directory: DIRECTORY, data: serializeProject(project), encoding: Encoding.UTF8 });
-    return project;
+    return null;
   }
 }
 
-export async function nativeSaveProject(projectId: string, project: Project): Promise<void> {
+function tryParseProject(text: string | null): Project | null {
+  if (text === null) return null;
+  try {
+    return deserializeProject(text);
+  } catch {
+    return null;
+  }
+}
+
+/** Of the main project file and a leftover temp copy from an interrupted save, the one to open: the temp
+ *  copy only wins when it parses and was updated strictly later — otherwise the main file stands. */
+export function pickNewerProject(main: Project, temp: Project | null): Project {
+  return temp && temp.updatedAt > main.updatedAt ? temp : main;
+}
+
+export async function nativeLoadProject(projectId: string, projectName?: string): Promise<Project> {
+  await primeMediaBaseUri(projectId);
+  const mainText = await readTextFile(projectFile(projectId));
+  const main = tryParseProject(mainText);
+  const tempText = await readTextFile(projectTempFile(projectId));
+  const temp = tryParseProject(tempText);
+  // Normally the temp file is gone (a save moved it into place). One that's still there and parses is a
+  // complete copy left by an interrupted save — use whichever of the two is newer.
+  if (main) return pickNewerProject(main, temp);
+
+  // The main file is missing or unreadable. A save that was interrupted between removing the old file and
+  // moving the new one into place leaves the complete, newer copy in the `.tmp` sibling — recover from it
+  // (and put it back) before concluding anything is lost.
+  const recovered = temp;
+  if (recovered) {
+    await Filesystem.writeFile({ path: projectFile(projectId), directory: DIRECTORY, data: serializeProject(recovered), encoding: Encoding.UTF8 }).catch(() => {});
+    return recovered;
+  }
+
+  // A file that EXISTS but won't parse is damage, not "a new project": the old code fell through to creating a
+  // blank project and writing it over the top, destroying whatever was salvageable. Surface it instead.
+  if (mainText !== null && mainText.trim() !== "") {
+    throw new Error("This project's file is damaged and could not be opened");
+  }
+
+  const name = projectName?.trim() ? projectName.trim().slice(0, 120) : undefined;
+  const project = createProject(projectId, name);
+  await Filesystem.mkdir({ path: projectDir(projectId), directory: DIRECTORY, recursive: true }).catch(() => {});
   await Filesystem.writeFile({ path: projectFile(projectId), directory: DIRECTORY, data: serializeProject(project), encoding: Encoding.UTF8 });
+  return project;
+}
+
+/** Saves without ever leaving a truncated `project.json`: the new content is written IN FULL to a sibling
+ *  first and only then moved over the real file, so a kill or crash mid-write leaves either the old complete
+ *  file or the new complete one (`nativeLoadProject` recovers from the sibling in the one gap between). The
+ *  old direct overwrite could be cut off partway, leaving JSON that no longer parsed. */
+export async function nativeSaveProject(projectId: string, project: Project): Promise<void> {
+  const main = projectFile(projectId);
+  const tmp = projectTempFile(projectId);
+  await Filesystem.writeFile({ path: tmp, directory: DIRECTORY, data: serializeProject(project), encoding: Encoding.UTF8 });
+  try {
+    await Filesystem.rename({ from: tmp, to: main, directory: DIRECTORY });
+  } catch {
+    // Some platforms won't rename onto an existing file: remove the old one, then move.
+    await Filesystem.deleteFile({ path: main, directory: DIRECTORY }).catch(() => {});
+    await Filesystem.rename({ from: tmp, to: main, directory: DIRECTORY });
+  }
 }
 
 // `Blob`, not `File` — every current caller passes a real `File`, but `File` is-a `Blob`, and

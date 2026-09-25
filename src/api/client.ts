@@ -292,6 +292,25 @@ export async function saveProject(projectId: string, project: Project): Promise<
   await unwrap<{ ok: boolean }>(response);
 }
 
+/** A save meant to survive the page closing: sent with `keepalive` so the browser finishes the request after
+ *  the page is gone. Silently does nothing when the project JSON exceeds `maxBytes` (keepalive bodies are
+ *  capped near 64KB) or on native, where saves are local file writes. Never throws. */
+export async function saveProjectKeepalive(projectId: string, project: Project, maxBytes: number): Promise<void> {
+  if (isNative) return;
+  const body = JSON.stringify({ project });
+  if (body.length > maxBytes) return;
+  try {
+    await apiFetch(`${BASE}/project?projectId=${encodeURIComponent(projectId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive: true,
+    });
+  } catch {
+    // The page is going away; nothing useful to do with a failure.
+  }
+}
+
 /** `hiddenFromLibrary`: a stock sound effect or voiceover take, not something the user chose to
  *  import as their own media — see `Asset.hiddenFromLibrary`'s own doc comment for the CLIENT-side
  *  half of this (keeps it off "This project"'s own Media tab). Threaded through to the server as a

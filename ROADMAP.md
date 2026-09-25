@@ -10,7 +10,7 @@ Last updated 2026-09-25.
 | P0-1 Credit functions callable by any user | Done (migration 0012) |
 | P0-2 Billing amounts came from the client | Done |
 | P0-3 LUT / sound / font delete wiped unsaved edits | Done |
-| **P0-4 Autosave can silently drop edits** | **Open** — no retry after a failed save; save skipped while another is in flight; nothing saves on `visibilitychange`/`pagehide`; `beforeunload` relies on an async fetch; project switch swallows save errors; mobile writes `project.json` in place (no temp file + rename) |
+| P0-4 Autosave can silently drop edits | Done — `SaveCoordinator`: saves again after an edit made mid-request, retries failures with backoff, `flush()` waits for in-flight saves, save on `pagehide`/`visibilitychange` via keepalive, project-switch save retries and reports failure, server temp files unique per request, native writes atomic (temp + swap) with crash recovery and no more overwriting a damaged file with a blank project |
 | P0-5 Paused preview showed the wrong frame | Done |
 | P0-6 Text styles missing from export | Done, except keyframed text styles |
 | P0-7 Large upload could crash the server | Done |
@@ -60,7 +60,7 @@ Last updated 2026-09-25.
 
 ## Proposed order
 
-1. P0-4 autosave reliability (can lose user work).
+1. ~~P0-4 autosave reliability~~ (done).
 2. P1-15 CI green (protects everything after it).
 3. P1-8 + P1-10 + P1-7 money/ops: durable job records with orphan refunds, webhook ordering, export retention.
 4. P1-1 smooth keyframes in export.

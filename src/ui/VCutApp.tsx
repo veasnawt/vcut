@@ -50,7 +50,7 @@ import { preloadAllFonts, preloadFont, resolveFont } from "../project/fonts.ts";
 import { templateSlots } from "../project/template.ts";
 import { applyTextStylePreset } from "../project/textStylePresets.ts";
 import { DEFAULT_TEXT_STYLE, type Clip, type Track } from "../project/types.ts";
-import { flushPendingSave, useEditorStore } from "../store/editorStore.ts";
+import { flushPendingSave, saveOnPageHide, useEditorStore } from "../store/editorStore.ts";
 import { clipAtTime } from "../timeline/queries.ts";
 import { formatTimecode } from "../timeline/time.ts";
 import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCandidate } from "../timeline/transitions.ts";
@@ -1871,10 +1871,24 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
 
   // Flush on unmount and on window close, so the autosave debounce can never swallow the final edit.
   useEffect(() => {
-    const onBeforeUnload = () => void flushPendingSave();
-    window.addEventListener("beforeunload", onBeforeUnload);
+    // `beforeunload` alone isn't enough: an async fetch started there is routinely cancelled, and on
+    // iOS/Android a backgrounded app is often killed without it ever firing. `visibilitychange` (hidden)
+    // and `pagehide` are the events that DO fire in those cases, so each sends a `keepalive` save the
+    // browser completes on its own, then the ordinary flush as well.
+    const onLeaving = () => {
+      saveOnPageHide();
+      void flushPendingSave();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") onLeaving();
+    };
+    window.addEventListener("beforeunload", onLeaving);
+    window.addEventListener("pagehide", onLeaving);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
+      window.removeEventListener("beforeunload", onLeaving);
+      window.removeEventListener("pagehide", onLeaving);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       void flushPendingSave();
     };
   }, []);

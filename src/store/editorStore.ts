@@ -41,6 +41,7 @@ import { defaultClipDuration, EditError, removeLutReferences, trackKindForAsset 
 import { clipAtTime, nonOverlappingPointStart, nonOverlappingStart } from "../timeline/queries.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { UndoStack } from "../undo/UndoStack.ts";
+import { SaveCoordinator, type SaveOutcome } from "./saveCoordinator.ts";
 
 const LANGUAGE_STORAGE_KEY = "vcut-language";
 
@@ -707,7 +708,14 @@ export interface EditorState {
  *  derived booleans and labels are mirrored into the store for the UI to read. */
 const undoStack = new UndoStack();
 
-let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+/** Owns autosave scheduling, retries and flushing — see `saveCoordinator.ts`. Created inside the store
+ *  (it needs `get`/`set`); module-level so `flushPendingSave`/`saveOnPageHide` below can reach it. */
+let saveCoordinator: SaveCoordinator | null = null;
+/** Retry backoff after a failed save; the last delay repeats for as long as the project stays dirty. */
+const SAVE_RETRY_DELAYS_MS = [2000, 5000, 15_000, 30_000];
+/** `keepalive` fetches share a ~64KB request budget in browsers, so the page-hide save only uses one when the
+ *  project JSON is comfortably under it. */
+const KEEPALIVE_MAX_BYTES = 60_000;
 /** Incremented by every `load` call; a load whose response arrives after a newer one started is
  *  discarded rather than overwriting the project the user actually switched to. */
 let loadSeq = 0;
@@ -731,12 +739,73 @@ export const useEditorStore = create<EditorState>((set, get) => {
     });
   }
 
+  /** One attempt to write the CURRENT project. Everything about WHEN to save (debounce, retry, saving again
+   *  after an edit that landed mid-request, flushing) lives in `SaveCoordinator`. */
+  let failureToastShown = false;
+  async function saveOnce(): Promise<SaveOutcome> {
+    const { project, projectId } = get();
+    if (!project || !projectId) return "fatal";
+    set({ saving: true });
+    try {
+      await api.saveProject(projectId, project);
+      failureToastShown = false;
+      // Only clears `dirty` if nothing changed while the save was in flight — otherwise an edit made
+      // mid-save would be silently marked as saved when it wasn't (the coordinator then saves again). Also
+      // clears `sessionExpired` — this is exactly how a retry right after signing back in
+      // (`VCutApp.tsx`'s own banner) is confirmed to have actually worked. If the user switched projects
+      // while this was on the wire, it says nothing about the NEW project's state, so leave that alone.
+      set((state) =>
+        state.projectId !== projectId
+          ? { saving: false }
+          : { saving: false, lastSavedAt: Date.now(), dirty: state.project !== project, sessionExpired: false }
+      );
+      return "saved";
+    } catch (err) {
+      // A 401 specifically means the session itself is gone, not a flaky request — see
+      // `sessionExpired`'s own doc comment for why this used to be indistinguishable from a plain network
+      // blip and what that silently cost. Every OTHER failure keeps the transient toast (shown once per
+      // streak — the coordinator retries on its own now, and repeating the toast every attempt would spam);
+      // a dead session gets `VCutApp.tsx`'s persistent banner instead and isn't retried automatically.
+      const isSessionExpired = err instanceof ApiRequestError && err.status === 401;
+      set({ saving: false, sessionExpired: isSessionExpired });
+      if (isSessionExpired) return "fatal";
+      if (!failureToastShown) {
+        failureToastShown = true;
+        const message = err instanceof Error ? err.message : "Could not save the project";
+        get().setStatus(translateText(get().language, message), "error");
+      }
+      return "failed";
+    }
+  }
+
+  saveCoordinator = new SaveCoordinator({
+    attempt: saveOnce,
+    isDirty: () => get().dirty,
+    debounceMs: AUTOSAVE_DELAY_MS,
+    retryDelaysMs: SAVE_RETRY_DELAYS_MS,
+  });
+
+  /** Hands a project the user is navigating AWAY from to the server, retrying on failure and — unlike the
+   *  old fire-and-forget — telling the user if it never got through. Independent of the coordinator, which
+   *  from here on belongs to the project being opened. */
+  function saveDetached(projectId: string, project: Project) {
+    void (async () => {
+      for (const delay of [0, 1500, 4000]) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        try {
+          await api.saveProject(projectId, project);
+          return;
+        } catch (err) {
+          if (err instanceof ApiRequestError && err.status === 401) break;
+        }
+      }
+      get().setStatus(translateText(get().language, "Could not save your last changes to the previous project"), "error");
+    })();
+  }
+
   function markDirtyAndScheduleSave() {
     set({ dirty: true });
-    if (autosaveTimer) clearTimeout(autosaveTimer);
-    autosaveTimer = setTimeout(() => {
-      void get().save();
-    }, AUTOSAVE_DELAY_MS);
+    saveCoordinator?.schedule();
   }
 
   /** Applies a project change from an edit, keeping the playhead inside the (possibly shortened)
@@ -837,13 +906,8 @@ export const useEditorStore = create<EditorState>((set, get) => {
         // The store outlives page navigations, so without this the previous project stays in memory —
         // name, clips, media — until the new one arrives. Its unsaved edits are flushed to ITS OWN id
         // first rather than dropped with the pending autosave.
-        if (autosaveTimer) {
-          clearTimeout(autosaveTimer);
-          autosaveTimer = null;
-        }
-        if (previous.dirty && previous.project && previous.projectId) {
-          void api.saveProject(previous.projectId, previous.project).catch(() => {});
-        }
+        saveCoordinator?.cancel();
+        if (previous.dirty && previous.project && previous.projectId) saveDetached(previous.projectId, previous.project);
         undoStack.clear();
       }
       set({
@@ -903,13 +967,8 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const seq = ++loadSeq;
       const previous = get();
       // Same hand-off as `load` switching projects: the previous project's unsaved edits go to ITS id.
-      if (autosaveTimer) {
-        clearTimeout(autosaveTimer);
-        autosaveTimer = null;
-      }
-      if (previous.dirty && previous.project && previous.projectId) {
-        void api.saveProject(previous.projectId, previous.project).catch(() => {});
-      }
+      saveCoordinator?.cancel();
+      if (previous.dirty && previous.project && previous.projectId) saveDetached(previous.projectId, previous.project);
       undoStack.clear();
       set({
         loading: true,
@@ -997,34 +1056,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
     },
 
     async save() {
-      const { project, projectId, saving } = get();
-      if (!project || !projectId || saving) return;
-      set({ saving: true });
-      try {
-        await api.saveProject(projectId, project);
-        // Only clears `dirty` if nothing changed while the save was in flight — otherwise an edit
-        // made mid-save would be silently marked as saved when it wasn't. Also clears `sessionExpired`
-        // — this is exactly how a retry right after signing back in (`VCutApp.tsx`'s own banner) is
-        // confirmed to have actually worked.
-        set((state) => ({
-          saving: false,
-          lastSavedAt: Date.now(),
-          dirty: state.project !== project,
-          sessionExpired: false,
-        }));
-      } catch (err) {
-        // A 401 specifically means the session itself is gone, not a flaky request — see
-        // `sessionExpired`'s own doc comment for why this used to be indistinguishable from a plain
-        // network blip and what that silently cost. Every OTHER failure keeps the existing transient
-        // toast; a dead session gets `VCutApp.tsx`'s persistent banner instead, and doesn't ALSO spam
-        // that same toast on every autosave attempt after the first while it's already showing.
-        const isSessionExpired = err instanceof ApiRequestError && err.status === 401;
-        set({ saving: false, sessionExpired: isSessionExpired });
-        if (!isSessionExpired) {
-          const message = err instanceof Error ? err.message : "Could not save the project";
-          get().setStatus(translateText(get().language, message), "error");
-        }
-      }
+      await saveCoordinator?.run();
     },
 
     setPlayhead(seconds) {
@@ -2072,13 +2104,27 @@ export const useEditorStore = create<EditorState>((set, get) => {
 // the actual flag lives here. Registered once, at module init, not per-call.
 api.setSessionExpiredHandler(() => useEditorStore.setState({ sessionExpired: true }));
 
-/** Flushes any pending autosave immediately — used when the editor unmounts or the window is about
- *  to close, so the debounce window can't swallow the last edit. */
+/** Flushes any pending autosave immediately and waits for it — used when the editor unmounts or the tab is
+ *  hiding, so the debounce window (or a save already on the wire) can't swallow the last edit. Waits for an
+ *  in-flight save AND the follow-up save of anything edited meanwhile; resolves even if the save fails (the
+ *  coordinator keeps retrying in the background). */
 export async function flushPendingSave(): Promise<void> {
-  if (autosaveTimer) {
-    clearTimeout(autosaveTimer);
-    autosaveTimer = null;
-  }
+  await saveCoordinator?.flush();
+}
+
+/** The last-chance save for a page that's being hidden or closed, called synchronously from `pagehide` /
+ *  `visibilitychange`. A normal async save often never finishes once the page is going away, so this fires a
+ *  `keepalive` request the browser completes on its own. Skipped when a save is already in flight (that
+ *  cycle saves again for anything newer, and a second concurrent PUT could land out of order), on native
+ *  (its writes are local), and when the project is too big for a keepalive body — the ordinary flush still
+ *  runs alongside this. */
+export function saveOnPageHide(): void {
   const state = useEditorStore.getState();
-  if (state.dirty) await state.save();
+  if (!state.dirty || !state.project || !state.projectId || saveCoordinator?.busy) return;
+  const { project, projectId } = state;
+  try {
+    void api.saveProjectKeepalive(projectId, project, KEEPALIVE_MAX_BYTES);
+  } catch {
+    // Best effort — the regular flush is still attempted.
+  }
 }
