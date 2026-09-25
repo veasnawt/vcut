@@ -24,7 +24,7 @@ Last updated 2026-09-25.
 | P1-3 Mask export very slow | Done |
 | P1-4 Inspector re-rendered every frame | Done |
 | P1-5 No codec check / proxies on import | Open |
-| P1-6 Two network lookups per hosted media request | Open |
+| P1-6 Two network lookups per hosted media request | Done in code — verified sessions are cached 30s (never past the token's own expiry, keyed by a hash of the token) and confirmed project ownership 60s (positives only; project delete clears it), so a burst of media requests costs 0 lookups after the first. Unit-tested only; not measured against live Supabase. Trade-off: a session revoked elsewhere can take up to 30s to stop working for requests on this server |
 | P1-7 Server storage only grows, no backups | Partly done — hosted exports are deleted after 24h (hourly sweep). Still open: exports/uploads don't count toward quota, and there are no volume backups (a Railway-side setting) |
 | P1-8 Jobs only in memory; restart loses spent credits | Done for credits — `job_holds` table (migration 0013, must be applied) records credits spent on in-memory AI video / Remove Object / Captions jobs; holds from a dead process are refunded once. Provider-side predictions of a killed job may still run (not cancelled) |
 | P1-9 Two tabs/devices silently overwrite each other | Done — projects carry a server `revision`; a save from a stale copy is refused (409) and the user chooses "Load the latest version" or "Keep my version". Page-hide saves now go through the normal save path (keepalive) so they can't create false conflicts. Native (single device) is unaffected |
