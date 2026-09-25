@@ -961,6 +961,8 @@ export function applyChromaKey(imageData: ImageData, settings: ChromaKeySettings
   const keyB = parseInt(settings.color.slice(5, 7), 16);
   const similarity = settings.similarity;
   const smoothness = settings.smoothness;
+  // Only for a green-ish key (the AI cutout's flat background) — never touches an ordinary blue-screen key.
+  const despill = keyG >= Math.max(keyR, keyB) ? (settings.despill ?? 0) : 0;
   const data = imageData.data;
   const norm = Math.sqrt(3) * 255;
   for (let i = 0; i < data.length; i += 4) {
@@ -973,6 +975,12 @@ export function applyChromaKey(imageData: ImageData, settings: ChromaKeySettings
     else if (smoothness > 0 && diff < similarity + smoothness) keyAlpha = (diff - similarity) / smoothness;
     else keyAlpha = 1;
     if (keyAlpha < 1) data[i + 3] = Math.round(data[i + 3] * keyAlpha);
+    // Spill: an edge pixel that survived the key is still a mix with the key colour. Pull its green down toward the larger
+    // of red and blue (only when the key is green-ish, and only where green really leads), so no green outline is left.
+    if (despill > 0 && keyAlpha > 0) {
+      const lead = data[i + 1] - Math.max(data[i], data[i + 2]);
+      if (lead > 0) data[i + 1] = Math.round(data[i + 1] - lead * despill);
+    }
   }
 }
 

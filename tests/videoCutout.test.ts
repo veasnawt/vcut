@@ -100,3 +100,32 @@ describe("video cutout: FFmpeg steps (real FFmpeg)", () => {
     }
   });
 });
+
+import { applyChromaKey } from "../src/playback/PlaybackEngine.ts";
+
+describe("chroma key despill (AI cutout edges)", () => {
+  const key = { color: "#78ff9b", similarity: 0.2, smoothness: 0.08 };
+  const pixels = (...rgba: number[]) => ({ data: new Uint8ClampedArray(rgba) }) as unknown as ImageData;
+
+  it("keeps a skin/dark pixel exactly as it was, with or without despill", () => {
+    const a = pixels(200, 150, 120, 255, 12, 12, 12, 255);
+    const b = pixels(200, 150, 120, 255, 12, 12, 12, 255);
+    applyChromaKey(a, key);
+    applyChromaKey(b, { ...key, despill: 0.9 });
+    assert.deepEqual([...a.data], [...b.data]);
+    assert.deepEqual([...a.data], [200, 150, 120, 255, 12, 12, 12, 255]);
+  });
+
+  it("removes the key colour entirely, and pulls green out of a surviving edge pixel only when despill is on", () => {
+    const edge = [70, 170, 90, 255]; // subject blended with the key colour: kept by the key, but green-tinted
+    const off = pixels(120, 255, 155, 255, ...edge);
+    const on = pixels(120, 255, 155, 255, ...edge);
+    applyChromaKey(off, key);
+    applyChromaKey(on, { ...key, despill: 0.9 });
+    assert.equal(off.data[3], 0);
+    assert.equal(on.data[3], 0);
+    assert.ok(on.data[7] > 0, "the edge pixel stays visible");
+    assert.equal(off.data[5], 170);
+    assert.ok(on.data[5] < 110, `green not reduced: ${on.data[5]}`);
+  });
+});

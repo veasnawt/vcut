@@ -652,7 +652,7 @@ export function videoCutoutFields(source: Clip, info: VideoCutoutInfo): Pick<Cli
   return {
     sourceIn: 0,
     sourceOut: info.windowSeconds,
-    chromaKey: { color: info.keyColor, similarity: 0.2, smoothness: 0.08 },
+    chromaKey: { color: info.keyColor, similarity: 0.2, smoothness: 0.08, despill: 0.9 },
     ...(source.speed !== undefined ? { speed: source.speed } : null),
   };
 }
@@ -1122,6 +1122,7 @@ function clampChromaKey(settings: ChromaKeySettings): ChromaKeySettings {
     color: isHex ? settings.color : "#00ff00",
     similarity: Math.min(1, Math.max(0, settings.similarity)),
     smoothness: Math.min(1, Math.max(0, settings.smoothness)),
+    ...(settings.despill ? { despill: Math.min(1, Math.max(0, settings.despill)) } : null),
   };
 }
 

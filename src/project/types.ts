@@ -512,6 +512,10 @@ export interface ChromaKeySettings {
    *  "feather the key's boundary" control every chroma-key tool exposes, just named for what it does
    *  (how smooth the cutoff is) rather than FFmpeg's more implementation-flavored `blend`. */
   smoothness: number;
+  /** 0..1, optional: pull the key colour's spill out of the pixels that ARE kept (green edges on a matted subject).
+   *  Set only by the AI video cutout, whose matte blends subject and background at the edge; absent for an ordinary key,
+   *  which then behaves exactly as before. */
+  despill?: number;
 }
 
 /** The default a freshly-enabled chroma key starts with — standard green screen, FFmpeg's own

@@ -113,41 +113,6 @@ export function buildCutoutInputArgs(
   ];
 }
 
-/** Cleans the edge of a matted "green screen" video so the Chroma Key that removes its background leaves no coloured
- *  outline. Where the subject meets the background the model's pixels are a MIX of the subject and the key colour; a
- *  keyer keeps those (they're far enough from the key) and they show as a green fringe. This works out the subject's
- *  matte from the video, shrinks it by a couple of pixels so the mixed ring falls outside it, pulls leftover green out
- *  of what remains (`despill`), and lays the result back over a flat key-colour background. The video keeps the exact
- *  key colour everywhere the subject isn't, so the later key is clean.
- *  `keyHex` is "#rrggbb"; `width`/`height`/`fps` are the input's own (the flat background must match them). */
-export function buildEdgeCleanArgs(
-  input: string,
-  output: string,
-  opts: { keyHex: string; width: number; height: number; fps: number; erodePasses?: number }
-): string[] {
-  const key = opts.keyHex.replace("#", "0x");
-  const passes = Math.max(0, Math.min(4, Math.round(opts.erodePasses ?? 2)));
-  const erode = Array.from({ length: passes }, () => "erosion").join(",");
-  const graph = [
-    "[0:v]split=2[a][b]",
-    // `colorkey` (distance in RGB), not `chromakey` (distance in YUV chroma only): a black shirt or dark hair has neutral
-    // chroma, which `chromakey` treats as close to the key colour and removes — the subject vanished.
-    `[a]format=rgba,colorkey=color=${key}:similarity=0.25:blend=0.08,alphaextract${erode ? `,${erode}` : ""}[m]`,
-    "[b]despill=type=green:mix=0.7:expand=0.2,format=rgb24[fg]",
-    "[fg][m]alphamerge[fga]",
-    "[1:v][fga]overlay=shortest=1:format=auto,format=yuv420p[out]",
-  ].join(";");
-  return [
-    "-i", input,
-    "-f", "lavfi", "-i", `color=c=${key}:s=${opts.width}x${opts.height}:r=${opts.fps}`,
-    "-filter_complex", graph,
-    "-map", "[out]",
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-    "-movflags", "+faststart",
-    "-y", output,
-  ];
-}
-
 /** Puts the original clip's audio back on a matted (silent) video, for the "replace this clip" cutout. */
 export function buildMuxAudioArgs(
   videoInput: string,

@@ -573,7 +573,7 @@ function buildTransformFilters(params: {
   // valid argument. Mirrors `applyChromaKey` (`playback/PlaybackEngine.ts`)'s own algorithm — see
   // `ChromaKeySettings`'s own doc comment for the shared preview/export parity goal.
   const chromaKeyFilter = chromaKey
-    ? `colorkey=color=0x${chromaKey.color.slice(1)}:similarity=${n(Math.max(0.01, chromaKey.similarity))}:blend=${n(chromaKey.smoothness)},`
+    ? `colorkey=color=0x${chromaKey.color.slice(1)}:similarity=${n(Math.max(0.01, chromaKey.similarity))}:blend=${n(chromaKey.smoothness)},${chromaKey.despill && chromaKey.despill > 0 ? `despill=type=green:mix=${n(Math.min(1, chromaKey.despill))}:expand=0.1,` : ""}`
     : "";
 
   const cropFilter =

@@ -603,6 +603,7 @@ function parseChromaKey(raw: unknown): ChromaKeySettings | undefined {
     color,
     similarity: num(r.similarity, "chroma key similarity", 0.4),
     smoothness: num(r.smoothness, "chroma key smoothness", 0.1),
+    ...(typeof r.despill === "number" && Number.isFinite(r.despill) && r.despill > 0 ? { despill: Math.min(1, r.despill) } : null),
   };
 }
 
