@@ -233,7 +233,25 @@ export function typewriterVisibleContent(content: string, elapsedSeconds: number
 // In / Out (entrance / exit) animations
 // ---------------------------------------------------------------------------------------------------
 
-export const TEXT_INOUT_TYPE_OPTIONS: TextInOutType[] = ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "rise", "drop", "pop", "zoomIn", "zoomOut"];
+export const TEXT_INOUT_TYPE_OPTIONS: TextInOutType[] = [
+  "fade",
+  "slideUp",
+  "slideDown",
+  "slideLeft",
+  "slideRight",
+  "rise",
+  "drop",
+  "pop",
+  "zoomIn",
+  "zoomOut",
+  "letterRise",
+  "letterDrop",
+  "letterFade",
+  "letterPop",
+  "wordRise",
+  "wordFade",
+  "wordPop",
+];
 
 export const TEXT_INOUT_TYPE_LABEL: Record<TextInOutType, string> = {
   fade: "Fade",
@@ -246,9 +264,18 @@ export const TEXT_INOUT_TYPE_LABEL: Record<TextInOutType, string> = {
   pop: "Pop",
   zoomIn: "Zoom In",
   zoomOut: "Zoom Out",
+  letterRise: "Letter Rise",
+  letterDrop: "Letter Drop",
+  letterFade: "Letter Fade",
+  letterPop: "Letter Pop",
+  wordRise: "Word Rise",
+  wordFade: "Word Fade",
+  wordPop: "Word Pop",
 };
 
 export const TEXT_INOUT_DEFAULT_DURATION = 0.6;
+/** A cascade needs longer than a whole-block move: the units are staggered inside it. */
+export const TEXT_CASCADE_DEFAULT_DURATION = 1.0;
 /** Shortest an In/Out may be — anything quicker just reads as a glitch, and a zero duration would divide by 0. */
 export const TEXT_INOUT_MIN_DURATION = 0.1;
 
@@ -257,7 +284,8 @@ export const TEXT_INOUT_MIN_DURATION = 0.1;
  *  definition shared by preview and export. */
 export function textInOutDuration(spec: TextInOutAnimation | undefined, clipDurationSeconds: number): number {
   if (!spec) return 0;
-  const requested = Number.isFinite(spec.duration) && (spec.duration as number) > 0 ? (spec.duration as number) : TEXT_INOUT_DEFAULT_DURATION;
+  const fallback = spec.type in CASCADE_TYPES ? TEXT_CASCADE_DEFAULT_DURATION : TEXT_INOUT_DEFAULT_DURATION;
+  const requested = Number.isFinite(spec.duration) && (spec.duration as number) > 0 ? (spec.duration as number) : fallback;
   return Math.max(0, Math.min(Math.max(TEXT_INOUT_MIN_DURATION, requested), clipDurationSeconds / 2));
 }
 
@@ -309,6 +337,15 @@ export function computeTextInOutTransform(type: TextInOutType, progress: number,
       return { dx: 0, dy: 0, scale: 0.5 + 0.5 * eo, alpha: alphaRamp(p) };
     case "zoomOut":
       return { dx: 0, dy: 0, scale: 1.6 - 0.6 * eo, alpha: alphaRamp(p) };
+    case "letterRise":
+    case "letterDrop":
+    case "letterFade":
+    case "letterPop":
+    case "wordRise":
+    case "wordFade":
+    case "wordPop":
+      // A cascade unit follows its base curve; the caller (`computeUnitTextInOut`) supplies the staggered progress.
+      return computeTextInOutTransform(CASCADE_TYPES[type].base, p, distance);
   }
 }
 
@@ -325,12 +362,12 @@ export function computeClipTextInOut(
 ): TextInOutTransform {
   let result: TextInOutTransform = { dx: 0, dy: 0, scale: 1, alpha: 1 };
   const dIn = textInOutDuration(animationIn, clipDurationSeconds);
-  if (animationIn && dIn > 0) {
+  if (animationIn && dIn > 0 && !isCascadeInOutType(animationIn.type)) {
     const tr = computeTextInOutTransform(animationIn.type, elapsedSeconds / dIn, distance);
     result = { dx: result.dx + tr.dx, dy: result.dy + tr.dy, scale: result.scale * tr.scale, alpha: result.alpha * tr.alpha };
   }
   const dOut = textInOutDuration(animationOut, clipDurationSeconds);
-  if (animationOut && dOut > 0) {
+  if (animationOut && dOut > 0 && !isCascadeInOutType(animationOut.type)) {
     const tr = computeTextInOutTransform(animationOut.type, (clipDurationSeconds - elapsedSeconds) / dOut, distance);
     result = { dx: result.dx + tr.dx, dy: result.dy + tr.dy, scale: result.scale * tr.scale, alpha: result.alpha * tr.alpha };
   }
@@ -370,5 +407,96 @@ export function buildTextInOutExpressions(type: TextInOutType, progressExpr: str
       return { ...neutral, scale: `(0.5+0.5*${eo})`, alpha: ramp };
     case "zoomOut":
       return { ...neutral, scale: `(1.6-0.6*${eo})`, alpha: ramp };
+    case "letterRise":
+    case "letterDrop":
+    case "letterFade":
+    case "letterPop":
+    case "wordRise":
+    case "wordFade":
+    case "wordPop":
+      // Cascades have no FFmpeg-expression form (each glyph needs its own position) — exported through the
+      // browser-render path instead, so the expression side is neutral.
+      return neutral;
   }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Cascade (per-letter / per-word) In / Out animations
+// ---------------------------------------------------------------------------------------------------
+
+/** The In/Out types that animate one LETTER or WORD at a time, staggered across the animation's duration,
+ *  instead of moving the whole text block together. Each is a plain In/Out curve (`base`) applied to every
+ *  unit with its own delay. They can't be expressed as FFmpeg `drawtext` expressions (each glyph needs its
+ *  own position), so an export routes any clip using one through the browser-render path — which draws
+ *  through the same `drawTextFrame` the live preview does, so preview and export match by construction. */
+export const CASCADE_TYPES = {
+  letterRise: { base: "rise", unit: "letter" },
+  letterDrop: { base: "drop", unit: "letter" },
+  letterFade: { base: "fade", unit: "letter" },
+  letterPop: { base: "pop", unit: "letter" },
+  wordRise: { base: "rise", unit: "word" },
+  wordFade: { base: "fade", unit: "word" },
+  wordPop: { base: "pop", unit: "word" },
+} as const satisfies Partial<Record<TextInOutType, { base: TextInOutType; unit: "letter" | "word" }>>;
+
+export type CascadeInOutType = keyof typeof CASCADE_TYPES;
+
+export function isCascadeInOutType(type: TextInOutType): type is CascadeInOutType {
+  return type in CASCADE_TYPES;
+}
+
+/** Whether `clip` uses a per-letter / per-word entrance or exit — the export's cue to render it in a browser. */
+export function clipHasCascadeInOut(clip: { textAnimationIn?: TextInOutAnimation; textAnimationOut?: TextInOutAnimation }): boolean {
+  return Boolean((clip.textAnimationIn && isCascadeInOutType(clip.textAnimationIn.type)) || (clip.textAnimationOut && isCascadeInOutType(clip.textAnimationOut.type)));
+}
+
+/** Where a unit sits in the text, so each side of a cascade can pick the index it staggers by (a Letter effect
+ *  by `letterIndex`, a Word effect by `wordIndex`). Spaces aren't units and aren't counted. */
+export interface CascadeUnitInfo {
+  letterIndex: number;
+  letterCount: number;
+  wordIndex: number;
+  wordCount: number;
+}
+
+/** One unit's progress (0 = not started, 1 = settled) `elapsed` seconds into a cascade of `duration` seconds
+ *  over `count` units. Each unit takes ~45% of the duration to settle (never under 0.2s, never over the
+ *  whole), and the starts are spread evenly over what's left, so the last unit finishes exactly at `duration`. */
+export function cascadeUnitProgress(elapsed: number, duration: number, index: number, count: number): number {
+  if (duration <= 0) return 1;
+  const unitDuration = Math.min(duration, Math.max(0.2, duration * 0.45));
+  const stagger = count > 1 ? (duration - unitDuration) / (count - 1) : 0;
+  return Math.min(1, Math.max(0, (elapsed - index * stagger) / unitDuration));
+}
+
+/** The per-unit In/Out for a clip at `elapsedSeconds`: only the cascade sides contribute (a non-cascade side
+ *  is applied to the whole block by `computeClipTextInOut`). Offsets add, scales and opacities multiply, like
+ *  the whole-block version. An exit runs the same stagger in reading order (first letter leaves first). */
+export function computeUnitTextInOut(
+  animationIn: TextInOutAnimation | undefined,
+  animationOut: TextInOutAnimation | undefined,
+  elapsedSeconds: number,
+  clipDurationSeconds: number,
+  distance: number,
+  unit: CascadeUnitInfo
+): TextInOutTransform {
+  let result: TextInOutTransform = { dx: 0, dy: 0, scale: 1, alpha: 1 };
+  const compose = (tr: TextInOutTransform) => {
+    result = { dx: result.dx + tr.dx, dy: result.dy + tr.dy, scale: result.scale * tr.scale, alpha: result.alpha * tr.alpha };
+  };
+  const side = (spec: TextInOutAnimation | undefined, isOut: boolean) => {
+    if (!spec || !isCascadeInOutType(spec.type)) return;
+    const { base, unit: unitKind } = CASCADE_TYPES[spec.type];
+    const index = unitKind === "letter" ? unit.letterIndex : unit.wordIndex;
+    const count = unitKind === "letter" ? unit.letterCount : unit.wordCount;
+    const duration = textInOutDuration(spec, clipDurationSeconds);
+    if (duration <= 0) return;
+    // The exit measures time back from the clip's end, so reading-order units leave in reading order.
+    const time = isOut ? clipDurationSeconds - elapsedSeconds : elapsedSeconds;
+    const order = isOut ? count - 1 - index : index;
+    compose(computeTextInOutTransform(base, cascadeUnitProgress(time, duration, order, count), distance));
+  };
+  side(animationIn, false);
+  side(animationOut, true);
+  return result;
 }

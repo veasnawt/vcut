@@ -21,7 +21,12 @@ import type { Clip, CustomFontAsset, TextStyle } from "../project/types.ts";
 import { resolveFont, resolveFontVariant } from "../project/fonts.ts";
 import {
   activeWordIndexFromBoundaries,
+  CASCADE_TYPES,
   computeClipTextInOut,
+  computeUnitTextInOut,
+  isCascadeInOutType,
+  type CascadeUnitInfo,
+  type TextInOutTransform,
   computeTextAnimationTransform,
   DEFAULT_WORD_HIGHLIGHT_COLOR,
   segmentLine,
@@ -124,6 +129,94 @@ export function computeTextBlock(
   return { lines, lineHeight, baselineOffset, blockLeft, blockTop, blockWidth, blockHeight, lineWidths };
 }
 
+/** One letter or word that a cascade animates on its own. */
+export interface TextUnit {
+  /** The characters drawn for this unit (a word unit also carries the spaces/punctuation trailing it). */
+  text: string;
+  /** Index into its line where `text` starts, so its x is the measured width of everything before it. */
+  start: number;
+  info: CascadeUnitInfo;
+}
+
+/** How a cascade splits and times the text: `mode` picks letters (grapheme clusters — a Khmer consonant with
+ *  its subscripts and vowel signs stays one unit) or words; `animate` returns each unit's transform. */
+export interface UnitAnimation {
+  mode: "letter" | "word";
+  animate: (unit: CascadeUnitInfo) => TextInOutTransform;
+}
+
+let graphemeSegmenter: Intl.Segmenter | null = null;
+function graphemes(text: string): { segment: string; index: number }[] {
+  graphemeSegmenter ??= new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  return Array.from(graphemeSegmenter.segment(text), (s) => ({ segment: s.segment, index: s.index }));
+}
+
+/** Splits every line into animatable units and numbers them across the whole text (spaces are not units). */
+export function layoutUnits(lines: string[], mode: "letter" | "word"): TextUnit[][] {
+  const perLine: { text: string; start: number; wordIndex: number }[][] = [];
+  let wordCount = 0;
+  let letterCount = 0;
+  for (const line of lines) {
+    const units: { text: string; start: number; wordIndex: number }[] = [];
+    let offset = 0;
+    let pendingLead = "";
+    let pendingLeadStart = 0;
+    let currentWord = wordCount - 1;
+    const tokens = segmentLine(line);
+    if (mode === "word") {
+      for (const token of tokens) {
+        if (token.text.length === 0) continue;
+        if (token.isWord) {
+          currentWord = wordCount++;
+          units.push({ text: pendingLead + token.text, start: pendingLead ? pendingLeadStart : offset, wordIndex: currentWord });
+          pendingLead = "";
+        } else if (units.length > 0) {
+          // Spaces / punctuation ride along with the word before them, so a comma never shows early.
+          units[units.length - 1].text += token.text;
+        } else {
+          pendingLead = token.text;
+          pendingLeadStart = offset;
+        }
+        offset += token.text.length;
+      }
+      if (pendingLead && units.length === 0) units.push({ text: pendingLead, start: pendingLeadStart, wordIndex: 0 });
+    } else {
+      // Word index per character position, so each letter also knows which word it belongs to.
+      const wordAt: number[] = new Array(line.length).fill(-1);
+      let position = 0;
+      for (const token of tokens) {
+        if (token.text.length === 0) continue;
+        if (token.isWord) currentWord = wordCount++;
+        for (let k = 0; k < token.text.length; k++) wordAt[position + k] = Math.max(0, currentWord);
+        position += token.text.length;
+      }
+      for (const g of graphemes(line)) {
+        if (g.segment.trim() === "") continue;
+        units.push({ text: g.segment, start: g.index, wordIndex: Math.max(0, wordAt[g.index] ?? 0) });
+        letterCount++;
+      }
+    }
+    perLine.push(units);
+  }
+  const totalUnits = mode === "letter" ? letterCount : wordCount;
+  let running = 0;
+  return perLine.map((units) =>
+    units.map((u) => {
+      const index = mode === "letter" ? running++ : u.wordIndex;
+      return {
+        text: u.text,
+        start: u.start,
+        info: {
+          letterIndex: mode === "letter" ? index : u.wordIndex,
+          letterCount: mode === "letter" ? totalUnits : wordCount,
+          wordIndex: u.wordIndex,
+          wordCount,
+        },
+      };
+    })
+  );
+}
+
 /** Draws a text block onto `context` exactly as `PlaybackEngine`'s canvas preview does — extracted out
  *  of `PlaybackEngine.drawText` (which is now a one-line wrapper calling this) so a Khmer-script text
  *  clip's export-time render harness (a headless-browser page, see `khmerTextRenderer.ts`) can call the
@@ -138,7 +231,8 @@ export function drawTextFrame(
   content: string,
   style: TextStyle,
   wordHighlight?: { activeWordIndex: number; highlightColor: string },
-  customFonts: CustomFontAsset[] = []
+  customFonts: CustomFontAsset[] = [],
+  unitAnimation?: UnitAnimation
 ): void {
   const block = computeTextBlock(context, frameWidth, frameHeight, content, style, customFonts);
   const drawLeft = style.rotationDeg !== 0 ? block.blockLeft - style.offsetX : block.blockLeft;
@@ -190,8 +284,35 @@ export function drawTextFrame(
     const gap = block.blockWidth - block.lineWidths[i];
     return style.align === "right" ? drawLeft + gap : drawLeft + gap / 2;
   };
-  const drawLines = (draw: (line: string, x: number, y: number) => void) =>
-    block.lines.forEach((line, i) => draw(line, lineX(i), firstBaseline + block.lineHeight * i));
+  const unitLayout = unitAnimation && !wordHighlight ? layoutUnits(block.lines, unitAnimation.mode) : null;
+  const drawLines = (draw: (line: string, x: number, y: number) => void) => {
+    if (!unitLayout || !unitAnimation) {
+      block.lines.forEach((line, i) => draw(line, lineX(i), firstBaseline + block.lineHeight * i));
+      return;
+    }
+    // Cascade: every letter / word is drawn on its own with its own offset, scale and opacity. Each stroke,
+    // shadow and fill pass calls this, so outlines and glows follow their letter instead of staying put.
+    block.lines.forEach((line, i) => {
+      const y = firstBaseline + block.lineHeight * i;
+      const baseX = lineX(i);
+      for (const unit of unitLayout[i]) {
+        const transform = unitAnimation.animate(unit.info);
+        if (transform.alpha <= 0.002) continue;
+        const x = baseX + context.measureText(line.slice(0, unit.start)).width;
+        const width = context.measureText(unit.text).width;
+        const pivotX = x + width / 2;
+        const pivotY = y - style.fontSize * 0.35;
+        context.save();
+        context.globalAlpha *= Math.min(1, transform.alpha);
+        context.translate(transform.dx, transform.dy);
+        context.translate(pivotX, pivotY);
+        context.scale(transform.scale, transform.scale);
+        context.translate(-pivotX, -pivotY);
+        draw(unit.text, x, y);
+        context.restore();
+      }
+    });
+  };
 
   if ("letterSpacing" in context) {
     (context as unknown as { letterSpacing: string }).letterSpacing = style.letterSpacing ? `${style.letterSpacing}px` : "0px";
@@ -345,10 +466,11 @@ function drawAnimatedTextFrameLoop(
   elapsedSeconds: number,
   clipDurationSeconds: number,
   customFonts: CustomFontAsset[],
-  wordTimings?: WordTiming[]
+  wordTimings?: WordTiming[],
+  unitAnimation?: UnitAnimation
 ): void {
   if (!animation) {
-    drawTextFrame(context, frameWidth, frameHeight, content, style, undefined, customFonts);
+    drawTextFrame(context, frameWidth, frameHeight, content, style, undefined, customFonts, unitAnimation);
     return;
   }
   // `speed` scales the effective elapsed time fed to EVERY animation type uniformly — applied once,
@@ -395,7 +517,7 @@ function drawAnimatedTextFrameLoop(
   context.rotate((rotationDeg * Math.PI) / 180);
   context.scale(scale, scale);
   context.translate(-pivotX, -pivotY);
-  drawTextFrame(context, frameWidth, frameHeight, content, style, undefined, customFonts);
+  drawTextFrame(context, frameWidth, frameHeight, content, style, undefined, customFonts, unitAnimation);
   context.restore();
 }
 
@@ -418,8 +540,18 @@ export function drawAnimatedTextFrame(
   inOut?: { in?: Clip["textAnimationIn"]; out?: Clip["textAnimationOut"] }
 ): void {
   const io = inOut && (inOut.in || inOut.out) ? computeClipTextInOut(inOut.in, inOut.out, elapsedSeconds, clipDurationSeconds, style.fontSize) : null;
+  // Per-letter / per-word cascades (typewriter and word highlight own their text reveal, so they opt out).
+  const cascadeIn = inOut?.in && isCascadeInOutType(inOut.in.type) ? inOut.in : undefined;
+  const cascadeOut = inOut?.out && isCascadeInOutType(inOut.out.type) ? inOut.out : undefined;
+  const unitAnimation: UnitAnimation | undefined =
+    (cascadeIn || cascadeOut) && animation?.type !== "typewriter" && animation?.type !== "wordHighlight"
+      ? {
+          mode: [cascadeIn, cascadeOut].some((s) => s && CASCADE_TYPES[s.type as keyof typeof CASCADE_TYPES].unit === "letter") ? "letter" : "word",
+          animate: (unit) => computeUnitTextInOut(cascadeIn, cascadeOut, elapsedSeconds, clipDurationSeconds, style.fontSize, unit),
+        }
+      : undefined;
   if (!io || (io.alpha === 1 && io.scale === 1 && io.dx === 0 && io.dy === 0)) {
-    drawAnimatedTextFrameLoop(context, frameWidth, frameHeight, content, style, animation, elapsedSeconds, clipDurationSeconds, customFonts, wordTimings);
+    drawAnimatedTextFrameLoop(context, frameWidth, frameHeight, content, style, animation, elapsedSeconds, clipDurationSeconds, customFonts, wordTimings, unitAnimation);
     return;
   }
   // Pivot on the block's real center, same as the loop animations' own scale/rotate.
@@ -432,6 +564,6 @@ export function drawAnimatedTextFrame(
   context.translate(pivotX, pivotY);
   context.scale(io.scale, io.scale);
   context.translate(-pivotX, -pivotY);
-  drawAnimatedTextFrameLoop(context, frameWidth, frameHeight, content, style, animation, elapsedSeconds, clipDurationSeconds, customFonts, wordTimings);
+  drawAnimatedTextFrameLoop(context, frameWidth, frameHeight, content, style, animation, elapsedSeconds, clipDurationSeconds, customFonts, wordTimings, unitAnimation);
   context.restore();
 }

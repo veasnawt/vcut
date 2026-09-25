@@ -650,7 +650,25 @@ export type TextAnimationType = "bounce" | "pulse" | "wiggle" | "float" | "shake
  *  type here is defined once as an entrance (see `timeline/textAnimation.ts`'s `computeTextInOutTransform`)
  *  and mirrored for exit. Every type is a pure position/scale/opacity change — deliberately no rotation,
  *  so export can express all of them as plain `drawtext` expressions. */
-export type TextInOutType = "fade" | "slideUp" | "slideDown" | "slideLeft" | "slideRight" | "rise" | "drop" | "pop" | "zoomIn" | "zoomOut";
+export type TextInOutType =
+  | "fade"
+  | "slideUp"
+  | "slideDown"
+  | "slideLeft"
+  | "slideRight"
+  | "rise"
+  | "drop"
+  | "pop"
+  | "zoomIn"
+  | "zoomOut"
+  // Cascades: one letter / word at a time, staggered — see `timeline/textAnimation.ts`'s `CASCADE_TYPES`.
+  | "letterRise"
+  | "letterDrop"
+  | "letterFade"
+  | "letterPop"
+  | "wordRise"
+  | "wordFade"
+  | "wordPop";
 
 export interface TextInOutAnimation {
   type: TextInOutType;

@@ -18,6 +18,7 @@ import {
   SHAKE_AMPLITUDE_PX,
   SHAKE_PERIOD_SECONDS,
   buildTextInOutExpressions,
+  clipHasCascadeInOut,
   textInOutDuration,
   segmentLine,
   splitWords,
@@ -1145,6 +1146,14 @@ export function containsKhmerScript(text: string): boolean {
  *  one is verified worth a native implementation instead. `backgroundPadding` is deliberately NOT
  *  included — see `buildDrawTextStyleParams`'s own fix, a plain `drawtext` argument, no browser
  *  render needed for that one alone. */
+/** Whether a text clip must be drawn by the browser-render path rather than FFmpeg's own text filters:
+ *  Khmer script (FFmpeg mis-stacks its clusters), a style FFmpeg can't draw (`needsTextStyleBrowserRender`),
+ *  or a per-letter / per-word cascade animation (each glyph needs its own position — see `CASCADE_TYPES`).
+ *  The one rule both `buildExportPlan` and the export route use to decide which clips to pre-render. */
+export function clipNeedsBrowserTextRender(clip: Clip, content: string, style: TextStyle): boolean {
+  return containsKhmerScript(content) || needsTextStyleBrowserRender(style) || clipHasCascadeInOut(clip);
+}
+
 export function needsTextStyleBrowserRender(style: TextStyle): boolean {
   return Boolean(
     style.gradient ||
@@ -3622,7 +3631,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
       const khmerWindows =
         !hasTextStyleKeyframes(clip) &&
         !((clip.textCrop && !isIdentityTextCrop(clip.textCrop)) || hasTextCropKeyframes(clip)) &&
-        (containsKhmerScript(clipTextContent) || needsTextStyleBrowserRender(asset.textStyle))
+        clipNeedsBrowserTextRender(clip, clipTextContent, asset.textStyle)
           ? options.khmerTextWindowsFor?.(clip)
           : undefined;
       if (khmerWindows && khmerWindows.length > 0) {

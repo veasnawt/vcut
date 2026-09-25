@@ -5,10 +5,20 @@ import {
   computeClipTextInOut,
   computeTextAnimationTransform,
   computeTextInOutTransform,
+  CASCADE_TYPES,
+  cascadeUnitProgress,
+  clipHasCascadeInOut,
+  computeUnitTextInOut,
+  isCascadeInOutType,
+  TEXT_CASCADE_DEFAULT_DURATION,
   TEXT_INOUT_DEFAULT_DURATION,
   TEXT_INOUT_TYPE_OPTIONS,
   textInOutDuration,
 } from "../src/timeline/textAnimation.ts";
+import { layoutUnits } from "../src/playback/textLayout.ts";
+
+/** The whole-block types — every one has an FFmpeg expression twin. Cascades don't (they export via browser render). */
+const PLAIN_TYPES = TEXT_INOUT_TYPE_OPTIONS.filter((t) => !isCascadeInOutType(t));
 import { deserializeProject, serializeProject } from "../src/project/serialize.ts";
 import { addClip } from "../src/timeline/operations.ts";
 import { emptyProject, videoTrackId } from "./fixture.ts";
@@ -22,7 +32,7 @@ function evalExpression(expression: string): number {
 
 describe("computeTextInOutTransform", () => {
   it("is fully settled (neutral) at progress 1 for every type", () => {
-    for (const type of TEXT_INOUT_TYPE_OPTIONS) {
+    for (const type of PLAIN_TYPES) {
       const t = computeTextInOutTransform(type, 1, 96);
       assert.ok(Math.abs(t.dx) < 1e-9 && Math.abs(t.dy) < 1e-9, `${type} offsets settle`);
       assert.ok(Math.abs(t.scale - 1) < 1e-9, `${type} scale settles`);
@@ -31,7 +41,7 @@ describe("computeTextInOutTransform", () => {
   });
 
   it("starts hidden or displaced at progress 0 for every type", () => {
-    for (const type of TEXT_INOUT_TYPE_OPTIONS) {
+    for (const type of PLAIN_TYPES) {
       const t = computeTextInOutTransform(type, 0, 96);
       const changed = t.alpha < 1 || t.scale !== 1 || t.dx !== 0 || t.dy !== 0;
       assert.ok(changed, `${type} must visibly differ from rest at the start`);
@@ -58,7 +68,7 @@ describe("computeTextInOutTransform", () => {
 });
 
 describe("buildTextInOutExpressions matches the JS math (preview/export parity)", () => {
-  for (const type of TEXT_INOUT_TYPE_OPTIONS) {
+  for (const type of PLAIN_TYPES) {
     it(`${type}`, () => {
       for (let i = 0; i <= 20; i++) {
         const p = i / 20;
@@ -126,5 +136,90 @@ describe("serialization", () => {
     const clip = deserializeProject(JSON.stringify(json)).sequence.tracks.flatMap((t) => t.clips)[0];
     assert.deepEqual(clip.textAnimationIn, { type: "pop", duration: 0.4 });
     assert.equal(clip.textAnimationOut, undefined);
+  });
+});
+
+describe("cascade (per-letter / per-word) animations", () => {
+  it("every cascade type maps onto a real base curve and unit kind", () => {
+    for (const [type, def] of Object.entries(CASCADE_TYPES)) {
+      assert.ok(TEXT_INOUT_TYPE_OPTIONS.includes(def.base), `${type} base`);
+      assert.ok(def.unit === "letter" || def.unit === "word");
+    }
+  });
+
+  it("units start one after another and the last one settles exactly at the end of the duration", () => {
+    const duration = 1;
+    const count = 6;
+    // At t=0 only the first unit has started.
+    assert.ok(cascadeUnitProgress(0.05, duration, 0, count) > 0);
+    assert.equal(cascadeUnitProgress(0.05, duration, count - 1, count), 0);
+    // Each later unit trails the one before it.
+    const at = (i: number) => cascadeUnitProgress(0.4, duration, i, count);
+    for (let i = 1; i < count; i++) assert.ok(at(i) <= at(i - 1) + 1e-12);
+    // Everything is settled at the end of the duration.
+    for (let i = 0; i < count; i++) assert.ok(cascadeUnitProgress(duration, duration, i, count) > 1 - 1e-9, `unit ${i} settled`);
+    // A single unit doesn't divide by zero.
+    assert.equal(cascadeUnitProgress(1, 1, 0, 1), 1);
+  });
+
+  it("has a longer default duration than a whole-block move", () => {
+    assert.equal(textInOutDuration({ type: "letterRise" }, 10), TEXT_CASCADE_DEFAULT_DURATION);
+    assert.equal(textInOutDuration({ type: "rise" }, 10), TEXT_INOUT_DEFAULT_DURATION);
+    assert.ok(TEXT_CASCADE_DEFAULT_DURATION > TEXT_INOUT_DEFAULT_DURATION);
+  });
+
+  it("is invisible per unit at the start, settled at the end, and neutral mid-clip", () => {
+    const unit = { letterIndex: 3, letterCount: 6, wordIndex: 0, wordCount: 1 };
+    const early = computeUnitTextInOut({ type: "letterFade" }, undefined, 0, 5, 96, unit);
+    assert.equal(early.alpha, 0, "a later letter hasn't begun at t=0");
+    const mid = computeUnitTextInOut({ type: "letterFade" }, { type: "letterFade" }, 2.5, 5, 96, unit);
+    assert.deepEqual(mid, { dx: 0, dy: 0, scale: 1, alpha: 1 });
+    const lateOut = computeUnitTextInOut(undefined, { type: "letterFade" }, 5, 5, 96, { ...unit, letterIndex: 0 });
+    assert.equal(lateOut.alpha, 0, "the first letter is gone on the last frame");
+  });
+
+  it("a word effect staggers by word, a letter effect by letter, and non-cascade sides are ignored here", () => {
+    const first = { letterIndex: 0, letterCount: 10, wordIndex: 0, wordCount: 2 };
+    const second = { letterIndex: 8, letterCount: 10, wordIndex: 1, wordCount: 2 };
+    assert.ok(computeUnitTextInOut({ type: "wordFade" }, undefined, 0.1, 5, 96, first).alpha > computeUnitTextInOut({ type: "wordFade" }, undefined, 0.1, 5, 96, second).alpha);
+    assert.deepEqual(computeUnitTextInOut({ type: "fade" }, undefined, 0, 5, 96, first), { dx: 0, dy: 0, scale: 1, alpha: 1 });
+  });
+
+  it("clipHasCascadeInOut spots a cascade on either side only", () => {
+    assert.equal(clipHasCascadeInOut({ textAnimationIn: { type: "letterPop" } }), true);
+    assert.equal(clipHasCascadeInOut({ textAnimationOut: { type: "wordFade" } }), true);
+    assert.equal(clipHasCascadeInOut({ textAnimationIn: { type: "pop" } }), false);
+    assert.equal(clipHasCascadeInOut({}), false);
+  });
+});
+
+describe("layoutUnits", () => {
+  it("letter mode: every non-space character is a unit, numbered across lines, each knowing its word", () => {
+    const units = layoutUnits(["Hi, you", "ok"], "letter");
+    const flat = units.flat();
+    assert.deepEqual(flat.map((u) => u.text), ["H", "i", ",", "y", "o", "u", "o", "k"]);
+    assert.deepEqual(flat.map((u) => u.info.letterIndex), [0, 1, 2, 3, 4, 5, 6, 7]);
+    assert.ok(flat.every((u) => u.info.letterCount === 8));
+    assert.equal(flat[0].info.wordCount, 3);
+    assert.equal(flat[3].info.wordIndex, 1);
+    assert.equal(flat[6].info.wordIndex, 2);
+  });
+
+  it("word mode: punctuation and spaces ride with the word before them", () => {
+    const units = layoutUnits(["Hello, big world"], "word")[0];
+    assert.deepEqual(units.map((u) => u.text), ["Hello, ", "big ", "world"]);
+    assert.deepEqual(units.map((u) => u.start), [0, 7, 11]);
+    assert.ok(units.every((u) => u.info.wordCount === 3));
+  });
+
+  it("keeps a Khmer consonant cluster together as one letter", () => {
+    const text = "ស្រី"; // one syllable: consonant + subscript + vowel
+    const units = layoutUnits([text], "letter")[0];
+    assert.ok(units.length < [...text].length, "grapheme clusters, not code points");
+    assert.equal(units.map((u) => u.text).join(""), text);
+  });
+
+  it("handles empty lines", () => {
+    assert.deepEqual(layoutUnits([""], "letter"), [[]]);
   });
 });
