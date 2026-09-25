@@ -284,9 +284,16 @@ export function drawTextFrame(
     const gap = block.blockWidth - block.lineWidths[i];
     return style.align === "right" ? drawLeft + gap : drawLeft + gap / 2;
   };
-  const unitLayout = unitAnimation && !wordHighlight ? layoutUnits(block.lines, unitAnimation.mode) : null;
-  const drawLines = (draw: (line: string, x: number, y: number) => void) => {
-    if (!unitLayout || !unitAnimation) {
+  // Per-word lettering (`wordColors` / `wordTiltDeg` / `wordBounce`): each word is drawn on its own with its own
+  // fill colour, lean and lift — the look of a designed text sticker. It shares the per-unit drawing a cascade
+  // animation uses (the two compose: a cascade in letter mode still knows which word each letter belongs to).
+  const wordStyled = !wordHighlight && Boolean((style.wordColors && style.wordColors.length > 0) || style.wordTiltDeg || style.wordBounce);
+  const unitMode: "letter" | "word" | null = unitAnimation && !wordHighlight ? unitAnimation.mode : wordStyled ? "word" : null;
+  const unitLayout = unitMode ? layoutUnits(block.lines, unitMode) : null;
+  const wordFill = (wordIndex: number): string | undefined =>
+    style.wordColors && style.wordColors.length > 0 ? style.wordColors[wordIndex % style.wordColors.length] : undefined;
+  const drawLines = (draw: (line: string, x: number, y: number, wordFillColor?: string) => void) => {
+    if (!unitLayout || !unitMode) {
       block.lines.forEach((line, i) => draw(line, lineX(i), firstBaseline + block.lineHeight * i));
       return;
     }
@@ -296,19 +303,24 @@ export function drawTextFrame(
       const y = firstBaseline + block.lineHeight * i;
       const baseX = lineX(i);
       for (const unit of unitLayout[i]) {
-        const transform = unitAnimation.animate(unit.info);
+        const transform = unitAnimation && !wordHighlight ? unitAnimation.animate(unit.info) : { dx: 0, dy: 0, scale: 1, alpha: 1 };
         if (transform.alpha <= 0.002) continue;
+        // Alternating lean and lift per WORD (a letter follows its word), on top of any cascade transform.
+        const parity = unit.info.wordIndex % 2 === 0 ? 1 : -1;
+        const tilt = (style.wordTiltDeg ?? 0) * -parity;
+        const lift = (style.wordBounce ?? 0) * -parity;
         const x = baseX + context.measureText(line.slice(0, unit.start)).width;
         const width = context.measureText(unit.text).width;
         const pivotX = x + width / 2;
         const pivotY = y - style.fontSize * 0.35;
         context.save();
         context.globalAlpha *= Math.min(1, transform.alpha);
-        context.translate(transform.dx, transform.dy);
+        context.translate(transform.dx, transform.dy + lift);
         context.translate(pivotX, pivotY);
+        if (tilt !== 0) context.rotate((tilt * Math.PI) / 180);
         context.scale(transform.scale, transform.scale);
         context.translate(-pivotX, -pivotY);
-        draw(unit.text, x, y);
+        draw(unit.text, x, y, wordFill(unit.info.wordIndex));
         context.restore();
       }
     });
@@ -412,7 +424,10 @@ export function drawTextFrame(
     });
   } else {
     context.fillStyle = fill;
-    drawLines((line, x, y) => context.fillText(line, x, y));
+    drawLines((line, x, y, wordFillColor) => {
+      if (wordFillColor) context.fillStyle = wordFillColor;
+      context.fillText(line, x, y);
+    });
   }
 
   // Text decorations (underline / line-through)

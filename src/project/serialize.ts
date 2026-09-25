@@ -143,6 +143,15 @@ function parseTextStyle(raw: unknown): TextStyle {
     ...(typeof r.strokeWidth2 === "number" && Number.isFinite(r.strokeWidth2)
       ? { strokeWidth2: Math.max(0, r.strokeWidth2) }
       : null),
+    ...(Array.isArray(r.wordColors) && r.wordColors.some((c) => typeof c === "string")
+      ? { wordColors: (r.wordColors as unknown[]).filter((c): c is string => typeof c === "string").slice(0, 8) }
+      : null),
+    ...(typeof r.wordTiltDeg === "number" && Number.isFinite(r.wordTiltDeg) && r.wordTiltDeg !== 0
+      ? { wordTiltDeg: Math.max(-30, Math.min(30, r.wordTiltDeg)) }
+      : null),
+    ...(typeof r.wordBounce === "number" && Number.isFinite(r.wordBounce) && r.wordBounce !== 0
+      ? { wordBounce: Math.max(-200, Math.min(200, r.wordBounce)) }
+      : null),
     ...(typeof r.shadowColor === "string" ? { shadowColor: r.shadowColor } : null),
     shadowOffsetX: num(r.shadowOffsetX, "text shadow offset", DEFAULT_TEXT_STYLE.shadowOffsetX),
     shadowOffsetY: num(r.shadowOffsetY, "text shadow offset", DEFAULT_TEXT_STYLE.shadowOffsetY),

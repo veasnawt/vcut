@@ -69,8 +69,13 @@ function PresetThumbnail({
   const isAllCapFont = Boolean(
     preset.fontFamily && ["anton", "bebasneue", "bungee", "bangers"].includes(preset.fontFamily)
   );
-  const sampleText =
-    preset.textTransform === "uppercase" || isAllCapFont
+  // A per-word style (multi-coloured lettering) needs at least two words to show what it does.
+  const wordColors = preset.wordColors && preset.wordColors.length > 0 ? preset.wordColors : null;
+  const sampleText = wordColors
+    ? preset.textTransform === "uppercase" || isAllCapFont
+      ? "AB CD"
+      : "Ab Cd"
+    : preset.textTransform === "uppercase" || isAllCapFont
       ? "AA"
       : preset.textTransform === "lowercase"
         ? "aa"
@@ -199,7 +204,15 @@ function PresetThumbnail({
             opacity: preset.opacity ?? 1,
           }}
         >
-          {sampleText}
+          {wordColors
+            ? sampleText.split(" ").map((word, i, all) => (
+                // Each word in its own colour, as the real style draws it (the gradient clip doesn't apply here).
+                <span key={i} style={{ color: wordColors[i % wordColors.length], WebkitTextFillColor: wordColors[i % wordColors.length], backgroundImage: "none" }}>
+                  {word}
+                  {i < all.length - 1 ? " " : ""}
+                </span>
+              ))
+            : sampleText}
         </span>
       </div>
     </div>
@@ -400,10 +413,20 @@ export function TextStylePresetGrid({
             const needsContrastBg = isPresetDark(preset);
 
             return (
-              <button
-                type="button"
+              // A div with button semantics, not a <button>: the tile contains its own "favorite" <button>, and a
+              // button inside a button is invalid HTML (React warns, and the dev overlay covers the page).
+              <div
+                role="button"
+                tabIndex={0}
                 key={preset.id}
                 onClick={() => handlePick(preset)}
+                onKeyDown={(e) => {
+                  if (e.target !== e.currentTarget) return; // a key on the inner favorite button is its own
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    handlePick(preset);
+                  }
+                }}
                 onMouseEnter={() => {
                   if (preset.fontFamily) {
                     preloadFont(fontById(preset.fontFamily));
@@ -444,7 +467,7 @@ export function TextStylePresetGrid({
                 <span className="w-full truncate text-center text-[10px] text-white/70 group-hover:text-white">
                   {t(preset.label)}
                 </span>
-              </button>
+              </div>
             );
           })}
         </div>

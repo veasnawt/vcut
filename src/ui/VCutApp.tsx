@@ -69,7 +69,7 @@ import { TextToClipsDialog } from "./TextToClipsDialog.tsx";
 import { Inspector } from "./Inspector.tsx";
 import { MediaPanel } from "./MediaPanel.tsx";
 import { FloatablePanel, type FloatRect } from "./FloatablePanel.tsx";
-import { AudioToolsMenu, type AudioToolItem } from "./AudioToolsMenu.tsx";
+import type { ToolGroupItem } from "./toolGroup.ts";
 import { ACCEPTED_EXTENSIONS_BY_KIND } from "./TrackHeader.tsx";
 import { MixerPanel } from "./MixerPanel.tsx";
 import { MobileSignInDialog } from "./MobileSignInDialog.tsx";
@@ -351,7 +351,9 @@ function StatusBar({
   const [aiEditClipId, setAiEditClipId] = useState<string | null>(null);
   const composeTextActive = useEditorStore((s) => s.composeText !== null);
   const [showAnimationMenu, setShowAnimationMenu] = useState(false);
-  const [showAudioMenu, setShowAudioMenu] = useState(false);
+  /** Which tool group (Text / Audio) is expanded IN the toolbar, if any: the row then shows just that group's tools
+   *  next to a back button, the same way a selection narrows it. */
+  const [expandedGroup, setExpandedGroup] = useState<"text" | "audio" | null>(null);
   const audioButtonRef = useRef<HTMLButtonElement>(null);
   const audioImportInputRef = useRef<HTMLInputElement>(null);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
@@ -370,7 +372,6 @@ function StatusBar({
     setShowStickers(false);
     setShowVoiceRecord(false);
     setShowAnimationMenu(false);
-    setShowAudioMenu(false);
     setShowStyleMenu(false);
     setShowFontMenu(false);
     setShowShortcuts(false);
@@ -395,9 +396,6 @@ function StatusBar({
   const pixelEffectButtonRef = useRef<HTMLButtonElement>(null);
   const aiToolsButtonRef = useRef<HTMLButtonElement>(null);
   const textButtonRef = useRef<HTMLButtonElement>(null);
-  const fontButtonRef = useRef<HTMLButtonElement>(null);
-  const animationButtonRef = useRef<HTMLButtonElement>(null);
-  const styleButtonRef = useRef<HTMLButtonElement>(null);
   // Whether the scrollable tool row (below) is scrolled away from its own left edge — drives the
   // Media/Properties cluster's auto-hide (see its own comment for why). `> 4`, not `> 0`: a bounce/
   // rubber-band scroll on iOS Safari can report a few stray sub-pixel values at rest, which would
@@ -639,6 +637,167 @@ function StatusBar({
       ]
     : [];
 
+  const textGroupItems: ToolGroupItem[] = [
+                {
+                  id: "add",
+ shortLabel: t("Add"),
+                  label: t("Add text"),
+                  description: t("Type text and style it live on the canvas"),
+                  icon: <Text size={16} />,
+                  onSelect: () => {
+                    closeAllToolbarTools();
+                    setComposeText({ style: DEFAULT_TEXT_STYLE });
+                  },
+                },
+                {
+                  id: "script",
+ shortLabel: t("Script"),
+                  label: t("Script"),
+                  description: t("Import text as clips"),
+                  icon: <Document size={16} />,
+                  onSelect: () => {
+                    closeAllToolbarTools();
+                    setShowTextImport(true);
+                  },
+                },
+                ...(selectedClipIds.length === 0 || !captionsForClipDisabled
+                  ? [
+                      {
+                        id: "captions",
+ shortLabel: t("Captions"),
+                        label: selectedClipIds.length === 0 ? t("Auto Captions") : t("Auto Captions for the selected clips"),
+                        description: t("Turn speech into timed captions"),
+                        icon: <ClosedCaption size={16} />,
+                        onSelect: () => {
+                          if (!canSwitchToolbarTool()) return;
+                          closeAllToolbarTools();
+                          setCaptionsDialog(selectedClipIds.length === 0 ? {} : { clipIds: selectedClipIds });
+                        },
+                      },
+                    ]
+                  : []),
+                ...(!stylesDisabled
+                  ? [
+                      {
+                        id: "styles",
+ shortLabel: t("Styles"),
+                        label: t("Styles"),
+                        description: t("Apply a look to the selected text"),
+                        icon: <Grid size={16} />,
+                        onSelect: () => {
+                          setPickerAnchorSource("button");
+                          closeAllToolbarTools();
+                          setShowStyleMenu(true);
+                        },
+                      },
+                    ]
+                  : []),
+                ...(!fontDisabled
+                  ? [
+                      {
+                        id: "font",
+ shortLabel: t("Font"),
+                        label: t("Font"),
+                        description: t("Change the typeface"),
+                        icon: <Text size={16} />,
+                        onSelect: () => {
+                          setPickerAnchorSource("button");
+                          closeAllToolbarTools();
+                          setShowFontMenu(true);
+                        },
+                      },
+                    ]
+                  : []),
+                ...(!animationDisabled
+                  ? [
+                      {
+                        id: "animation",
+ shortLabel: t("Animation"),
+                        label: t("Animation"),
+                        description: t("In, out and loop animations"),
+                        icon: <Star size={16} />,
+                        active: Boolean(animationCurrent || animationInCurrent || animationOutCurrent),
+                        onSelect: () => {
+                          setPickerAnchorSource("button");
+                          closeAllToolbarTools();
+                          setShowAnimationMenu(true);
+                        },
+                      },
+                    ]
+                  : []),
+              ];
+
+  const audioGroupItems: ToolGroupItem[] = [
+                    {
+                      id: "import",
+ shortLabel: t("Import"),
+                      label: t("Import audio"),
+                      description: t("Add a sound file from your device"),
+                      icon: <Upload size={16} />,
+                      onSelect: () => {
+                        audioImportInputRef.current?.click();
+                      },
+                    },
+                    {
+                      id: "music",
+ shortLabel: t("Music"),
+                      label: t("Music"),
+                      description: t("Browse trending & viral music"),
+                      icon: <Music size={16} />,
+                      onSelect: () => {
+                        closeAllToolbarTools();
+                        setShowMusic(true);
+                      },
+                    },
+                    {
+                      id: "sfx",
+ shortLabel: t("SFX"),
+                      label: t("Sound effects"),
+                      description: t("Whooshes, hits, ambience and more"),
+                      icon: <Headphone size={16} />,
+                      onSelect: () => {
+                        closeAllToolbarTools();
+                        setShowSfx(true);
+                      },
+                    },
+                    {
+                      id: "voice",
+ shortLabel: t("Voice"),
+                      label: t("Record voiceover"),
+                      description: t("Record from your microphone"),
+                      icon: <Microphone size={16} />,
+                      onSelect: () => {
+                        closeAllToolbarTools();
+                        setShowVoiceRecord(true);
+                      },
+                    },
+                    {
+                      id: "mixer",
+ shortLabel: t("Mixer"),
+                      label: t("Audio mixer"),
+                      description: t("Track volume, pan and levels"),
+                      icon: <Volume size={16} />,
+                      active: bottomPanel === "mixer" || floatingPanel === "mixer",
+                      onSelect: () => {
+                        if (floatingPanel === "mixer") {
+                          onDockFloating();
+                          setBottomPanel("mixer");
+                        } else {
+                          setBottomPanel(bottomPanel === "mixer" ? "timeline" : "mixer");
+                        }
+                      },
+                    },
+                    {
+                      id: "mute",
+ shortLabel: t("Mute"),
+                      label: previewMuted ? t("Unmute preview") : t("Mute preview"),
+                      description: t("Silences playback only — never your export"),
+                      icon: <Volume size={16} />,
+                      active: previewMuted,
+                      onSelect: togglePreviewMuted,
+                    },
+                  ];
+
   return (
     <footer className="vcut-toolbar flex shrink-0 items-center gap-1 border-t border-white/10 bg-[#0d0f14] px-2 py-1.5 text-[11px]">
       {/* Icons only now — the status message and save-state text that used to share this row moved to
@@ -719,7 +878,21 @@ function StatusBar({
           requires scrolling the row back to its own start. Both mobile and desktop: unlike Media/
           Properties, there's no `lg:hidden` here — a selection narrowing the row down is not a
           mobile-only space concern. */}
-      {selectedClipIds.length > 0 && (
+      {expandedGroup && (
+        <button
+          ref={expandedGroup === "text" ? textButtonRef : audioButtonRef}
+          onClick={() => setExpandedGroup(null)}
+          title={t("Back to all tools")}
+          aria-label={t("Back to all tools")}
+          className="vcut-toolbar-back flex h-10 w-11 shrink-0 items-center justify-center rounded-lg bg-white/10 text-white transition hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+        >
+          <span className="flex items-center">
+            <ChevronLeft size={16} className="-mr-2.5" />
+            <ChevronLeft size={16} />
+          </span>
+        </button>
+      )}
+      {selectedClipIds.length > 0 && !expandedGroup && (
         <button
           onClick={() => select([])}
           title={t("Back to all tools")}
@@ -745,6 +918,26 @@ function StatusBar({
           toolsScrollSettleRef.current = window.setTimeout(() => setToolsScrolled(left > 4), 150);
         }}
       >
+        {/* An expanded group (Text / Audio): just that group's tools, in the toolbar itself. The normal tools stay
+            mounted but hidden (`display: none`) so their pickers and refs keep working; `contents` makes the
+            wrapper invisible to the row's flex layout when nothing is expanded. */}
+        {expandedGroup && (
+          <>
+            {(expandedGroup === "text" ? textGroupItems : audioGroupItems).map((item) => (
+              <ToolbarButton
+                key={item.id}
+                title={item.description}
+                label={item.shortLabel ?? item.label}
+                active={item.active}
+                pro={item.id === "captions" ? CREDITS_ENABLED : undefined}
+                onClick={item.onSelect}
+              >
+                {item.icon}
+              </ToolbarButton>
+            ))}
+          </>
+        )}
+        <div className={expandedGroup ? "hidden" : "contents"}>
         {/* Workflow order, left to right: TEXT tools first (everything about creating/styling text —
             what you reach for to build a titled/captioned sequence), then MEDIA (everything else you
             add to the timeline), then STRUCTURAL edits (reshaping what's already there), then
@@ -762,67 +955,28 @@ function StatusBar({
             needing to deselect via the canvas/timeline first. Split/Duplicate/Transition/Effects/Pixel
             FX/Remove Object/Delete/Save (further down) stay exactly as they already were — each already
             gates on the SELECTION itself, which is precisely what should still show here. */}
-        {selectedClipIds.length === 0 && (
-          <>
-            {/* Text: opens the composer (`NewTextComposer`) straight away — an input focused and ready to
-                type, with Style / Font / Animation tabs beside it, all reflected live on the canvas — rather
-                than asking for a style before there's any text. Restyling an existing clip stays in Inspector. */}
-            <ToolbarButton
-              ref={textButtonRef}
-              title={t("Add text")}
-              label={t("Text")}
-              active={composeTextActive}
-              onClick={() => setComposeText({ style: DEFAULT_TEXT_STYLE })}
+        {/* Text — every text tool behind one button, like Audio: Add text (opens the composer), Script (import text as
+            clips), Auto Captions, and — when a text clip is selected — Styles, Font and Animation. These used to be
+            six separate toolbar buttons. The three selection-scoped ones open the same pickers as before, anchored
+            to this button; they only appear in the menu when they have something to act on. */}
+        <ToolbarButton
+          ref={expandedGroup === "text" ? undefined : textButtonRef}
+          title={t("Text")}
+          label={t("Text")}
+          active={composeTextActive || showTextImport || captionsDialog !== null || showStyleMenu || showFontMenu || showAnimationMenu}
+          onClick={() => setExpandedGroup("text")}
+        >
+          {/* A small "+" badge on the glyph: the group's main job is adding a new text. */}
+          <span className="relative inline-flex">
+            <Text size={18} />
+            <span
+              aria-hidden
+              className="absolute -bottom-0.5 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-sky-500 text-[8px] font-bold leading-none text-white"
             >
-              {/* The label reads "Text" on its own — this is what signals "adds a new one" instead, a
-                  small "+" badge on the glyph itself rather than spelling it out in the label text
-                  (which would read oddly once selected/active, unlike a plain "Text" label). */}
-              <span className="relative inline-flex">
-                <Text size={18} />
-                <span
-                  aria-hidden
-                  className="absolute -bottom-0.5 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-sky-500 text-[8px] font-bold leading-none text-white"
-                >
-                  +
-                </span>
-              </span>
-            </ToolbarButton>
-            <ToolbarButton title={t("Import Text as Clips")} label={t("Script")} active={showTextImport} onClick={() => toggleToolbarTool(showTextImport, setShowTextImport)}>
-              <Document size={18} />
-            </ToolbarButton>
-          </>
-        )}
-        {/* Auto Captions — the ONE "add content" tool from the block above that stays reachable once a
-            selection exists too, as long as at least one selected clip has audio: this is the
-            whole-sequence entry point with nothing selected, the SAME button/position/icon opening the
-            SAME dialog scoped to the selected clip(s) (`startCaptions`'s own `clipIds` param — one clip
-            runs the same job Inspector's inline `AutoCaptionsSection` does, several run ONE combined,
-            gap-skipping pass, see that function's own doc comment) the instant a qualifying selection
-            exists — a modal, not Inspector, so this stays a single, direct click on both mobile and
-            desktop rather than landing on a permanent column already showing (desktop) or a sheet that
-            then needs finding the right tab in (mobile). */}
-        {(selectedClipIds.length === 0 || !captionsForClipDisabled) && (
-          <ToolbarButton
-            title={
-              selectedClipIds.length === 0
-                ? t("Auto Captions")
-                : selectedClipIds.length === 1
-                  ? t("Auto Captions for this clip")
-                  : t("Auto Captions for the selected clips")
-            }
-            label={t("Captions")}
-            pro={CREDITS_ENABLED}
-            active={captionsDialog !== null}
-            onClick={() => {
-              if (!canSwitchToolbarTool()) return;
-              const next = captionsDialog === null;
-              closeAllToolbarTools();
-              if (next) setCaptionsDialog(selectedClipIds.length === 0 ? {} : { clipIds: selectedClipIds });
-            }}
-          >
-            <ClosedCaption size={18} />
-          </ToolbarButton>
-        )}
+              +
+            </span>
+          </span>
+        </ToolbarButton>
         {/* Audio — every audio tool behind one button: Import audio, Music, Sound effects, Record voiceover, the
             Mixer and the preview Mute. These used to be five separate toolbar buttons (Voice, Mute, Music, SFX,
             Mixer). Same gate the standalone Mixer button had: reachable with nothing selected AND once a clip
@@ -831,11 +985,11 @@ function StatusBar({
         {(selectedClipIds.length === 0 || !captionsForClipDisabled) && (
           <>
             <ToolbarButton
-              ref={audioButtonRef}
+              ref={expandedGroup === "audio" ? undefined : audioButtonRef}
               title={t("Audio")}
               label={t("Audio")}
-              active={showAudioMenu || bottomPanel === "mixer" || floatingPanel === "mixer" || previewMuted}
-              onClick={() => toggleToolbarTool(showAudioMenu, setShowAudioMenu)}
+              active={bottomPanel === "mixer" || floatingPanel === "mixer" || previewMuted || showMusic || showSfx || showVoiceRecord}
+              onClick={() => setExpandedGroup("audio")}
             >
               <Music size={18} />
             </ToolbarButton>
@@ -857,80 +1011,6 @@ function StatusBar({
                 });
               }}
             />
-            {showAudioMenu && (
-              <AudioToolsMenu
-                anchorRef={audioButtonRef}
-                onClose={() => setShowAudioMenu(false)}
-                items={
-                  [
-                    {
-                      id: "import",
-                      label: t("Import audio"),
-                      description: t("Add a sound file from your device"),
-                      icon: <Upload size={16} />,
-                      onSelect: () => {
-                        setShowAudioMenu(false);
-                        audioImportInputRef.current?.click();
-                      },
-                    },
-                    {
-                      id: "music",
-                      label: t("Music"),
-                      description: t("Browse trending & viral music"),
-                      icon: <Music size={16} />,
-                      onSelect: () => {
-                        closeAllToolbarTools();
-                        setShowMusic(true);
-                      },
-                    },
-                    {
-                      id: "sfx",
-                      label: t("Sound effects"),
-                      description: t("Whooshes, hits, ambience and more"),
-                      icon: <Headphone size={16} />,
-                      onSelect: () => {
-                        closeAllToolbarTools();
-                        setShowSfx(true);
-                      },
-                    },
-                    {
-                      id: "voice",
-                      label: t("Record voiceover"),
-                      description: t("Record from your microphone"),
-                      icon: <Microphone size={16} />,
-                      onSelect: () => {
-                        closeAllToolbarTools();
-                        setShowVoiceRecord(true);
-                      },
-                    },
-                    {
-                      id: "mixer",
-                      label: t("Audio mixer"),
-                      description: t("Track volume, pan and levels"),
-                      icon: <Volume size={16} />,
-                      active: bottomPanel === "mixer" || floatingPanel === "mixer",
-                      onSelect: () => {
-                        setShowAudioMenu(false);
-                        if (floatingPanel === "mixer") {
-                          onDockFloating();
-                          setBottomPanel("mixer");
-                        } else {
-                          setBottomPanel(bottomPanel === "mixer" ? "timeline" : "mixer");
-                        }
-                      },
-                    },
-                    {
-                      id: "mute",
-                      label: previewMuted ? t("Unmute preview") : t("Mute preview"),
-                      description: t("Silences playback only — never your export"),
-                      icon: <Volume size={16} />,
-                      active: previewMuted,
-                      onSelect: togglePreviewMuted,
-                    },
-                  ] satisfies AudioToolItem[]
-                }
-              />
-            )}
           </>
         )}
         {/* The bulk/quick-apply path for `Clip.textAnimation` — works on however many text clips are
@@ -939,23 +1019,10 @@ function StatusBar({
             fine-tuned afterward, one clip at a time. Hidden rather than merely disabled when no text
             clip is selected — see the group of toolbar tools below this file's own "hide, don't just
             grey out" comment for the full reasoning shared by all of them. */}
-        {!stylesDisabled && (
-          <>
-            <ToolbarButton
-              ref={styleButtonRef}
-              title={t("Styles")}
-              label={t("Styles")}
-              active={showStyleMenu}
-              onClick={() => {
-                setPickerAnchorSource("button");
-                toggleToolbarTool(showStyleMenu, setShowStyleMenu);
-              }}
-            >
-              <Grid size={18} />
-            </ToolbarButton>
-            {showStyleMenu && (
+        {/* picker */}
+        {showStyleMenu && (
               <StylePickerMenu
-                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : styleButtonRef}
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : textButtonRef}
                 onPick={applyTextStylePresetToSelection}
                 onPreview={(preset) => {
                   if (selectedTextClips.length > 0) {
@@ -978,25 +1045,10 @@ function StatusBar({
                 }}
               />
             )}
-          </>
-        )}
-        {!fontDisabled && (
-          <>
-            <ToolbarButton
-              ref={fontButtonRef}
-              title={t("Font")}
-              label={t("Font")}
-              active={showFontMenu}
-              onClick={() => {
-                setPickerAnchorSource("button");
-                toggleToolbarTool(showFontMenu, setShowFontMenu);
-              }}
-            >
-              <Text size={18} />
-            </ToolbarButton>
-            {showFontMenu && (
+        {/* picker */}
+        {showFontMenu && (
               <FontPickerMenu
-                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : fontButtonRef}
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : textButtonRef}
                 selectedId={firstSelectedTextStyle.fontFamily}
                 customFonts={project?.customFonts ?? []}
                 onPick={(fontId) => {
@@ -1026,25 +1078,10 @@ function StatusBar({
                 }}
               />
             )}
-          </>
-        )}
-        {!animationDisabled && (
-          <>
-            <ToolbarButton
-              ref={animationButtonRef}
-              title={t("Animation")}
-              label={t("Animation")}
-              active={showAnimationMenu || Boolean(animationCurrent || animationInCurrent || animationOutCurrent)}
-              onClick={() => {
-                setPickerAnchorSource("button");
-                toggleToolbarTool(showAnimationMenu, setShowAnimationMenu);
-              }}
-            >
-              <Star size={18} />
-            </ToolbarButton>
-            {showAnimationMenu && (
+        {/* picker */}
+        {showAnimationMenu && (
               <AnimationPickerMenu
-                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : animationButtonRef}
+                anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : textButtonRef}
                 current={animationCurrent}
                 onPick={applyTextAnimationToSelection}
                 currentIn={animationInCurrent}
@@ -1054,8 +1091,6 @@ function StatusBar({
                 onClose={() => setShowAnimationMenu(false)}
               />
             )}
-          </>
-        )}
 
         {selectedClipIds.length === 0 && (
           <>
@@ -1371,6 +1406,7 @@ function StatusBar({
         >
           <Save size={18} />
         </ToolbarButton>
+        </div>
       </div>
       <div className="vcut-toolbar-shortcuts hidden shrink-0 lg:block">
         <ToolbarButton

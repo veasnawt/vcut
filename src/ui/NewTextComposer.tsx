@@ -50,18 +50,19 @@ export function NewTextComposer() {
   const t = useTranslation();
   const [bottomInset, setBottomInset] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  // Which panel is open under the input, if any. Closed by default: the input is always there, focused, and
-  // the tabs are toggles that open a panel (there is no separate "keyboard" tab — the field itself is the
-  // keyboard).
-  const [tab, setTab] = useState<ComposerTab | null>(null);
+  // Which panel is open under the input, if any — Style by default. The tabs are toggles (tap the open one to
+  // close it and go back to typing); there is no separate "keyboard" tab, the field itself is the keyboard.
+  const [tab, setTab] = useState<ComposerTab | null>("style");
   const composing = composeText !== null;
 
-  // Every new compose session starts with the panel closed and the input focused — typing is the first thing
-  // anyone does.
+  // Every new compose session opens with the Style panel showing — picking a look is the natural next step
+  // after (or before) typing. On a touch device the on-screen keyboard would cover that panel, so there the
+  // input isn't auto-focused (tap it to type); with a mouse it's focused straight away as before.
   useEffect(() => {
     if (composing) {
-      setTab(null);
-      inputRef.current?.focus();
+      setTab("style");
+      const touch = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+      if (!touch) inputRef.current?.focus();
     }
   }, [composing]);
 

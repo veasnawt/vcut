@@ -45,6 +45,8 @@ Last updated 2026-09-25.
 - Rotation handle snapping.
 - iPhone silent switch: the "playback" audio category is re-asserted on every Play tap and when the recorder's preview plays (plus a silent-media fallback for iOS without `audioSession`) — cannot be tested without an iPhone.
 - Browser exports offer **Save to Photos** (share sheet) where the browser can share files; the phone app already auto-saves to the gallery. A web page can't save to Photos silently.
+- **Text stickers**: a Stickers style category (layered white/coloured outlines, bubbly and script lettering) plus per-word lettering (`wordColors` / `wordTiltDeg` / `wordBounce`) for multi-coloured, leaning-word lockups, drawn by the same code in preview and browser-rendered export. Not yet: shapes/badges behind individual words, or user-editable per-word colours in the Inspector.
+- Toolbar groups: **Text** and **Audio** each expand in place in the toolbar (back button returns) instead of six/five separate buttons; the +Text composer opens with the Style panel showing.
 - One **Audio** toolbar button groups every audio tool (Import audio, Music, Sound effects, Record voiceover, Audio mixer, Mute preview) in place of five separate buttons; Import audio adds the file at the playhead on an audio track.
 - +Text opens the composer immediately (input focused) with Style / Font / Animation tabs, all live on the canvas.
 - Text animations: In / Out / Loop tabs — 17 entrances (mirrored as exits) and 3 new loops (Float, Shake,

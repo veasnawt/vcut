@@ -226,6 +226,16 @@ export interface TextStyle {
   strokeColor2?: string;
   /** Secondary stroke width in sequence pixels. */
   strokeWidth2?: number;
+  /** Fill colours cycled across the WORDS of the text (word 1 gets the first, word 2 the second, then it wraps) —
+   *  the multi-coloured lettering of a designed text "sticker" ("SKIN" pink, "CARE" orange). Overrides `color` and
+   *  `gradient` for the fill only; outlines and shadows are unchanged. Words come from `Intl.Segmenter`, so Khmer
+   *  (no spaces) splits into real words too. Absent = one colour. */
+  wordColors?: string[];
+  /** Degrees each word is rotated, alternating direction (word 1 leans one way, word 2 the other) for a hand-placed,
+   *  bouncy sticker look. 0/absent = straight. */
+  wordTiltDeg?: number;
+  /** Pixels each word is lifted or dropped from the baseline, alternating (odd words up, even words down). */
+  wordBounce?: number;
   /** Hex; absent means no drop shadow. */
   shadowColor?: string;
   /** Pixels; only meaningful when `shadowColor` is set. FFmpeg's `drawtext` shadow is a hard-edged

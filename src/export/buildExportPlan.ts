@@ -1213,7 +1213,11 @@ export function needsTextStyleBrowserRender(style: TextStyle): boolean {
       (style.letterSpacing && style.letterSpacing !== 0) ||
       (style.textDecoration && style.textDecoration !== "none") ||
       (style.opacity !== undefined && style.opacity < 1) ||
-      (style.blendMode && style.blendMode !== "source-over")
+      (style.blendMode && style.blendMode !== "source-over") ||
+      // Per-word colour / tilt / bounce: `drawtext` has one fill colour per call and can't rotate single words.
+      Boolean(style.wordColors && style.wordColors.length > 0) ||
+      Boolean(style.wordTiltDeg) ||
+      Boolean(style.wordBounce)
   );
 }
 
