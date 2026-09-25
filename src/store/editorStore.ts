@@ -327,6 +327,9 @@ export interface EditorState {
   undo: () => void;
   redo: () => void;
   save: () => Promise<void>;
+  /** Makes a playable preview copy of a video the browser couldn't play, then points the asset at it
+   *  (`Asset.proxyRelPath`). No-op if it already has one or one is being made. */
+  requestPlaybackProxy: (assetId: string) => Promise<void>;
   /** Conflict resolution: throw away this tab's unsaved changes and reload what's on the server. */
   resolveConflictLoadLatest: () => Promise<void>;
   /** Conflict resolution: overwrite the server's version with this tab's. */
@@ -743,6 +746,9 @@ let clipboardEntries: ClipboardEntry[] = [];
 /** Owns autosave scheduling, retries and flushing — see `saveCoordinator.ts`. Created inside the store
  *  (it needs `get`/`set`); module-level so `flushPendingSave`/`saveOnPageHide` below can reach it. */
 let saveCoordinator: SaveCoordinator | null = null;
+/** Assets a preview proxy is currently being made for, so a second failure report doesn't start another. */
+const proxiesInFlight = new Set<string>();
+
 /** Set for the duration of a page-hide flush so the save it triggers is sent with `keepalive` — the browser then
  *  finishes the request even if the page is torn down. It goes through the normal save path (rather than a
  *  second, separate request) so the server revision stays consistent: two concurrent PUTs from one tab with
@@ -1139,6 +1145,28 @@ export const useEditorStore = create<EditorState>((set, get) => {
 
     async save() {
       await saveCoordinator?.run();
+    },
+
+    async requestPlaybackProxy(assetId) {
+      const { project, projectId, language } = get();
+      const asset = project?.assets.find((a) => a.id === assetId);
+      if (!project || !projectId || !asset || asset.kind !== "video" || asset.proxyRelPath || proxiesInFlight.has(assetId)) return;
+      proxiesInFlight.add(assetId);
+      get().setStatus(translateText(language, "Preparing a preview-compatible copy of {name}…", { name: asset.name }));
+      try {
+        const proxyRelPath = await api.createPlaybackProxy(projectId, asset);
+        const current = get().project;
+        // The project may have changed (or been closed) while this ran; only apply it to the same project.
+        if (current && get().projectId === projectId) {
+          applyProject({ ...current, assets: current.assets.map((a) => (a.id === assetId ? { ...a, proxyRelPath } : a)) });
+          get().setStatus(translateText(get().language, "{name} is ready to preview", { name: asset.name }));
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Couldn't prepare a preview copy of that video";
+        get().setStatus(translateText(get().language, message), "error");
+      } finally {
+        proxiesInFlight.delete(assetId);
+      }
     },
 
     async resolveConflictLoadLatest() {

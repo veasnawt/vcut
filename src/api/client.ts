@@ -382,7 +382,22 @@ export async function deleteMedia(projectId: string, asset: Asset): Promise<void
   const params = new URLSearchParams({ projectId, relPath: asset.relPath });
   if (asset.thumbnailRelPath) params.set("thumbnailRelPath", asset.thumbnailRelPath);
   if (asset.waveformRelPath) params.set("waveformRelPath", asset.waveformRelPath);
+  if (asset.proxyRelPath) params.set("proxyRelPath", asset.proxyRelPath);
   await unwrap<{ ok: boolean }>(await apiFetch(`${BASE}/media?${params}`, { method: "DELETE" }));
+}
+
+/** Asks the server to make a preview-only H.264 copy of a video the browser couldn't play, returning its
+ *  `relPath`. Slow for a long or heavy source (it transcodes), so callers show progress-free "preparing" UI and
+ *  do not block on it. Not available on native, where the WebView plays what the device can decode. */
+export async function createPlaybackProxy(projectId: string, asset: Asset): Promise<string> {
+  if (isNative) throw new ApiRequestError("Preview copies aren't available on this device", 400, "proxy-unavailable");
+  const response = await apiFetch(`${BASE}/media/proxy?projectId=${encodeURIComponent(projectId)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ relPath: asset.relPath, ...(asset.libraryMediaId ? { library: true } : null) }),
+  });
+  const { proxyRelPath } = await unwrap<{ proxyRelPath: string }>(response);
+  return proxyRelPath;
 }
 
 export interface StockSearchResult {

@@ -998,6 +998,10 @@ export interface PlaybackHost {
    *  is playing. Carries the element's own media state so a platform-specific failure (iOS Safari
    *  especially, which can't be reproduced off-device) arrives as evidence rather than a guess. */
   onPlaybackStall?: (details: Record<string, unknown>) => void;
+  /** A video's file couldn't be played by this browser at all (unsupported codec / undecodable) — fired once per
+   *  asset. The host can respond by preparing a playable preview copy; the engine picks it up on its own once
+   *  `mediaUrlFor` starts returning the new URL. */
+  onVideoUnplayable?: (assetId: string) => void;
   /** Called once per page load, three seconds into playback over an audio-track clip, with the audio
    *  engine's own state (`phase: "playing-3s"` — see `maybeReportAudio`), and once per audio file whose
    *  load was slow, retried or failed (`phase: "buffer-settled"`). */
@@ -1045,6 +1049,15 @@ interface PooledMedia {
    *  OLD asset's video element sitting in the pool under the unchanged `clip.id`, still showing the
    *  original unprocessed footage until a full page reload rebuilt the pool from scratch. */
   assetId: string;
+  /** The URL (minus any auth token) this element's `src` was built from. When `mediaUrlFor` later returns a
+   *  different one — a preview proxy replacing an unplayable original — the element is rebuilt. */
+  urlKey?: string;
+}
+
+/** A media URL without its rotating `token` query parameter, so an auth-token refresh doesn't look like a
+ *  different file and needlessly rebuild every pooled element. */
+function stableUrlKey(url: string): string {
+  return url.replace(/([?&])token=[^&]*&?/, "$1").replace(/[?&]$/, "");
 }
 
 /** Drives the preview: advances a master clock, keeps media elements slaved to it, and composites
@@ -1283,11 +1296,15 @@ export class PlaybackEngine {
    *  one element can't be in two places. */
   private mediaFor(clip: Clip, kind: "video" | "image"): PoolElement | null {
     const existing = this.pool.get(clip.id);
+    // The URL this clip's media should load from RIGHT NOW: a video whose original couldn't be played gets a
+    // preview proxy, which changes the URL under an element that was built from (and failed on) the old one.
+    const currentUrl = kind === "video" ? this.host.mediaUrlFor(clip.assetId) : null;
+    const urlChanged = Boolean(existing && currentUrl && existing.urlKey && existing.urlKey !== stableUrlKey(currentUrl));
     // A pooled element built for this clip's PREVIOUS `assetId` is stale, not reusable — see
     // `PooledMedia.assetId`'s own doc comment for the real bug this closes. Released the same way
     // `evictStale`/`detach` already do (pause + drop `src` + `load()`) before falling through to
     // build a fresh element below, exactly as if nothing had ever been pooled for this clip.
-    if (existing && existing.assetId !== clip.assetId) {
+    if (existing && (existing.assetId !== clip.assetId || urlChanged)) {
       this.release(existing.element);
       this.pool.delete(clip.id);
       this.animationFrames.delete(clip.id);
@@ -1315,9 +1332,28 @@ export class PlaybackEngine {
       element.tabIndex = -1;
       element.style.cssText = "width:1px;height:1px;";
       this.mediaHost().appendChild(element);
+      // MEDIA_ERR_SRC_NOT_SUPPORTED (4) / MEDIA_ERR_DECODE (3): the browser can't play this file (ProRes, DNxHD,
+      // HEVC without a decoder...). Tell the host once per asset so it can prepare a playable preview copy;
+      // without this the preview just stayed black with nothing to say why.
+      const assetId = clip.assetId;
+      const reportUnplayable = () => {
+        if (this.unplayableReported.has(assetId)) return;
+        this.unplayableReported.add(assetId);
+        this.host.onVideoUnplayable?.(assetId);
+      };
+      element.addEventListener("error", () => {
+        const code = element.error?.code;
+        if (code === 3 || code === 4) reportUnplayable();
+      });
+      // The common failure has NO error at all: a file whose AUDIO the browser can decode but whose video codec
+      // it can't (ProRes, DNxHD, ...) still loads — readyState reaches "have data" — but reports a video size
+      // of 0x0 and only ever draws nothing. A video asset whose metadata loaded with no picture is that case.
+      element.addEventListener("loadedmetadata", () => {
+        if (element.videoWidth === 0 && element.videoHeight === 0) reportUnplayable();
+      });
     }
 
-    this.pool.set(clip.id, { element, lastUsed: performance.now(), assetId: clip.assetId });
+    this.pool.set(clip.id, { element, lastUsed: performance.now(), assetId: clip.assetId, urlKey: kind === "video" ? stableUrlKey(url) : undefined });
     this.evictStale();
     return element;
   }
@@ -1335,6 +1371,9 @@ export class PlaybackEngine {
     element.load();
     element.remove();
   }
+
+  /** Assets already reported through `host.onVideoUnplayable`, so a retry loop can't re-fire it. */
+  private unplayableReported = new Set<string>();
 
   private mediaHostElement: HTMLDivElement | null = null;
 

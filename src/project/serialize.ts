@@ -216,6 +216,7 @@ function parseAsset(raw: Record<string, unknown>): Asset {
     name: str(raw.name, "asset name"),
     relPath: str(raw.relPath, "asset path"),
     ...(typeof raw.thumbnailRelPath === "string" ? { thumbnailRelPath: raw.thumbnailRelPath } : null),
+    ...(typeof raw.proxyRelPath === "string" && raw.proxyRelPath ? { proxyRelPath: raw.proxyRelPath } : null),
     ...(typeof raw.filmstripRelPath === "string" ? { filmstripRelPath: raw.filmstripRelPath } : null),
     ...(typeof raw.waveformRelPath === "string" ? { waveformRelPath: raw.waveformRelPath } : null),
     duration: num(raw.duration, "asset duration", 0),

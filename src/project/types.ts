@@ -28,6 +28,10 @@ export interface Asset {
    *  use themselves, audio has none). One SINGLE representative frame — what the Media Library shows,
    *  where one frame is the more useful preview than a filmstrip would be. */
   thumbnailRelPath?: string;
+  /** A small H.264 copy of a video the browser couldn't play (ProRes, DNxHD, MPEG-2, HEVC on browsers without
+   *  it...), used for PREVIEW ONLY and made on demand the first time playback fails — see
+   *  `export/proxyCommands.ts`. Export always reads the original `relPath`. Video assets only. */
+  proxyRelPath?: string;
   /** Path to a SPRITE SHEET of several evenly-spaced frames from across the source, tiled in a single
    *  row — video only. What the Timeline tiles across a clip's width for an actual (if approximate)
    *  filmstrip, as opposed to `thumbnailRelPath`'s one frame: tiling that single frame repeatedly

@@ -253,8 +253,10 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
         // resolved through the app's own unauthenticated bundled-asset route rather than this
         // project's own media.
         if (asset.bundledSfx) return sfxAssetUrl(asset.relPath);
-        return mediaUrl(state.projectId, asset.relPath, Boolean(asset.libraryMediaId));
+        // A preview proxy (made when the browser couldn't play the original) replaces it for playback only.
+        return mediaUrl(state.projectId, (asset.kind === "video" && asset.proxyRelPath) || asset.relPath, Boolean(asset.libraryMediaId));
       },
+      onVideoUnplayable: (assetId) => void useEditorStore.getState().requestPlaybackProxy(assetId),
       spriteUrlFor: (assetId) => {
         const state = useEditorStore.getState();
         const asset = state.project?.assets.find((a) => a.id === assetId);

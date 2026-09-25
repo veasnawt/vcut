@@ -23,7 +23,7 @@ Last updated 2026-09-25.
 | P1-2 Preview full-resolution CPU pixel work | Done |
 | P1-3 Mask export very slow | Done |
 | P1-4 Inspector re-rendered every frame | Done |
-| P1-5 No codec check / proxies on import | Open |
+| P1-5 No codec check / proxies on import | Done for playback — when the browser can't show a video (ProRes, DNxHD, MPEG-2, HEVC without a decoder...: it loads the audio but reports a 0x0 picture), the app makes a 720p H.264 preview copy on demand (`POST /api/vcut/media/proxy`), points the asset at it (`Asset.proxyRelPath`, preview only — export still reads the original) and the preview recovers. Proven with a real ProRes file. Not done: variable-frame-rate detection/normalisation on import, warning about unsupported codecs before import, native/mobile (WebView plays what the device decodes), and the proxy is made synchronously while the user waits (large files take a while; hosted uses the shared FFmpeg concurrency limit) |
 | P1-6 Two network lookups per hosted media request | Done in code — verified sessions are cached 30s (never past the token's own expiry, keyed by a hash of the token) and confirmed project ownership 60s (positives only; project delete clears it), so a burst of media requests costs 0 lookups after the first. Unit-tested only; not measured against live Supabase. Trade-off: a session revoked elsewhere can take up to 30s to stop working for requests on this server |
 | P1-7 Server storage only grows, no backups | Partly done — hosted exports are deleted after 24h (hourly sweep). Still open: exports/uploads don't count toward quota, and there are no volume backups (a Railway-side setting) |
 | P1-8 Jobs only in memory; restart loses spent credits | Done for credits — `job_holds` table (migration 0013, must be applied) records credits spent on in-memory AI video / Remove Object / Captions jobs; holds from a dead process are refunded once. Provider-side predictions of a killed job may still run (not cancelled) |
@@ -65,5 +65,5 @@ Last updated 2026-09-25.
 3. ~~P1-8 + P1-10 + P1-7 (retention)~~ (done; volume backups and quota-counting exports remain).
 4. ~~P1-1 smooth keyframes in export~~ (pan + zoom done; the combinations above remain).
 5. ~~P1-9 multi-tab overwrite protection~~, ~~P1-11 copy/paste + shortcuts~~ (done), ~~P1-12 undo edge cases~~ (done).
-6. P1-5 / P1-6 / P1-13 / P1-14 import + memory work.
+6. ~~P1-5 / P1-6 / P1-13 / P1-14 import + memory work~~ (done, with the notes above).
 7. P2 polish, P3 future.
