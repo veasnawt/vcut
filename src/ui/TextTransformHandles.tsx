@@ -91,7 +91,15 @@ function MobileTextEditBar({
 }) {
   const t = useTranslation();
   const [bottomInset, setBottomInset] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Grow the field to fit its lines (CSS max-height caps it).
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -112,23 +120,20 @@ function MobileTextEditBar({
   return (
     <div
       style={{ position: "fixed", left: 0, right: 0, bottom: bottomInset, zIndex: 50 }}
-      className="flex items-center gap-2 border-t border-white/10 bg-[#14161c] p-2 shadow-2xl"
+      className="flex items-end gap-2 border-t border-white/10 bg-[#14161c] p-2 shadow-2xl"
     >
-      <input
+      <textarea
         ref={inputRef}
-        type="text"
+        rows={1}
         value={value}
         placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
-          // A mobile keyboard's own "Go"/"Done" action key dispatches a plain Enter keydown — same
-          // "commit, don't insert a newline" convention the desktop textarea's identical check uses.
-          if (e.key === "Enter") {
-            e.preventDefault();
-            onConfirm();
-          }
+          // Multi-line: the keyboard's Enter adds a line and the check button commits (Escape isn't reachable
+          // on a touch keyboard, so nothing else is bound).
+          if (e.key === "Escape") e.preventDefault();
         }}
-        className="min-w-0 flex-1 rounded-md border border-white/15 bg-white/5 px-3 py-2 text-[16px] text-white placeholder:text-white/35 focus:outline-none focus:ring-1 focus:ring-sky-400/60"
+        className="max-h-28 min-w-0 flex-1 resize-none rounded-md border border-white/15 bg-white/5 px-3 py-2 text-[16px] leading-snug text-white placeholder:text-white/35 focus:outline-none focus:ring-1 focus:ring-sky-400/60"
       />
       {/* 16px floor on the input's own font-size above is the same iOS-Safari-auto-zoom-on-focus
           guard every other text input in this app already applies — not a copy-paste leftover. */}
