@@ -1381,7 +1381,9 @@ export async function getInpaintKeyStatus(): Promise<InpaintKeyStatus | null> {
   if (isNative) return null;
   try {
     const response = await apiFetch(`${BASE}/inpaint/settings`);
-    return unwrap<InpaintKeyStatus>(response);
+    // `await` matters: without it the rejection (hosted answers 403 "not available in the hosted web version") skips this
+    // try/catch and takes down `inpaintAvailable()` with it, which is what made Remove Object look permanently unreachable.
+    return await unwrap<InpaintKeyStatus>(response);
   } catch {
     return null;
   }
