@@ -725,6 +725,9 @@ function parseClip(raw: Record<string, unknown>): Clip {
     ...(pixelEffect ? { pixelEffect } : null),
     ...(faceEffects ? { faceEffects } : null),
     ...(typeof raw.lutId === "string" ? { lutId: raw.lutId } : null),
+    ...(typeof raw.lutIntensity === "number" && Number.isFinite(raw.lutIntensity) && raw.lutIntensity >= 0 && raw.lutIntensity < 1
+      ? { lutIntensity: raw.lutIntensity }
+      : null),
     ...(textCrop ? { textCrop } : null),
     ...(textCropKeyframes ? { textCropKeyframes } : null),
     ...(raw.mutedAudio === true ? { mutedAudio: true } : null),

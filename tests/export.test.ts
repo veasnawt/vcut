@@ -12,6 +12,7 @@ import {
   setClipEffectsKeyframes,
   setClipGain,
   setClipLut,
+  setClipLutIntensity,
   setClipMask,
   setClipPixelEffect,
   setClipMuted,
@@ -861,6 +862,28 @@ describe("buildExportPlan with a clip LUT", () => {
     const lut3dIndex = graph.indexOf("lut3d=");
     const scaleIndex = graph.indexOf("scale=w=");
     assert.ok(curvesIndex >= 0 && lut3dIndex > curvesIndex && scaleIndex > lut3dIndex);
+  });
+
+  it("hands the clip's lutIntensity to lutPathFor so the route can supply a pre-blended file", () => {
+    const seen: Array<[string, number | undefined]> = [];
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(project, videoTrackId(project));
+    project = setClipLut(project, clip.id, "lut1");
+    project = setClipLutIntensity(project, clip.id, 0.4);
+
+    const graph = filterGraph(
+      buildExportPlan(project, {
+        ...options,
+        lutPathFor: (lutId, intensity) => {
+          seen.push([lutId, intensity]);
+          return `/luts/${lutId}-${Math.round((intensity ?? 1) * 100)}.cube`;
+        },
+      }).args
+    );
+
+    assert.deepEqual(seen[0], ["lut1", 0.4]);
+    assert.ok(graph.includes("lut3d=file='/luts/lut1-40.cube'"));
   });
 
   it("skips the lut3d= stage entirely when lutPathFor isn't supplied, without throwing", () => {

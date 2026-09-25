@@ -191,3 +191,51 @@ export function applyLut3D(imageData: { data: Uint8ClampedArray }, lut: Lut3D): 
     data[i + 2] = out[2] * 255;
   }
 }
+
+/** Clamps a stored/typed LUT intensity to `0..1`, treating anything non-finite as full strength — one
+ *  definition for the preview cache key, the export blend and the Inspector, so they can't disagree. */
+export function normalizeLutIntensity(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 1;
+  return Math.round(Math.min(1, Math.max(0, value)) * 100) / 100;
+}
+
+/** A copy of `lut` whose output is `identity + intensity * (lut - identity)` at every lattice point —
+ *  i.e. a straight mix between the original pixel and the fully-LUT'd one. Because a 3D LUT is sampled by
+ *  (tri)linear interpolation, blending the lattice then sampling is exactly the same as sampling then
+ *  blending, so this gives preview (`applyLut3D`) and export (`lut3d` on `serializeCubeLut`'s output) the
+ *  same result without a per-pixel blend or a second FFmpeg branch. The identity lattice value at index
+ *  `i` is the INPUT value that index represents (`domainMin + i/(size-1) * range`), which is what an
+ *  identity LUT would output. Returns `lut` itself at full strength. */
+export function blendLut3D(lut: Lut3D, intensity: number): Lut3D {
+  const k = normalizeLutIntensity(intensity);
+  if (k >= 1) return lut;
+  const n = lut.size;
+  const data = new Float32Array(lut.data.length);
+  for (let b = 0; b < n; b++) {
+    for (let g = 0; g < n; g++) {
+      for (let r = 0; r < n; r++) {
+        const idx = (r + g * n + b * n * n) * 3;
+        const coords = [r, g, b];
+        for (let ch = 0; ch < 3; ch++) {
+          const identity = lut.domainMin[ch] + (coords[ch] / (n - 1)) * (lut.domainMax[ch] - lut.domainMin[ch]);
+          data[idx + ch] = identity + k * (lut.data[idx + ch] - identity);
+        }
+      }
+    }
+  }
+  return { size: n, domainMin: lut.domainMin, domainMax: lut.domainMax, data };
+}
+
+/** Writes `lut` back out as `.cube` text — the inverse of `parseCubeLut`. Used to hand FFmpeg a
+ *  pre-blended file for a clip whose `lutIntensity` is below 1. */
+export function serializeCubeLut(lut: Lut3D): string {
+  const lines = [
+    `LUT_3D_SIZE ${lut.size}`,
+    `DOMAIN_MIN ${lut.domainMin.join(" ")}`,
+    `DOMAIN_MAX ${lut.domainMax.join(" ")}`,
+  ];
+  for (let i = 0; i < lut.size ** 3; i++) {
+    lines.push(`${lut.data[i * 3].toFixed(6)} ${lut.data[i * 3 + 1].toFixed(6)} ${lut.data[i * 3 + 2].toFixed(6)}`);
+  }
+  return `${lines.join("\n")}\n`;
+}

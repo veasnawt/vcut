@@ -5,7 +5,7 @@ import { isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop } from ".
 import type { ClipOverride } from "../timeline/groupMove.ts";
 import { applyColorGrading, buildCurveLut, composeLuts } from "../timeline/colorCurves.ts";
 import { resolveClipColorGrading, resolveClipEffects, resolveClipGain, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
-import { applyLut3D, parseCubeLut } from "../timeline/lut.ts";
+import { applyLut3D, blendLut3D, normalizeLutIntensity, parseCubeLut } from "../timeline/lut.ts";
 import type { Lut3D } from "../timeline/lut.ts";
 import { applyGlitch, applyGlitchCut, applyHorizontalBlur, applyWaterRipple, FLASH_ZOOM_PEAK, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
 import {
@@ -1151,6 +1151,8 @@ export class PlaybackEngine {
    *  which clip references it, so this can be shared across every clip using the same LUT — no
    *  per-clip invalidation rule needed the way `colorGradingLutCache` has for a live-editable curve. */
   private lutCache = new Map<string, Lut3D | Promise<void>>();
+  /** Intensity-blended copies of `lutCache` entries, keyed `lutId@hundredths` — see `resolveLut`. */
+  private blendedLutCache = new Map<string, Lut3D>();
   /** Owns the entire Web Audio mixing graph — see its own doc comment. Composed here rather than
    *  subclassed: this class stays the video/canvas/clock owner, `AudioMixEngine` is a pure audio-output
    *  concern it delegates to, the same way `PlaybackHost` itself is composition rather than inheritance. */
@@ -2123,7 +2125,8 @@ export class PlaybackEngine {
           elapsed,
           clip.flipHorizontal,
           mask,
-          clip.flipVertical
+          clip.flipVertical,
+          override?.lutIntensity ?? clip.lutIntensity
         );
         compositeTransitionFrame(
           context,
@@ -2163,7 +2166,8 @@ export class PlaybackEngine {
             elapsed,
             clip.flipHorizontal,
             mask,
-            clip.flipVertical
+            clip.flipVertical,
+          override?.lutIntensity ?? clip.lutIntensity
           );
         },
         { windowElapsed: activeTransition.elapsed, windowDuration: activeTransition.duration, clipElapsed: elapsed, fadingOut: false }
@@ -2196,7 +2200,8 @@ export class PlaybackEngine {
             elapsed,
             clip.flipHorizontal,
             mask,
-            clip.flipVertical
+            clip.flipVertical,
+          override?.lutIntensity ?? clip.lutIntensity
           );
         },
         {
@@ -2209,7 +2214,7 @@ export class PlaybackEngine {
       return;
     }
 
-    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed, clip.flipHorizontal, mask, clip.flipVertical);
+    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, clip.chromaKey, colorGrading, clip.id, clip.lutId, clip.pixelEffect, elapsed, clip.flipHorizontal, mask, clip.flipVertical, override?.lutIntensity ?? clip.lutIntensity);
   }
 
   /** Draws and plays the outgoing clip's source handle during a blend, holding its final frame at EOF.
@@ -2298,7 +2303,7 @@ export class PlaybackEngine {
     const transform = resolveClipTransform(partner, partnerElapsed);
     const effects = resolveClipEffects(partner, partnerElapsed);
     const colorGrading = resolveClipColorGrading(partner, partnerElapsed);
-    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, partner.chromaKey, colorGrading, partner.id, partner.lutId, partner.pixelEffect, partnerElapsed, partner.flipHorizontal, partner.mask, partner.flipVertical);
+    this.drawTransformed(context, element, sourceWidth, sourceHeight, frameWidth, frameHeight, transform, effects, 1, partner.chromaKey, colorGrading, partner.id, partner.lutId, partner.pixelEffect, partnerElapsed, partner.flipHorizontal, partner.mask, partner.flipVertical, partner.lutIntensity);
     return true;
   }
 
@@ -2333,7 +2338,8 @@ export class PlaybackEngine {
     elapsedSeconds = 0,
     flipHorizontal = false,
     mask?: ClipMask,
-    flipVertical = false
+    flipVertical = false,
+    lutIntensity?: number
   ): void {
     const box = computeTransformedBox(sourceWidth, sourceHeight, frameWidth, frameHeight, transform);
     if (!box) return;
@@ -2378,7 +2384,7 @@ export class PlaybackEngine {
         // the file is still loading (or unresolvable) — this frame just renders without it rather than
         // blocking the render loop; the very next frame after it resolves applies it normally.
         if (needsLut) {
-          const lut = this.resolveLut(lutId!);
+          const lut = this.resolveLut(lutId!, lutIntensity);
           if (lut) applyLut3D(imageData, lut);
         }
         // A spatial displacement, not a color operation — see `Clip.pixelEffect`'s own doc comment for
@@ -2565,7 +2571,24 @@ export class PlaybackEngine {
    *  render loop for a still-loading resource" principle `mediaFor`'s own not-yet-decoded-frame checks
    *  already follow elsewhere in this file — a LUT that hasn't loaded yet just renders as if absent for
    *  a frame or two, then starts applying itself the instant it resolves, with no visible stall. */
-  private resolveLut(lutId: string): Lut3D | null {
+  private resolveLut(lutId: string, intensity?: number): Lut3D | null {
+    const full = this.resolveFullLut(lutId);
+    if (!full) return null;
+    const k = normalizeLutIntensity(intensity);
+    if (k >= 1) return full;
+    // Blended lattices are cheap (≈36k floats for a 33³ LUT) but a slider drag asks for a new one every
+    // frame, so they're cached per (lut, hundredths) and the cache is trimmed to a handful of recent
+    // entries — a drag walks through many values and only the latest matters.
+    const key = `${lutId}@${Math.round(k * 100)}`;
+    const cached = this.blendedLutCache.get(key);
+    if (cached) return cached;
+    const blended = blendLut3D(full, k);
+    this.blendedLutCache.set(key, blended);
+    if (this.blendedLutCache.size > 12) this.blendedLutCache.delete(this.blendedLutCache.keys().next().value as string);
+    return blended;
+  }
+
+  private resolveFullLut(lutId: string): Lut3D | null {
     const cached = this.lutCache.get(lutId);
     if (cached instanceof Promise) return null;
     if (cached) return cached;

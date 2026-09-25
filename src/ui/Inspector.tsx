@@ -39,6 +39,7 @@ import {
   SetClipGainKeyframesCommand,
   SetClipPanCommand,
   SetClipLutCommand,
+  SetClipLutIntensityCommand,
   SetClipMaskCommand,
   SetClipMutedCommand,
   SetClipTextAnimationCommand,
@@ -2851,6 +2852,25 @@ export function Inspector() {
                           </li>
                         ))}
                       </ul>
+                    )}
+                    {clip.lutId && project!.luts.some((l) => l.id === clip.lutId) && (
+                      <div className="mt-2">
+                        <NumberField
+                          label={t("Intensity")}
+                          value={clip.lutIntensity ?? 1}
+                          suffix="%"
+                          step={5}
+                          min={0}
+                          max={100}
+                          toDisplay={(v) => v * 100}
+                          fromDisplay={(v) => v / 100}
+                          onPreview={(v) => setLivePreviewOverrides([{ clipId: clip.id, lutIntensity: v }])}
+                          onCommit={(v) => {
+                            run(new SetClipLutIntensityCommand(clip.id, v));
+                            clearPreview();
+                          }}
+                        />
+                      </div>
                     )}
                     <button
                       onClick={() => lutImportInputRef.current?.click()}

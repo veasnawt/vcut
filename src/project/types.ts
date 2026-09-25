@@ -905,6 +905,12 @@ export interface Clip {
    *  simply returns `null` for an unresolvable id — see `PlaybackEngine.PlaybackHost`'s own doc
    *  comment), not corrupt the edit. */
   lutId?: string;
+  /** How strongly `lutId` is applied, `0..1` — `1` (absent) is the LUT at full strength, `0` is the
+   *  untouched image. A straight blend between the source and the fully-LUT'd pixels, implemented by
+   *  blending the LUT LATTICE itself (`timeline/lut.ts`'s `blendLut3D`) so preview and export apply the
+   *  exact same math with no extra per-pixel pass or FFmpeg filter branch. Meaningless without `lutId`;
+   *  not keyframeable, same reasoning as `lutId`. */
+  lutIntensity?: number;
   /** A continuous glitch/water-ripple pixel effect over this clip's own visible duration — see
    *  `PixelEffectType`'s own doc comment for what it is and how it differs from the TRANSITION-flavored
    *  `glitchCut`/`waterRippleCut`. `speed` mirrors `textAnimation.speed`'s exact convention (a

@@ -2,6 +2,7 @@ import { clipDuration, clipEnd, createClip, createTextAsset, findAsset, findClip
 import type { ChromaKeySettings, Asset, Clip, ClipBlendMode, ClipEffects, ClipMask, ClipTransform, ColorCurve, ColorGrading, CoverSelection, Project, SpeedCurvePoint, TextCrop, TextStyle, Track, TrackKind } from "../project/types.ts";
 import { CLIP_BLEND_MODES, DEFAULT_TEXT_STYLE, IMAGE_DEFAULT_DURATION, isIdentityColorGrading, isIdentityEffects, isIdentityTextCrop, isIdentityTransform, TEXT_DEFAULT_DURATION } from "../project/types.ts";
 import { frameDuration, snapToFrame } from "./time.ts";
+import { normalizeLutIntensity } from "./lut.ts";
 import { clampClipSpeed, clipProgressAtElapsed, clipSourceTimeAtElapsed, normalizedSpeedCurve, sliceSpeedCurve } from "./clipTiming.ts";
 
 /** Every operation here is PURE: it takes a project and returns a NEW project, never mutating the
@@ -1124,9 +1125,23 @@ export function setClipLut(project: Project, clipId: string, lutId: string | nul
     if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
     if (!lutId) {
       delete found.clip.lutId;
+      delete found.clip.lutIntensity;
     } else {
       found.clip.lutId = lutId;
     }
+  });
+}
+
+/** Sets how strongly a clip's LUT is applied (`0..1`; `1` clears the field back to its "full strength"
+ *  default so a project with no adjustment serializes exactly as before). */
+export function setClipLutIntensity(project: Project, clipId: string, intensity: number | null): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    const value = intensity === null ? 1 : normalizeLutIntensity(intensity);
+    if (value >= 1) delete found.clip.lutIntensity;
+    else found.clip.lutIntensity = value;
   });
 }
 
@@ -1140,7 +1155,10 @@ export function removeLutReferences(project: Project, lutId: string): Project {
   return edit(project, (draft) => {
     for (const track of draft.sequence.tracks) {
       for (const clip of track.clips) {
-        if (clip.lutId === lutId) delete clip.lutId;
+        if (clip.lutId === lutId) {
+          delete clip.lutId;
+          delete clip.lutIntensity;
+        }
       }
     }
   });

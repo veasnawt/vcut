@@ -27,6 +27,7 @@ import {
   setClipGainKeyframes,
   setClipPan,
   setClipLut,
+  setClipLutIntensity,
   setClipMuted,
   setClipTextCrop,
   setClipTextCropKeyframes,
@@ -1064,6 +1065,35 @@ export class SetClipLutCommand implements Command {
   revert(project: Project): Project {
     if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
     return setClipLut(project, this.clipId, this.previous);
+  }
+}
+
+/** Sets how strongly a clip's LUT is applied. `previous` is captured on apply so undo restores the exact
+ *  prior strength (including "absent" = full), same applied-flag shape as `SetClipLutCommand`. */
+export class SetClipLutIntensityCommand implements Command {
+  label = "Set LUT intensity";
+  private applied = false;
+  private previous: number | null = null;
+
+  private clipId: string;
+  private intensity: number;
+
+  constructor(clipId: string, intensity: number) {
+    this.clipId = clipId;
+    this.intensity = intensity;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = found.clip.lutIntensity ?? null;
+    this.applied = true;
+    return setClipLutIntensity(project, this.clipId, this.intensity);
+  }
+
+  revert(project: Project): Project {
+    if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipLutIntensity(project, this.clipId, this.previous);
   }
 }
 

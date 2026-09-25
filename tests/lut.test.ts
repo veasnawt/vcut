@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { applyLut3D, LutParseError, parseCubeLut } from "../src/timeline/lut.ts";
+import { applyLut3D, blendLut3D, LutParseError, normalizeLutIntensity, parseCubeLut, serializeCubeLut } from "../src/timeline/lut.ts";
 
 // A minimal, valid 2x2x2 identity LUT — rows in the .cube spec's own "red fastest" order.
 const IDENTITY_2_CUBE = `TITLE "Identity"
@@ -132,5 +132,82 @@ describe("applyLut3D", () => {
     // Pure red (1,0,0) should map to pure blue (0,0,1) under an R/B swap LUT.
     assert.ok(imageData.data[0] < 5, `expected R~0, got ${imageData.data[0]}`);
     assert.ok(imageData.data[2] > 250, `expected B~255, got ${imageData.data[2]}`);
+  });
+});
+
+// A 2x2x2 LUT that fully inverts every channel — the user-visible "invert-test.cube" case: at strength 1
+// white becomes black, at 0 the image is untouched, at 0.5 everything collapses to mid-grey.
+const INVERT_2_CUBE = `LUT_3D_SIZE 2
+1.0 1.0 1.0
+0.0 1.0 1.0
+1.0 0.0 1.0
+0.0 0.0 1.0
+1.0 1.0 0.0
+0.0 1.0 0.0
+1.0 0.0 0.0
+0.0 0.0 0.0
+`;
+
+function applyTo(lut: ReturnType<typeof parseCubeLut>, rgb: [number, number, number]): number[] {
+  const image = { data: new Uint8ClampedArray([rgb[0], rgb[1], rgb[2], 255]) };
+  applyLut3D(image, lut);
+  return [image.data[0], image.data[1], image.data[2]];
+}
+
+describe("blendLut3D (LUT intensity)", () => {
+  const invert = parseCubeLut(INVERT_2_CUBE);
+
+  it("returns the same LUT at full strength", () => {
+    assert.equal(blendLut3D(invert, 1), invert);
+  });
+
+  it("at 0 is an identity — pixels come out untouched", () => {
+    const zero = blendLut3D(invert, 0);
+    assert.deepEqual(applyTo(zero, [200, 40, 90]), [200, 40, 90]);
+  });
+
+  it("at 0.5 lands exactly halfway between the source and the inverted pixel", () => {
+    const half = blendLut3D(invert, 0.5);
+    // invert(200)=55, midpoint of 200 and 55 = 127.5; invert(40)=215 -> 127.5; 90 -> 165 -> 127.5
+    for (const channel of applyTo(half, [200, 40, 90])) assert.ok(Math.abs(channel - 127.5) <= 1, `got ${channel}`);
+  });
+
+  it("is monotonic: more intensity moves a pixel further toward the LUT's result", () => {
+    const at = (k: number) => applyTo(blendLut3D(invert, k), [255, 255, 255])[0];
+    assert.ok(at(0) > at(0.25) && at(0.25) > at(0.5) && at(0.5) > at(0.75) && at(0.75) > at(1));
+  });
+
+  it("honors a non-default input domain when computing the identity it blends toward", () => {
+    const rows = "0 0 0\n".repeat(8);
+    const wide = parseCubeLut(`LUT_3D_SIZE 2\nDOMAIN_MIN 0 0 0\nDOMAIN_MAX 2 2 2\n${rows}`);
+    const zero = blendLut3D(wide, 0);
+    // identity at lattice index 1 on a 0..2 domain is 2, not 1
+    assert.equal(zero.data[(1 + 0 * 2 + 0 * 4) * 3], 2);
+  });
+});
+
+describe("serializeCubeLut", () => {
+  it("round-trips through parseCubeLut", () => {
+    const original = parseCubeLut(INVERT_2_CUBE);
+    const again = parseCubeLut(serializeCubeLut(original));
+    assert.equal(again.size, original.size);
+    assert.deepEqual([...again.data], [...original.data]);
+    assert.deepEqual(again.domainMax, original.domainMax);
+  });
+
+  it("writes a blended LUT FFmpeg can read back to the same values", () => {
+    const blended = blendLut3D(parseCubeLut(INVERT_2_CUBE), 0.25);
+    const again = parseCubeLut(serializeCubeLut(blended));
+    for (let i = 0; i < blended.data.length; i++) assert.ok(Math.abs(again.data[i] - blended.data[i]) < 1e-5);
+  });
+});
+
+describe("normalizeLutIntensity", () => {
+  it("treats absent / non-finite as full strength and clamps to 0..1", () => {
+    assert.equal(normalizeLutIntensity(undefined), 1);
+    assert.equal(normalizeLutIntensity(Number.NaN), 1);
+    assert.equal(normalizeLutIntensity(-3), 0);
+    assert.equal(normalizeLutIntensity(7), 1);
+    assert.equal(normalizeLutIntensity(0.456), 0.46);
   });
 });

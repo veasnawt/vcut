@@ -17,6 +17,8 @@ export interface ClipOverride {
   colorGrading?: ColorGrading;
   textCrop?: TextCrop;
   mask?: ClipMask;
+  /** Live LUT-intensity slider drag (`Clip.lutIntensity`'s preview). */
+  lutIntensity?: number;
 }
 
 /** For every OTHER selected clip (excluding `primaryClipId`, the one actually under the pointer),

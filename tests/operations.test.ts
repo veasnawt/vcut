@@ -15,6 +15,7 @@ import {
   setClipColorGradingKeyframes,
   setClipEffects,
   setClipLut,
+  setClipLutIntensity,
   setClipPixelEffect,
   setClipEffectsKeyframes,
   setClipGain,
@@ -1736,5 +1737,37 @@ describe("removeLutReferences", () => {
     const cleared = removeLutReferences(project, "lut1");
 
     assert.equal("lutId" in clipsOf(cleared, videoTrackId(cleared))[0], false);
+  });
+});
+
+describe("setClipLutIntensity", () => {
+  function withLut() {
+    const base = emptyProject();
+    const withClip = addClip(base, videoTrackId(base), "asset1", 0);
+    const [clip] = clipsOf(withClip, videoTrackId(withClip));
+    return { project: setClipLut(withClip, clip.id, "lut1"), clipId: clip.id };
+  }
+
+  it("stores a partial intensity and clears the field again at full strength", () => {
+    const { project, clipId } = withLut();
+    const half = setClipLutIntensity(project, clipId, 0.5);
+    assert.equal(clipsOf(half, videoTrackId(half))[0].lutIntensity, 0.5);
+    const full = setClipLutIntensity(half, clipId, 1);
+    assert.equal("lutIntensity" in clipsOf(full, videoTrackId(full))[0], false);
+  });
+
+  it("clamps out-of-range values", () => {
+    const { project, clipId } = withLut();
+    const low = setClipLutIntensity(project, clipId, -1);
+    assert.equal(clipsOf(low, videoTrackId(low))[0].lutIntensity, 0);
+  });
+
+  it("is dropped together with the LUT itself, and when the LUT is removed from the library", () => {
+    const { project, clipId } = withLut();
+    const half = setClipLutIntensity(project, clipId, 0.4);
+    const unset = setClipLut(half, clipId, null);
+    assert.equal(clipsOf(unset, videoTrackId(unset))[0].lutIntensity, undefined);
+    const removed = removeLutReferences(half, "lut1");
+    assert.equal(clipsOf(removed, videoTrackId(removed))[0].lutIntensity, undefined);
   });
 });

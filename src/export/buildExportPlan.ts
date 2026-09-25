@@ -169,7 +169,7 @@ export interface ExportPlanOptions {
    *  than throwing) skips the `lut3d=` stage for every clip, same graceful-degradation shape every
    *  other optional resolver here already has — `nativeExport.ts` currently doesn't support LUTs, so
    *  it simply doesn't supply this. */
-  lutPathFor?: (lutId: string) => string | undefined;
+  lutPathFor?: (lutId: string, intensity?: number) => string | undefined;
 }
 
 export interface ExportPlan {
@@ -2186,7 +2186,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           fps,
           chromaKey: clip.chromaKey,
           colorGrading: clip.colorGrading,
-          lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId) : undefined,
+          lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId, clip.lutIntensity) : undefined,
           pixelEffect: clip.pixelEffect,
           flipHorizontal: clip.flipHorizontal,
           flipVertical: clip.flipVertical,
@@ -2266,7 +2266,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           fps,
           chromaKey: clip.chromaKey,
           colorGrading: clip.colorGrading,
-          lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId) : undefined,
+          lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId, clip.lutIntensity) : undefined,
           pixelEffect: clip.pixelEffect,
           flipHorizontal: clip.flipHorizontal,
           flipVertical: clip.flipVertical,
@@ -2350,7 +2350,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           fps,
           chromaKey: clip.chromaKey,
           colorGrading: slice.colorGrading,
-          lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId) : undefined,
+          lutPath: clip.lutId ? options.lutPathFor?.(clip.lutId, clip.lutIntensity) : undefined,
           pixelEffect: clip.pixelEffect,
           flipHorizontal: clip.flipHorizontal,
           flipVertical: clip.flipVertical,
