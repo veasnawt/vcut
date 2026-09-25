@@ -60,3 +60,14 @@ export function formatDuration(seconds: number): string {
   const secs = total % 60;
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
+
+/** Duration label for a selected clip on the timeline: one decimal under a minute ("3.2s"), then minutes and
+ *  seconds ("1:05.4"), so trimming is readable to a tenth of a second. */
+export function formatClipDuration(seconds: number): string {
+  const safe = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  const tenths = Math.round(safe * 10);
+  if (tenths < 600) return `${(tenths / 10).toFixed(1)}s`;
+  const mins = Math.floor(tenths / 600);
+  const rest = (tenths - mins * 600) / 10;
+  return `${mins}:${rest.toFixed(1).padStart(4, "0")}`;
+}

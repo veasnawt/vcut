@@ -15,7 +15,7 @@ import {
   timelineSpanPixels,
 } from "../timeline/interaction.ts";
 import { snapPoints } from "../timeline/queries.ts";
-import { formatDuration } from "../timeline/time.ts";
+import { formatClipDuration, formatDuration } from "../timeline/time.ts";
 import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCandidate } from "../timeline/transitions.ts";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
 
@@ -1005,6 +1005,16 @@ function TimelineClipComponent({
       >
         {assetName}
       </span>
+
+      {/* The selected clip's length, live while trimming — hidden when the clip is too narrow to hold it. */}
+      {selected && duration * pixelsPerSecond >= 56 && (
+        <span
+          aria-label={t("Clip duration")}
+          className="pointer-events-none absolute bottom-1 right-2 z-10 rounded bg-black/60 px-1.5 py-0.5 font-mono text-[10px] leading-none text-white/90"
+        >
+          {formatClipDuration(duration)}
+        </span>
+      )}
 
       {!track.locked && selected && (
         <>

@@ -712,7 +712,7 @@ function RemoveObjectSection({
     // matching `exportAvailable`'s own single-precondition shape) so this section can tell the two
     // "not ready" reasons apart and show the right one — a bare HEAD response can't distinguish them
     // without a body, and "reinstall FFmpeg" is not an actionable message for a missing API key.
-    void inpaintAvailable().then(setAvailable);
+    void checkAvailability();
     void getInpaintKeyStatus().then((s) => {
       if (s) setSelectedProvider(s.activeProvider);
       setStatus(s);
@@ -721,6 +721,26 @@ function RemoveObjectSection({
 
   useEffect(() => () => unwatchRef.current?.(), []);
   useEffect(() => () => setupUnwatchRef.current?.(), []);
+
+  /** The availability probe is two quick HEAD requests, and a single dropped one (a server restart during a deploy, a
+   *  flaky mobile connection) used to leave the tool stuck on "temporarily unavailable" until the panel was reopened.
+   *  It's retried a few times, and the unavailable card has a Try again button. */
+  const [checking, setChecking] = useState(false);
+  async function checkAvailability() {
+    setChecking(true);
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (await inpaintAvailable()) {
+          setAvailable(true);
+          return;
+        }
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      setAvailable(false);
+    } finally {
+      setChecking(false);
+    }
+  }
 
   const armed = removeObjectArmedClipId === clipId;
   const rect = removeObjectRect?.clipId === clipId ? removeObjectRect : null;
@@ -980,16 +1000,32 @@ function RemoveObjectSection({
   }
 
   if (!available) {
+    const native = Capacitor.isNativePlatform();
     return (
       <>
         {credentialsBlock}
-        <p className="text-[12px] leading-relaxed text-amber-200/80">
-          {Capacitor.isNativePlatform()
-            ? t("Remove Object isn't available on mobile yet — try it on desktop or the web app.")
-            : hosted
-              ? t("Remove Object is temporarily unavailable — please try again later.")
-              : t("FFmpeg isn't available — reinstall dependencies to use this.")}
-        </p>
+        <div className="rounded-lg border border-amber-300/20 bg-amber-300/[0.06] p-3">
+          <p className="text-[12px] font-medium text-amber-200">
+            {native ? t("Not available on mobile yet") : hosted ? t("Remove Object can't be reached right now") : t("FFmpeg isn't available")}
+          </p>
+          <p className="mt-1 text-[11px] leading-relaxed text-white/50">
+            {native
+              ? t("Remove Object isn't available on mobile yet — try it on desktop or the web app.")
+              : hosted
+                ? t("This is usually a brief connection hiccup. Your credits haven't been touched.")
+                : t("FFmpeg isn't available — reinstall dependencies to use this.")}
+          </p>
+          {!native && hosted && (
+            <button
+              type="button"
+              onClick={() => void checkAvailability()}
+              disabled={checking}
+              className="mt-2.5 rounded-md bg-white/10 px-3 py-1.5 text-[12px] font-medium text-white transition hover:bg-white/15 disabled:opacity-50"
+            >
+              {checking ? t("Checking…") : t("Try again")}
+            </button>
+          )}
+        </div>
       </>
     );
   }
@@ -1049,81 +1085,97 @@ function RemoveObjectSection({
   return (
     <>
       {credentialsBlock}
-      {error && <p className="mb-2 text-[12px] text-amber-200/80">{error}</p>}
-      {!rect ? (
-        <>
-          <p className="text-[12px] leading-relaxed text-white/50">
-            {isImage
-              ? t("Draw a box over the object or watermark on the preview, and it's erased from the image.")
-              : t(
-                  "Draw a box over the object or watermark on the preview. Works best for a mostly-static background — the same region is erased across the whole clip."
-                )}
-          </p>
-          {/* Hosted mode's cloud provider (`bria/video-erase-object`) processes in 5-second chunks —
-              a real cost and time difference on a long clip, not just a cosmetic note. Local/desktop's
-              own providers (local ProPainter, fal's VOID) have no such cap, so this would be
-              misleading advice there. */}
-          {hosted && !isImage && clipDurationSeconds > 5 && (
-            <p className="mt-1.5 text-[11px] leading-relaxed text-amber-300/80">
-              {t(
-                "This clip is over 5 seconds — it'll be processed in chunks, which costs more credits and takes longer. If you only need to fix a short section, trimming the clip first is faster and cheaper."
-              )}
-            </p>
+      {error && (
+        <p className="mb-2.5 rounded-md border border-amber-300/20 bg-amber-300/[0.06] px-2.5 py-2 text-[12px] leading-relaxed text-amber-200/90">{error}</p>
+      )}
+      <p className="text-[11px] leading-relaxed text-white/45">
+        {isImage
+          ? t("Draw a box over the object or watermark on the preview, and it's erased from the image.")
+          : t("Draw a box over the object or watermark on the preview. Works best for a mostly-static background — the same region is erased across the whole clip.")}
+      </p>
+      {/* Hosted mode's cloud provider (`bria/video-erase-object`) processes in 5-second chunks —
+          a real cost and time difference on a long clip, not just a cosmetic note. Local/desktop's
+          own providers (local ProPainter, fal's VOID) have no such cap, so this would be
+          misleading advice there. */}
+      {hosted && !isImage && clipDurationSeconds > 5 && (
+        <p className="mt-2 rounded-md bg-amber-300/[0.06] px-2.5 py-2 text-[11px] leading-relaxed text-amber-300/80">
+          {t(
+            "This clip is over 5 seconds — it'll be processed in chunks, which costs more credits and takes longer. If you only need to fix a short section, trimming the clip first is faster and cheaper."
           )}
-          <button
-            onClick={() => armRemoveObject(clipId)}
-            className={`mt-2 w-full rounded py-1.5 text-[12px] font-medium transition ${
-              armed ? "bg-rose-500/30 text-white" : "bg-white/5 text-white/70 hover:bg-white/10 hover:text-white"
+        </p>
+      )}
+
+      <ol className="mt-3 space-y-2">
+        <li className="flex items-center gap-2.5">
+          <span
+            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
+              rect ? "bg-emerald-400/20 text-emerald-300" : "bg-sky-500/25 text-sky-200"
             }`}
           >
-            {armed ? t("Drawing… click and drag on the preview") : t("Draw region")}
+            {rect ? "✓" : "1"}
+          </span>
+          <span className="min-w-0 flex-1 text-[12px] text-white/75">
+            {rect ? t("Region: {width}×{height} px", { width: Math.round(rect.width), height: Math.round(rect.height) }) : t("Mark the object")}
+          </span>
+          <button
+            onClick={() => armRemoveObject(clipId)}
+            className={`shrink-0 rounded-md px-3 py-1.5 text-[12px] font-medium transition ${
+              armed ? "bg-rose-500/30 text-white" : "bg-white/10 text-white/80 hover:bg-white/15 hover:text-white"
+            }`}
+          >
+            {armed ? t("Drawing… click and drag on the preview") : rect ? t("Redraw") : t("Draw region")}
           </button>
-        </>
-      ) : (
-        <>
-          <p className="text-[12px] text-white/50">
-            {t("Region: {width}×{height} px", { width: Math.round(rect.width), height: Math.round(rect.height) })}
-          </p>
-          {/* Only genuinely true for the local ProPainter script — it decodes/writes frames only,
-              with no audio concept at all. The cloud path (`bria/video-erase-object`, hosted mode's
-              only option and also what "Replicate" now means locally too) keeps the source clip's
-              own audio via `preserve_audio` — see `buildExtractClipArgs`'s own comment for why
-              extraction stopped dropping it. */}
-          {selectedProvider === "local" && !isImage && (
-            <p className="mt-1 text-[11px] text-white/35">
-              {t('Result has no audio — "{name}"\'s own audio isn\'t affected either way.', { name: assetName })}
-            </p>
-          )}
-          {selectedProvider === "fal" && (
-            <input
-              type="text"
-              value={backgroundPrompt}
-              onChange={(e) => setBackgroundPrompt(e.target.value)}
-              placeholder={t("Describe the background that should appear (optional)")}
-              className="mt-2 w-full rounded bg-white/5 px-2.5 py-1.5 text-[12px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60"
-            />
-          )}
-          {/* Estimated against the WHOLE clip's own duration, not the drawn region's size — see the
-              section's own opening comment: the same region is erased across every frame of the clip
-              regardless of how small a box was drawn, matching inpaint/route.ts's own real billing
-              formula (a per-second rate with a one-second minimum) exactly. */}
-          {hosted && (
-            <p className="mt-1.5 text-[11px] text-white/35">
+        </li>
+        <li className="flex items-center gap-2.5">
+          <span
+            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
+              rect ? "bg-sky-500/25 text-sky-200" : "bg-white/5 text-white/30"
+            }`}
+          >
+            2
+          </span>
+          <span className={`min-w-0 flex-1 text-[12px] ${rect ? "text-white/75" : "text-white/30"}`}>{t("Erase it")}</span>
+          {hosted && rect && (
+            <span className="shrink-0 rounded-full bg-white/[0.06] px-2 py-0.5 text-[10px] text-white/50">
               {t("~{n} credits", {
                 n: isImage ? REMOVE_OBJECT_CREDITS_PER_SECOND : Math.ceil(Math.max(1, clipDurationSeconds)) * REMOVE_OBJECT_CREDITS_PER_SECOND,
               })}
-            </p>
+            </span>
           )}
-          <div className="mt-2 flex gap-2">
-            <button onClick={() => void begin()} className="flex-1 rounded bg-sky-500 py-1.5 text-[12px] font-semibold text-white transition hover:bg-sky-400">
-              {t("Remove Object")}
-            </button>
-            <button onClick={clearRemoveObject} className="rounded bg-white/5 px-3 py-1.5 text-[12px] text-white/60 transition hover:bg-white/10 hover:text-white">
-              {t("Clear")}
-            </button>
-          </div>
-        </>
+        </li>
+      </ol>
+
+      {/* Only genuinely true for the local ProPainter script — it decodes/writes frames only, with no audio concept at
+          all. The cloud path (`bria/video-erase-object`) keeps the source clip's own audio via `preserve_audio`. */}
+      {rect && selectedProvider === "local" && !isImage && (
+        <p className="mt-2 text-[11px] text-white/35">
+          {t("Result has no audio — \"{name}\"'s own audio isn't affected either way.", { name: assetName })}
+        </p>
       )}
+      {rect && selectedProvider === "fal" && (
+        <input
+          type="text"
+          value={backgroundPrompt}
+          onChange={(e) => setBackgroundPrompt(e.target.value)}
+          placeholder={t("Describe the background that should appear (optional)")}
+          className="mt-2 w-full rounded bg-white/5 px-2.5 py-1.5 text-[12px] text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-sky-400/60"
+        />
+      )}
+
+      <div className="mt-3 flex gap-2">
+        <button
+          onClick={() => void begin()}
+          disabled={!rect}
+          className="flex-1 rounded-md bg-sky-500 py-2 text-[12px] font-semibold text-white transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-white/5 disabled:text-white/30"
+        >
+          {t("Remove Object")}
+        </button>
+        {rect && (
+          <button onClick={clearRemoveObject} className="rounded-md bg-white/5 px-3 py-2 text-[12px] text-white/60 transition hover:bg-white/10 hover:text-white">
+            {t("Clear")}
+          </button>
+        )}
+      </div>
     </>
   );
 }
@@ -2657,29 +2709,24 @@ export function Inspector() {
                           </p>
                         </div>
                       </div>
-                      <div className="grid gap-1.5">
+                      <div role="tablist" className="grid gap-1 rounded-lg bg-white/[0.04] p-1" style={{ gridTemplateColumns: `repeat(${aiTools.length}, minmax(0, 1fr))` }}>
                         {aiTools.map((tool) => (
                           <button
                             key={tool.id}
                             type="button"
+                            role="tab"
+                            aria-selected={activeAiTool === tool.id}
                             onClick={() => setSelectedAiTool(tool.id)}
-                            aria-pressed={activeAiTool === tool.id}
-                            className={`flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-left transition ${
-                              activeAiTool === tool.id
-                                ? "border-sky-400/30 bg-sky-500/10"
-                                : "border-white/[0.07] bg-white/[0.02] hover:border-white/15 hover:bg-white/[0.04]"
+                            className={`flex min-w-0 items-center justify-center gap-1 rounded-md px-1.5 py-2 text-[11px] font-medium transition ${
+                              activeAiTool === tool.id ? "bg-sky-500/20 text-white" : "text-white/55 hover:bg-white/5 hover:text-white"
                             }`}
                           >
-                            <span className="min-w-0 flex-1">
-                              <span className={`block text-[12px] font-medium ${activeAiTool === tool.id ? "text-sky-100" : "text-white/70"}`}>
-                                {tool.label}
-                              </span>
-                              <span className="mt-0.5 block text-[10px] text-white/35">{tool.description}</span>
-                            </span>
-                            {CREDITS_ENABLED && <span className="rounded-sm bg-amber-400 px-1 text-[9px] font-bold text-black">PRO</span>}
+                            <span className="truncate">{tool.label}</span>
+                            {CREDITS_ENABLED && <span className="shrink-0 rounded-sm bg-amber-400 px-1 text-[8px] font-bold leading-[1.4] text-black">PRO</span>}
                           </button>
                         ))}
                       </div>
+                      <p className="px-0.5 text-[11px] text-white/40">{aiTools.find((tool) => tool.id === activeAiTool)?.description}</p>
                       {activeAiTool === "creative" && <SmartCutoutSection clipId={clip.id} />}
                       {activeAiTool === "remove" && (
                         <div className="rounded-lg border border-white/[0.07] bg-white/[0.02] p-3">

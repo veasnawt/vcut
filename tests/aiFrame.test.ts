@@ -24,3 +24,13 @@ describe("AI frame helpers", () => {
     assert.equal(sourceTimeAtPlayhead(clip, 0), 5);
   });
 });
+
+import { formatClipDuration } from "../src/timeline/time.ts";
+describe("formatClipDuration", () => {
+  it("shows tenths under a minute and m:ss.s beyond", () => {
+    assert.equal(formatClipDuration(3.24), "3.2s");
+    assert.equal(formatClipDuration(0), "0.0s");
+    assert.equal(formatClipDuration(59.96), "1:00.0");
+    assert.equal(formatClipDuration(65.4), "1:05.4");
+  });
+});
