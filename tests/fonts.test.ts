@@ -29,7 +29,7 @@ describe("FONT_REGISTRY", () => {
 
 describe("fontById", () => {
   it("finds a font by its id", () => {
-    assert.equal(fontById("battambang").label, "Battambang (Khmer)");
+    assert.equal(fontById("battambang").label, "Battambang");
   });
 
   it("falls back to the first (default) font for an unknown id", () => {

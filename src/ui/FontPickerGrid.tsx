@@ -15,17 +15,15 @@ export function defaultFontIdFor(language: string): string {
   return language === "km" ? "koulen" : DEFAULT_FONT_ID;
 }
 
-/** Every bundled font's own `label` consistently tags Khmer-script faces with "(Khmer)"/"(Khmer
- *  display)"/"(Khmer script)" (see `fonts.ts`'s own registry) — cheaper and just as reliable as adding
- *  a dedicated script field to `FontDefinition` only this grid would ever read. Takes a bare label
- *  string (not a `FontDefinition`) so `FontGridPicker.tsx`'s own custom-font entries, which have no
- *  such field at all, can reuse the exact same check against their own `name` instead. */
+/** Bundled Khmer-script faces are flagged with `FontDefinition.khmer` (their labels no longer carry a "(Khmer)"
+ *  tag). Custom uploaded fonts have no such flag, so this name check stays as their fallback: it takes a bare
+ *  string so `FontGridPicker.tsx`'s custom-font entries can reuse it against their own `name`. */
 export function isKhmerFontLabel(label: string): boolean {
   return label.includes("Khmer");
 }
 
 function isKhmerFont(font: FontDefinition): boolean {
-  return isKhmerFontLabel(font.label);
+  return font.khmer === true || isKhmerFontLabel(font.label);
 }
 
 const KHMER_SAMPLE = "អក្សរខ្មែរ";
@@ -34,8 +32,8 @@ const LATIN_SAMPLE = "Ag";
 /** Which sample text a tile should preview a font with, by label/name — shared with
  *  `FontGridPicker.tsx` so the two font grids in this app never pick DIFFERENT sample text for the
  *  same font. */
-export function sampleTextFor(label: string): string {
-  return isKhmerFontLabel(label) ? KHMER_SAMPLE : LATIN_SAMPLE;
+export function sampleTextFor(label: string, khmer?: boolean): string {
+  return khmer || isKhmerFontLabel(label) ? KHMER_SAMPLE : LATIN_SAMPLE;
 }
 
 /** Font tile grid for Auto Captions' Font tab — same selectable-tile pattern as `TextStylePresetGrid`/
@@ -72,7 +70,7 @@ export function FontPickerGrid({
             className="flex h-[42px] w-full items-center justify-center overflow-hidden rounded border border-white/10 bg-black/40 px-1 text-[15px] text-white"
             style={{ fontFamily: font.cssFamily }}
           >
-            {sampleTextFor(font.label)}
+            {sampleTextFor(font.label, font.khmer)}
           </span>
           <span className="truncate text-[10px] text-white/60">{font.label}</span>
         </button>

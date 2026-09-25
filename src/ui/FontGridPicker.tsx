@@ -78,7 +78,7 @@ export function FontGridPicker({
               className="flex h-[42px] w-full items-center justify-center overflow-hidden rounded border border-white/10 bg-black/40 px-1 text-[15px] text-white"
               style={{ fontFamily: `"${font.cssFamily}"` }}
             >
-              {sampleTextFor(font.label)}
+              {sampleTextFor(font.label, (font as { khmer?: boolean }).khmer)}
             </span>
             <span className="truncate text-[10px] text-white/60">{font.label}</span>
           </button>

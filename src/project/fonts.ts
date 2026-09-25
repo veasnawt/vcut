@@ -24,6 +24,8 @@ export interface FontDefinition {
   id: string;
   /** Shown in the Inspector's font picker. */
   label: string;
+  /** A Khmer-script face (the picker previews it with Khmer sample text and lists it under Khmer). */
+  khmer?: boolean;
   /** The `@font-face` family name this font is registered under — in BOTH the browser (see
    *  studios/bp/app/globals.css) and `computeTextBlock`'s `context.font` string. Prefixed and distinct
    *  per font so two bundled families can never collide with each other or with a page's own fonts. */
@@ -78,7 +80,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "battambang",
-    label: "Battambang (Khmer)",
+    label: "Battambang",
+    khmer: true,
     cssFamily: "VCutBattambang",
     files: {
       // No italic — Khmer script has no italic convention, and Battambang (like every Khmer font
@@ -91,7 +94,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "moul",
-    label: "Moul (Khmer display)",
+    label: "Moul",
+    khmer: true,
     cssFamily: "VCutMoul",
     files: {
       // Single-weight display face (already heavy/bold by design, the way a headline typeface often
@@ -442,7 +446,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "hanuman",
-    label: "Hanuman (Khmer)",
+    label: "Hanuman",
+    khmer: true,
     cssFamily: "VCutHanuman",
     files: {
       regular: "Hanuman-Regular.ttf",
@@ -451,7 +456,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "kantumruypro",
-    label: "Kantumruy Pro (Khmer)",
+    label: "Kantumruy Pro",
+    khmer: true,
     cssFamily: "VCutKantumruyPro",
     files: {
       regular: "KantumruyPro-Regular.ttf",
@@ -462,7 +468,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "koulen",
-    label: "Koulen (Khmer display)",
+    label: "Koulen",
+    khmer: true,
     cssFamily: "VCutKoulen",
     files: {
       regular: "Koulen-Regular.ttf",
@@ -470,7 +477,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "bokor",
-    label: "Bokor (Khmer display)",
+    label: "Bokor",
+    khmer: true,
     cssFamily: "VCutBokor",
     files: {
       regular: "Bokor-Regular.ttf",
@@ -478,7 +486,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "angkor",
-    label: "Angkor (Khmer display)",
+    label: "Angkor",
+    khmer: true,
     cssFamily: "VCutAngkor",
     files: {
       regular: "Angkor-Regular.ttf",
@@ -486,7 +495,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "dangrek",
-    label: "Dangrek (Khmer display)",
+    label: "Dangrek",
+    khmer: true,
     cssFamily: "VCutDangrek",
     files: {
       regular: "Dangrek-Regular.ttf",
@@ -494,7 +504,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "siemreap",
-    label: "Siemreap (Khmer)",
+    label: "Siemreap",
+    khmer: true,
     cssFamily: "VCutSiemreap",
     files: {
       regular: "Siemreap-Regular.ttf",
@@ -502,7 +513,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "suwannaphum",
-    label: "Suwannaphum (Khmer)",
+    label: "Suwannaphum",
+    khmer: true,
     cssFamily: "VCutSuwannaphum",
     files: {
       regular: "Suwannaphum-Regular.ttf",
@@ -511,7 +523,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "moulpali",
-    label: "Moulpali (Khmer display)",
+    label: "Moulpali",
+    khmer: true,
     cssFamily: "VCutMoulpali",
     files: {
       regular: "Moulpali-Regular.ttf",
@@ -519,7 +532,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "nokora",
-    label: "Nokora (Khmer)",
+    label: "Nokora",
+    khmer: true,
     cssFamily: "VCutNokora",
     files: {
       regular: "Nokora-Regular.ttf",
@@ -528,7 +542,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "content",
-    label: "Content (Khmer)",
+    label: "Content",
+    khmer: true,
     cssFamily: "VCutContent",
     files: {
       regular: "Content-Regular.ttf",
@@ -537,7 +552,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "fasthand",
-    label: "Fasthand (Khmer script)",
+    label: "Fasthand",
+    khmer: true,
     cssFamily: "VCutFasthand",
     files: {
       regular: "Fasthand-Regular.ttf",
@@ -545,7 +561,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "chenla",
-    label: "Chenla (Khmer display)",
+    label: "Chenla",
+    khmer: true,
     cssFamily: "VCutChenla",
     files: {
       regular: "Chenla-Regular.ttf",
@@ -553,7 +570,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "metal",
-    label: "Metal (Khmer display)",
+    label: "Metal",
+    khmer: true,
     cssFamily: "VCutMetal",
     files: {
       regular: "Metal-Regular.ttf",
@@ -561,7 +579,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "preahvihear",
-    label: "Preahvihear (Khmer display)",
+    label: "Preahvihear",
+    khmer: true,
     cssFamily: "VCutPreahvihear",
     files: {
       regular: "Preahvihear-Regular.ttf",
@@ -569,7 +588,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "bayon",
-    label: "Bayon (Khmer display)",
+    label: "Bayon",
+    khmer: true,
     cssFamily: "VCutBayon",
     files: {
       regular: "Bayon-Regular.ttf",
@@ -577,7 +597,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "freehand",
-    label: "Freehand (Khmer)",
+    label: "Freehand",
+    khmer: true,
     cssFamily: "VCutFreehand",
     files: {
       regular: "Freehand-Regular.ttf",
@@ -585,7 +606,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "kdamthmorpro",
-    label: "Kdam Thmor Pro (Khmer display)",
+    label: "Kdam Thmor Pro",
+    khmer: true,
     cssFamily: "VCutKdamThmorPro",
     files: {
       regular: "KdamThmorPro-Regular.ttf",
@@ -594,6 +616,7 @@ export const FONT_REGISTRY: FontDefinition[] = [
   {
     id: "khmer",
     label: "Khmer",
+    khmer: true,
     cssFamily: "VCutKhmer",
     files: {
       regular: "Khmer-Regular.ttf",
@@ -601,7 +624,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "kohsantepheap",
-    label: "Koh Santepheap (Khmer)",
+    label: "Koh Santepheap",
+    khmer: true,
     cssFamily: "VCutKohSantepheap",
     files: {
       // Google Fonts ships 5 static weights (Thin/Light/Regular/Bold/Black) — only Regular/Bold are
@@ -613,7 +637,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "konkhmersleokchher",
-    label: "Konkhmer Sleokchher (Khmer display)",
+    label: "Konkhmer Sleokchher",
+    khmer: true,
     cssFamily: "VCutKonkhmerSleokchher",
     files: {
       regular: "KonkhmerSleokchher-Regular.ttf",
@@ -621,7 +646,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "odormeanchey",
-    label: "Odor Mean Chey (Khmer display)",
+    label: "Odor Mean Chey",
+    khmer: true,
     cssFamily: "VCutOdorMeanChey",
     files: {
       regular: "OdorMeanChey-Regular.ttf",
@@ -629,7 +655,8 @@ export const FONT_REGISTRY: FontDefinition[] = [
   },
   {
     id: "taprom",
-    label: "Taprom (Khmer display)",
+    label: "Taprom",
+    khmer: true,
     cssFamily: "VCutTaprom",
     files: {
       regular: "Taprom-Regular.ttf",
