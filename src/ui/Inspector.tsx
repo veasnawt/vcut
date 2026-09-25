@@ -11,6 +11,7 @@ import {
   captionsAvailable,
   CREDITS_ENABLED,
   getInpaintKeyStatus,
+  inpaintAvailabilityReason,
   inpaintAvailable,
   setActiveInpaintProvider,
   setInpaintApiKey,
@@ -1015,6 +1016,7 @@ function RemoveObjectSection({
                 ? t("This is usually a brief connection hiccup. Your credits haven't been touched.")
                 : t("FFmpeg isn't available — reinstall dependencies to use this.")}
           </p>
+          {inpaintAvailabilityReason() && <p className="mt-1.5 break-words font-mono text-[10px] text-white/30">{inpaintAvailabilityReason()}</p>}
           {!native && hosted && (
             <button
               type="button"

@@ -1325,16 +1325,39 @@ export function watchInpaint(
  *  active provider) AND, if the active provider is "replicate", the live vcut.io deployment has a
  *  transcription... erm, Replicate key configured (`inpaint/predict/route.ts`'s own HEAD). The local
  *  provider never needs the second check at all. */
+let lastInpaintCheck = "";
+/** Why the last `inpaintAvailable()` said no ("local HEAD → 503", "remote HEAD → network error: …") — shown in the
+ *  unavailable card so a failure on someone's device can be diagnosed from a screenshot. */
+export function inpaintAvailabilityReason(): string {
+  return lastInpaintCheck;
+}
+
 export async function inpaintAvailable(): Promise<boolean> {
-  if (isNative) return false;
+  if (isNative) {
+    lastInpaintCheck = "native platform";
+    return false;
+  }
+  let step = "local check";
   try {
     const local = await apiFetch(`${BASE}/inpaint`, { method: "HEAD" });
-    if (local.status !== 204) return false;
+    if (local.status !== 204) {
+      lastInpaintCheck = `${step} → HTTP ${local.status}`;
+      return false;
+    }
+    step = "provider status";
     const status = await getInpaintKeyStatus();
     if (status?.activeProvider === "local") return true;
+    step = "cloud check";
     const remote = await centralFetch(`/inpaint/predict`, { method: "HEAD" });
-    return remote.status === 204;
-  } catch {
+    if (remote.status !== 204) {
+      lastInpaintCheck = `${step} → HTTP ${remote.status}`;
+      return false;
+    }
+    lastInpaintCheck = "";
+    return true;
+  } catch (err) {
+    lastInpaintCheck = `${step} → ${err instanceof Error ? err.message : String(err)}`;
+    console.warn("[vcut] Remove Object availability check failed:", lastInpaintCheck);
     return false;
   }
 }
