@@ -35,6 +35,7 @@ import {
   Star,
   Text,
   Video,
+  Upload,
   Volume,
 } from "@veasnawt/vicons";
 import { startCheckout } from "../api/billing.ts";
@@ -68,6 +69,8 @@ import { TextToClipsDialog } from "./TextToClipsDialog.tsx";
 import { Inspector } from "./Inspector.tsx";
 import { MediaPanel } from "./MediaPanel.tsx";
 import { FloatablePanel, type FloatRect } from "./FloatablePanel.tsx";
+import { AudioToolsMenu, type AudioToolItem } from "./AudioToolsMenu.tsx";
+import { ACCEPTED_EXTENSIONS_BY_KIND } from "./TrackHeader.tsx";
 import { MixerPanel } from "./MixerPanel.tsx";
 import { MobileSignInDialog } from "./MobileSignInDialog.tsx";
 import { NewTextComposer } from "./NewTextComposer.tsx";
@@ -325,6 +328,8 @@ function StatusBar({
   const openAiEdit = useEditorStore((s) => s.openAiEdit);
   const previewMuted = useEditorStore((s) => s.previewMuted);
   const togglePreviewMuted = useEditorStore((s) => s.togglePreviewMuted);
+  const importFiles = useEditorStore((s) => s.importFiles);
+  const addAssetAtPlayhead = useEditorStore((s) => s.addAssetAtPlayhead);
   const project = useEditorStore((s) => s.project);
   const projectId = useEditorStore((s) => s.projectId);
   const t = useTranslation();
@@ -346,6 +351,9 @@ function StatusBar({
   const [aiEditClipId, setAiEditClipId] = useState<string | null>(null);
   const composeTextActive = useEditorStore((s) => s.composeText !== null);
   const [showAnimationMenu, setShowAnimationMenu] = useState(false);
+  const [showAudioMenu, setShowAudioMenu] = useState(false);
+  const audioButtonRef = useRef<HTMLButtonElement>(null);
+  const audioImportInputRef = useRef<HTMLInputElement>(null);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
   const [showFontMenu, setShowFontMenu] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -362,6 +370,7 @@ function StatusBar({
     setShowStickers(false);
     setShowVoiceRecord(false);
     setShowAnimationMenu(false);
+    setShowAudioMenu(false);
     setShowStyleMenu(false);
     setShowFontMenu(false);
     setShowShortcuts(false);
@@ -814,28 +823,115 @@ function StatusBar({
             <ClosedCaption size={18} />
           </ToolbarButton>
         )}
-        {/* Mixer — same reasoning and same gate as Auto Captions just above (stays reachable once a
-            single clip with audio is selected, not just with nothing selected), though unlike
-            Captions this ISN'T clip-scoped: it always opens the whole project's own per-track fader
-            panel, since there's no per-clip mixer to show instead. Still the most likely reason to
-            reach for it right after selecting an audio clip (adjusting THAT clip's own track gain/
-            pan), so it earns the same reachability even without a scoped view to back it. */}
+        {/* Audio — every audio tool behind one button: Import audio, Music, Sound effects, Record voiceover, the
+            Mixer and the preview Mute. These used to be five separate toolbar buttons (Voice, Mute, Music, SFX,
+            Mixer). Same gate the standalone Mixer button had: reachable with nothing selected AND once a clip
+            with audio is selected, since adjusting that clip's track in the Mixer is the likeliest reason to
+            reach for it right after selecting one. */}
         {(selectedClipIds.length === 0 || !captionsForClipDisabled) && (
-          <ToolbarButton
-            title={t("Audio Mixer")}
-            label={t("Mixer")}
-            active={bottomPanel === "mixer" || floatingPanel === "mixer"}
-            onClick={() => {
-              if (floatingPanel === "mixer") {
-                onDockFloating();
-                setBottomPanel("mixer");
-              } else {
-                setBottomPanel(bottomPanel === "mixer" ? "timeline" : "mixer");
-              }
-            }}
-          >
-            <Volume size={18} />
-          </ToolbarButton>
+          <>
+            <ToolbarButton
+              ref={audioButtonRef}
+              title={t("Audio")}
+              label={t("Audio")}
+              active={showAudioMenu || bottomPanel === "mixer" || floatingPanel === "mixer" || previewMuted}
+              onClick={() => toggleToolbarTool(showAudioMenu, setShowAudioMenu)}
+            >
+              <Music size={18} />
+            </ToolbarButton>
+            {/* Backs the menu's "Import audio" item: one hidden input, clicked imperatively. */}
+            <input
+              ref={audioImportInputRef}
+              type="file"
+              multiple
+              accept={ACCEPTED_EXTENSIONS_BY_KIND.audio}
+              className="hidden"
+              onChange={(e) => {
+                const files = [...(e.target.files ?? [])];
+                e.target.value = "";
+                if (files.length === 0) return;
+                // Imported into the project's media AND placed on an audio track at the playhead, so a chosen
+                // file lands on the timeline in one step instead of needing a second drag from the Media panel.
+                void importFiles(files).then((assets) => {
+                  for (const asset of assets) if (asset.kind === "audio") addAssetAtPlayhead(asset.id, undefined, { avoidOverlap: true });
+                });
+              }}
+            />
+            {showAudioMenu && (
+              <AudioToolsMenu
+                anchorRef={audioButtonRef}
+                onClose={() => setShowAudioMenu(false)}
+                items={
+                  [
+                    {
+                      id: "import",
+                      label: t("Import audio"),
+                      description: t("Add a sound file from your device"),
+                      icon: <Upload size={16} />,
+                      onSelect: () => {
+                        setShowAudioMenu(false);
+                        audioImportInputRef.current?.click();
+                      },
+                    },
+                    {
+                      id: "music",
+                      label: t("Music"),
+                      description: t("Browse trending & viral music"),
+                      icon: <Music size={16} />,
+                      onSelect: () => {
+                        closeAllToolbarTools();
+                        setShowMusic(true);
+                      },
+                    },
+                    {
+                      id: "sfx",
+                      label: t("Sound effects"),
+                      description: t("Whooshes, hits, ambience and more"),
+                      icon: <Headphone size={16} />,
+                      onSelect: () => {
+                        closeAllToolbarTools();
+                        setShowSfx(true);
+                      },
+                    },
+                    {
+                      id: "voice",
+                      label: t("Record voiceover"),
+                      description: t("Record from your microphone"),
+                      icon: <Microphone size={16} />,
+                      onSelect: () => {
+                        closeAllToolbarTools();
+                        setShowVoiceRecord(true);
+                      },
+                    },
+                    {
+                      id: "mixer",
+                      label: t("Audio mixer"),
+                      description: t("Track volume, pan and levels"),
+                      icon: <Volume size={16} />,
+                      active: bottomPanel === "mixer" || floatingPanel === "mixer",
+                      onSelect: () => {
+                        setShowAudioMenu(false);
+                        if (floatingPanel === "mixer") {
+                          onDockFloating();
+                          setBottomPanel("mixer");
+                        } else {
+                          setBottomPanel(bottomPanel === "mixer" ? "timeline" : "mixer");
+                        }
+                      },
+                    },
+                    {
+                      id: "mute",
+                      label: previewMuted ? t("Unmute preview") : t("Mute preview"),
+                      description: t("Silences playback only — never your export"),
+                      icon: <Volume size={16} />,
+                      active: previewMuted,
+                      onSelect: togglePreviewMuted,
+                    },
+                  ] satisfies AudioToolItem[]
+                }
+              />
+            )}
+          </>
         )}
         {/* The bulk/quick-apply path for `Clip.textAnimation` — works on however many text clips are
             currently selected (see `animationCurrent`/`selectedTextClips` above), one shared undo step
@@ -965,42 +1061,6 @@ function StatusBar({
           <>
             <span className="vcut-toolbar-divider mx-1 h-5 w-px shrink-0 bg-white/10" />
 
-            {/* Opens the Voice Record modal instead of recording immediately on click (that used to be
-                this button's own behavior, via the now-removed `VoiceoverRecorder` component) —
-                confirmed a real, explicit request for a deliberate record surface (tap-to-countdown or
-                press-and-hold-to-record, an optional Teleprompter, and post-processing choices) rather
-                than an instant always-armed toggle. */}
-            <ToolbarButton title={t("Record a voiceover from your microphone")} label={t("Voice")} active={showVoiceRecord} onClick={() => toggleToolbarTool(showVoiceRecord, setShowVoiceRecord)}>
-              <Microphone size={18} />
-            </ToolbarButton>
-            {/* Silences the whole live-preview mix (see `previewMuted`'s own doc comment) — sits right
-                next to Voice since the one real reason to reach for it is recording a voiceover while
-                the sequence keeps playing for reference, without its existing audio bleeding back into
-                the mic through the speakers. Never touches the actual project (no persisted mute, no
-                effect on export), so it's safe to leave on/off across sessions without a "did I
-                accidentally mute my export" worry. */}
-            <ToolbarButton
-              title={previewMuted ? t("Unmute sequence preview") : t("Mute sequence preview")}
-              label={previewMuted ? t("Muted") : t("Mute")}
-              active={previewMuted}
-              onClick={togglePreviewMuted}
-            >
-              <span className="relative inline-flex">
-                <Volume size={18} />
-                {previewMuted && (
-                  <span
-                    aria-hidden
-                    className="absolute left-1/2 top-1/2 h-[2px] w-[22px] -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-rose-400"
-                  />
-                )}
-              </span>
-            </ToolbarButton>
-            <ToolbarButton title={t("Browse trending & viral music")} label={t("Music")} active={showMusic} onClick={() => toggleToolbarTool(showMusic, setShowMusic)}>
-              <Music size={18} />
-            </ToolbarButton>
-            <ToolbarButton title={t("Sound Effects")} label={t("SFX")} active={showSfx} onClick={() => toggleToolbarTool(showSfx, setShowSfx)}>
-              <Headphone size={18} />
-            </ToolbarButton>
             <ToolbarButton title={t("Stickers and GIFs")} label={t("Stickers")} active={showStickers} onClick={() => toggleToolbarTool(showStickers, setShowStickers)}>
               <Emoji size={18} />
             </ToolbarButton>

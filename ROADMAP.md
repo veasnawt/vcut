@@ -43,6 +43,7 @@ Last updated 2026-09-25.
 - Timeline: scrub/pan during playback (pauses while dragging, resumes at the release point); zoomed-out
   timelines keep a scroll range / full-width ruler.
 - Rotation handle snapping.
+- One **Audio** toolbar button groups every audio tool (Import audio, Music, Sound effects, Record voiceover, Audio mixer, Mute preview) in place of five separate buttons; Import audio adds the file at the playhead on an audio track.
 - +Text opens the composer immediately (input focused) with Style / Font / Animation tabs, all live on the canvas.
 - Text animations: In / Out / Loop tabs — 17 entrances (mirrored as exits) and 3 new loops (Float, Shake,
   Heartbeat) beside the original five. 10 whole-block entrances (Fade, Slide x4, Rise, Drop, Pop, Zoom In/Out) and
