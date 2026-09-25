@@ -30,7 +30,7 @@ Last updated 2026-09-25.
 | P1-9 Two tabs/devices silently overwrite each other | Done — projects carry a server `revision`; a save from a stale copy is refused (409) and the user chooses "Load the latest version" or "Keep my version". Page-hide saves now go through the normal save path (keepalive) so they can't create false conflicts. Native (single device) is unaffected |
 | P1-10 Stripe webhook out-of-order events | Done — plan derived from the customer's CURRENT subscriptions (order/redelivery-independent); free users no longer refilled by repeated non-active events; unmatched/failed writes answer 5xx so Stripe retries. Not exercised against live Stripe |
 | P1-11 Copy/paste + standard shortcuts | Done — Ctrl/⌘ + C / X / V / A, End, ↑/↓ to previous/next edit point, Esc to deselect (J/K/L not added) |
-| P1-12 Undo edge cases | Open |
+| P1-12 Undo edge cases | Done — a command that throws no longer vanishes from history (the step is put back and the user is told); undo/redo refuses to resurrect a clip whose media was since removed. Not done: making media removal itself undoable (it deletes the file). The refusal was unit-tested, not driven through the real Media-remove button |
 | P1-13 Long audio can exhaust browser memory | Open |
 | P1-14 Mobile import loads the whole file into memory | Open |
 | P1-15 No CI | Done — `.github/workflows/vcut-ci.yml` runs typecheck, the full suite (with a full-featured FFmpeg), studio lint and the production build on every push / PR |
@@ -64,6 +64,6 @@ Last updated 2026-09-25.
 2. ~~P1-15 CI green~~ (done).
 3. ~~P1-8 + P1-10 + P1-7 (retention)~~ (done; volume backups and quota-counting exports remain).
 4. ~~P1-1 smooth keyframes in export~~ (pan + zoom done; the combinations above remain).
-5. ~~P1-9 multi-tab overwrite protection~~, ~~P1-11 copy/paste + shortcuts~~ (done); P1-12 undo edge cases.
+5. ~~P1-9 multi-tab overwrite protection~~, ~~P1-11 copy/paste + shortcuts~~ (done), ~~P1-12 undo edge cases~~ (done).
 6. P1-5 / P1-6 / P1-13 / P1-14 import + memory work.
 7. P2 polish, P3 future.

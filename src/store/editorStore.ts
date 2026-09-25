@@ -43,7 +43,8 @@ import { defaultClipDuration, EditError, removeLutReferences, trackKindForAsset 
 import { clipAtTime, nonOverlappingPointStart, nonOverlappingStart } from "../timeline/queries.ts";
 import { adjacentEditPoint, buildClipboardEntries, editPointTimes } from "../timeline/clipboard.ts";
 import { snapToFrame } from "../timeline/time.ts";
-import { UndoStack } from "../undo/UndoStack.ts";
+import { refuseOrphanedClips } from "../undo/historyGuards.ts";
+import { UndoRefusedError, UndoStack } from "../undo/UndoStack.ts";
 import { SaveCoordinator, type SaveOutcome } from "./saveCoordinator.ts";
 
 const LANGUAGE_STORAGE_KEY = "vcut-language";
@@ -858,6 +859,16 @@ export const useEditorStore = create<EditorState>((set, get) => {
     })();
   }
 
+  /** An undo/redo that was refused or threw: the history is untouched, so the only job is telling the user. */
+  function reportHistoryFailure(err: unknown, what: "undo" | "redo") {
+    const language = get().language;
+    // A refusal, or a command's own user-facing rejection (`EditError`, e.g. "That media is no longer in the
+    // project"): the message already says why, so show it rather than a generic failure.
+    if (err instanceof UndoRefusedError || err instanceof EditError) return get().setStatus(translateText(language, err.message), "error");
+    console.error(`[vcut] ${what} failed:`, err);
+    get().setStatus(translateText(language, what === "undo" ? "Couldn't undo that" : "Couldn't redo that"), "error");
+  }
+
   function markDirtyAndScheduleSave() {
     set({ dirty: true });
     saveCoordinator?.schedule();
@@ -1097,8 +1108,14 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const project = get().project;
       if (!project || !undoStack.canUndo) return;
       const label = undoStack.undoLabel;
-      applyProject(undoStack.undo(project));
-      syncUndoState();
+      try {
+        applyProject(undoStack.undo(project, refuseOrphanedClips));
+      } catch (err) {
+        // The step is back on the stack (see `UndoStack.undo`), so history is intact — just say why.
+        return reportHistoryFailure(err, "undo");
+      } finally {
+        syncUndoState();
+      }
       const language = get().language;
       const translatedLabel = label ? translateText(language, label) : null;
       get().setStatus(translatedLabel ? translateText(language, "Undid {label}", { label: translatedLabel }) : translateText(language, "Undone"));
@@ -1108,8 +1125,13 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const project = get().project;
       if (!project || !undoStack.canRedo) return;
       const label = undoStack.redoLabel;
-      applyProject(undoStack.redo(project));
-      syncUndoState();
+      try {
+        applyProject(undoStack.redo(project, refuseOrphanedClips));
+      } catch (err) {
+        return reportHistoryFailure(err, "redo");
+      } finally {
+        syncUndoState();
+      }
       const language = get().language;
       const translatedLabel = label ? translateText(language, label) : null;
       get().setStatus(translatedLabel ? translateText(language, "Redid {label}", { label: translatedLabel }) : translateText(language, "Redone"));
