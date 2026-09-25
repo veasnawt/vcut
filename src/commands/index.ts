@@ -52,6 +52,8 @@ import {
   trimClip,
 } from "../timeline/operations.ts";
 import type { VideoCutoutInfo } from "../timeline/operations.ts";
+import { applyGridLayout, stackCopies } from "../timeline/collage.ts";
+import type { GridOptions, StackOptions } from "../timeline/collage.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { hasTextStyleKeyframes } from "../timeline/keyframes.ts";
 import type { Command } from "./types.ts";
@@ -1840,6 +1842,63 @@ export class ApplyVideoCutoutCommand implements Command {
   apply(project: Project): Project {
     this.previousProject = project;
     return applyVideoCutout(project, this.clipId, this.cutoutAsset, this.info);
+  }
+
+  revert(): Project {
+    if (!this.previousProject) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return this.previousProject;
+  }
+}
+
+/** Arranges clips into a collage layout's cells (see `applyGridLayout`). */
+export class ApplyGridLayoutCommand implements Command {
+  label = "Collage Layout";
+  private previousProject: Project | null = null;
+  /** Every clip now sitting in a cell (the arranged ones, then any copies made to fill the rest). */
+  placedClipIds: string[] = [];
+
+  private clipIds: string[];
+  private layoutId: string;
+  private options: GridOptions;
+
+  constructor(clipIds: string[], layoutId: string, options: GridOptions) {
+    this.clipIds = clipIds;
+    this.layoutId = layoutId;
+    this.options = options;
+  }
+
+  apply(project: Project): Project {
+    this.previousProject = project;
+    const result = applyGridLayout(project, this.clipIds, this.layoutId, this.options);
+    this.placedClipIds = result.clipIds;
+    return result.project;
+  }
+
+  revert(): Project {
+    if (!this.previousProject) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return this.previousProject;
+  }
+}
+
+/** Stacks offset copies behind a clip (see `stackCopies`). */
+export class StackCopiesCommand implements Command {
+  label = "Stack Copies";
+  private previousProject: Project | null = null;
+  createdClipIds: string[] = [];
+
+  private clipId: string;
+  private options: StackOptions;
+
+  constructor(clipId: string, options: StackOptions) {
+    this.clipId = clipId;
+    this.options = options;
+  }
+
+  apply(project: Project): Project {
+    this.previousProject = project;
+    const result = stackCopies(project, this.clipId, this.options);
+    this.createdClipIds = result.clipIds;
+    return result.project;
   }
 
   revert(): Project {

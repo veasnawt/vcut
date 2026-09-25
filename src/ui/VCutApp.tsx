@@ -59,6 +59,7 @@ import { DEFAULT_TRANSITION, findTransitionCandidate, findTransitionSuccessorCan
 import { AiToolsPickerMenu } from "./AiToolsPickerMenu.tsx";
 import { AnimationPickerMenu } from "./AnimationPickerMenu.tsx";
 import { AiTaskBanner } from "./AiTaskBanner.tsx";
+import { CollageDialog } from "./CollageDialog.tsx";
 import { AutoCaptionsDialog } from "./AutoCaptionsDialog.tsx";
 import { ClipContextMenu, type ClipContextMenuAction } from "./ClipContextMenu.tsx";
 import { ColorPickerMenu } from "./ColorPickerMenu.tsx";
@@ -356,6 +357,7 @@ function StatusBar({
   /** Which tool group (Text / Audio) is expanded IN the toolbar, if any: the row then shows just that group's tools
    *  next to a back button, the same way a selection narrows it. */
   const [expandedGroup, setExpandedGroup] = useState<"text" | "audio" | null>(null);
+  const [showCollage, setShowCollage] = useState(false);
   const audioButtonRef = useRef<HTMLButtonElement>(null);
   const audioImportInputRef = useRef<HTMLInputElement>(null);
   const [showStyleMenu, setShowStyleMenu] = useState(false);
@@ -1196,6 +1198,12 @@ function StatusBar({
             <Copy size={18} />
           </ToolbarButton>
         )}
+        {/* Collage: arrange the selected clips into a grid layout, or stack offset copies of one behind it. */}
+        {project && selectedClipIds.some((id) => findClip(project, id)?.track.kind === "video") && (
+          <ToolbarButton title={t("Grid layouts and stacked copies")} label={t("Collage")} active={showCollage} onClick={() => setShowCollage(true)}>
+            <Grid size={18} />
+          </ToolbarButton>
+        )}
 
         {/* Opens a grid of every transition style, each tile a live animated preview
             (`TransitionPickerMenu`), with an In/Out tab switch covering both `transitionIn` and
@@ -1422,6 +1430,7 @@ function StatusBar({
       </div>
       {showShortcuts && !isMobile && <ShortcutsPanel onClose={() => setShowShortcuts(false)} />}
       <AiTaskBanner />
+      {showCollage && <CollageDialog onClose={() => setShowCollage(false)} />}
       {captionsDialog && <AutoCaptionsDialog clipIds={captionsDialog.clipIds} onClose={() => setCaptionsDialog(null)} />}
       {showVoiceRecord && <VoiceRecordModal onClose={() => setShowVoiceRecord(false)} />}
       {showTextImport && <TextToClipsDialog onClose={() => setShowTextImport(false)} />}
