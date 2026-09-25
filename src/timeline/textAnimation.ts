@@ -1,14 +1,17 @@
-import type { TextAnimationType } from "../project/types.ts";
+import type { TextAnimationType, TextInOutAnimation, TextInOutType } from "../project/types.ts";
 
 /** Every `TextAnimationType`, in the order shown in the Inspector's Animation picker — mirrors
  *  `TRANSITION_TYPE_OPTIONS`'s own role in `timeline/transitions.ts` as the one shared source of truth
  *  a UI iterates rather than hardcoding its own copy of the union's values. */
-export const TEXT_ANIMATION_TYPE_OPTIONS: TextAnimationType[] = ["bounce", "pulse", "wiggle", "typewriter", "wordHighlight"];
+export const TEXT_ANIMATION_TYPE_OPTIONS: TextAnimationType[] = ["bounce", "pulse", "wiggle", "float", "shake", "heartbeat", "typewriter", "wordHighlight"];
 
 export const TEXT_ANIMATION_TYPE_LABEL: Record<TextAnimationType, string> = {
   bounce: "Bounce",
   pulse: "Pulse",
   wiggle: "Wiggle",
+  float: "Float",
+  shake: "Shake",
+  heartbeat: "Heartbeat",
   typewriter: "Typewriter",
   wordHighlight: "Word Highlight",
 };
@@ -42,6 +45,14 @@ export const PULSE_AMPLITUDE = 0.08;
 export const PULSE_PERIOD_SECONDS = 1.1;
 export const WIGGLE_AMPLITUDE_DEG = 6;
 export const WIGGLE_PERIOD_SECONDS = 1.3;
+export const FLOAT_AMPLITUDE_PX = 10;
+export const FLOAT_PERIOD_SECONDS = 2.4;
+export const SHAKE_AMPLITUDE_PX = 5;
+export const SHAKE_PERIOD_SECONDS = 0.18;
+export const HEARTBEAT_AMPLITUDE = 0.14;
+export const HEARTBEAT_PERIOD_SECONDS = 0.9;
+/** Sharpens the heartbeat's |sin| into two quick beats with a rest between, rather than a smooth pulse. */
+export const HEARTBEAT_SHARPNESS = 6;
 
 /** Resolves `type` + however many seconds this clip has been on screen into the transform delta to
  *  apply for THIS frame — a pure function of elapsed time (no internal clock/state), so scrubbing the
@@ -69,6 +80,19 @@ export function computeTextAnimationTransform(type: TextAnimationType, elapsedSe
     case "wiggle": {
       const phase = (elapsedSeconds / WIGGLE_PERIOD_SECONDS) * Math.PI * 2;
       return { ...IDENTITY_TEXT_ANIMATION_TRANSFORM, rotationDeg: Math.sin(phase) * WIGGLE_AMPLITUDE_DEG };
+    }
+    case "float": {
+      // A slow, gentle sway — sin (up AND down of rest), unlike bounce's hop-only abs(sin).
+      const phase = (elapsedSeconds / FLOAT_PERIOD_SECONDS) * Math.PI * 2;
+      return { ...IDENTITY_TEXT_ANIMATION_TRANSFORM, dy: Math.sin(phase) * FLOAT_AMPLITUDE_PX };
+    }
+    case "shake": {
+      const phase = (elapsedSeconds / SHAKE_PERIOD_SECONDS) * Math.PI * 2;
+      return { ...IDENTITY_TEXT_ANIMATION_TRANSFORM, dx: Math.sin(phase) * SHAKE_AMPLITUDE_PX };
+    }
+    case "heartbeat": {
+      const beat = Math.pow(Math.abs(Math.sin((Math.PI * elapsedSeconds) / HEARTBEAT_PERIOD_SECONDS)), HEARTBEAT_SHARPNESS);
+      return { ...IDENTITY_TEXT_ANIMATION_TRANSFORM, scale: 1 + beat * HEARTBEAT_AMPLITUDE };
     }
     case "typewriter":
     case "wordHighlight":
@@ -203,4 +227,148 @@ export const TYPEWRITER_CHARS_PER_SECOND = 18;
 export function typewriterVisibleContent(content: string, elapsedSeconds: number): string {
   const visibleCount = Math.max(0, Math.floor(elapsedSeconds * TYPEWRITER_CHARS_PER_SECOND));
   return content.slice(0, visibleCount);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// In / Out (entrance / exit) animations
+// ---------------------------------------------------------------------------------------------------
+
+export const TEXT_INOUT_TYPE_OPTIONS: TextInOutType[] = ["fade", "slideUp", "slideDown", "slideLeft", "slideRight", "rise", "drop", "pop", "zoomIn", "zoomOut"];
+
+export const TEXT_INOUT_TYPE_LABEL: Record<TextInOutType, string> = {
+  fade: "Fade",
+  slideUp: "Slide Up",
+  slideDown: "Slide Down",
+  slideLeft: "Slide Left",
+  slideRight: "Slide Right",
+  rise: "Rise",
+  drop: "Drop",
+  pop: "Pop",
+  zoomIn: "Zoom In",
+  zoomOut: "Zoom Out",
+};
+
+export const TEXT_INOUT_DEFAULT_DURATION = 0.6;
+/** Shortest an In/Out may be — anything quicker just reads as a glitch, and a zero duration would divide by 0. */
+export const TEXT_INOUT_MIN_DURATION = 0.1;
+
+/** The seconds an In or Out actually plays for on a clip `clipDurationSeconds` long: the requested
+ *  duration (or the default), clamped so the two can never overlap (each at most half the clip). One
+ *  definition shared by preview and export. */
+export function textInOutDuration(spec: TextInOutAnimation | undefined, clipDurationSeconds: number): number {
+  if (!spec) return 0;
+  const requested = Number.isFinite(spec.duration) && (spec.duration as number) > 0 ? (spec.duration as number) : TEXT_INOUT_DEFAULT_DURATION;
+  return Math.max(0, Math.min(Math.max(TEXT_INOUT_MIN_DURATION, requested), clipDurationSeconds / 2));
+}
+
+/** What an In/Out contributes at one instant. `dx`/`dy` are pixel offsets (sequence space), `scale` a
+ *  multiplier, `alpha` a 0..1 opacity multiplier — the neutral values (0, 0, 1, 1) mean "settled". */
+export interface TextInOutTransform {
+  dx: number;
+  dy: number;
+  scale: number;
+  alpha: number;
+}
+
+const BACK_OVERSHOOT = 1.70158;
+/** Scale never reaches exactly 0: FFmpeg's `drawtext` rejects a zero font size, and the difference is
+ *  invisible (a 0.02x glyph is sub-pixel). */
+const MIN_SCALE = 0.02;
+
+const easeOutCubic = (p: number): number => 1 - Math.pow(1 - p, 3);
+/** Overshoots past 1 and settles — the springy feel behind Pop / Rise / Drop. */
+const easeOutBack = (p: number): number => 1 + (BACK_OVERSHOOT + 1) * Math.pow(p - 1, 3) + BACK_OVERSHOOT * Math.pow(p - 1, 2);
+/** Opacity comes in faster than the motion so the text is readable before it finishes moving. */
+const alphaRamp = (p: number): number => Math.min(1, p * 3);
+
+/** `type`'s entrance at `progress` (0 = just started, 1 = settled), for text whose font size is
+ *  `distance` px (slides travel one font-size, so they scale with the text). An exit is the same curve fed
+ *  a progress that runs 1 -> 0 over the clip's last seconds — callers do that mirroring, not this function. */
+export function computeTextInOutTransform(type: TextInOutType, progress: number, distance: number): TextInOutTransform {
+  const p = Math.min(1, Math.max(0, progress));
+  const eo = easeOutCubic(p);
+  const eb = easeOutBack(p);
+  switch (type) {
+    case "fade":
+      return { dx: 0, dy: 0, scale: 1, alpha: eo };
+    case "slideUp":
+      return { dx: 0, dy: distance * (1 - eo), scale: 1, alpha: alphaRamp(p) };
+    case "slideDown":
+      return { dx: 0, dy: -distance * (1 - eo), scale: 1, alpha: alphaRamp(p) };
+    case "slideLeft":
+      return { dx: distance * (1 - eo), dy: 0, scale: 1, alpha: alphaRamp(p) };
+    case "slideRight":
+      return { dx: -distance * (1 - eo), dy: 0, scale: 1, alpha: alphaRamp(p) };
+    case "rise":
+      return { dx: 0, dy: distance * (1 - eb), scale: 1, alpha: alphaRamp(p) };
+    case "drop":
+      return { dx: 0, dy: -distance * (1 - eb), scale: 1, alpha: alphaRamp(p) };
+    case "pop":
+      return { dx: 0, dy: 0, scale: Math.max(MIN_SCALE, eb), alpha: alphaRamp(p) };
+    case "zoomIn":
+      return { dx: 0, dy: 0, scale: 0.5 + 0.5 * eo, alpha: alphaRamp(p) };
+    case "zoomOut":
+      return { dx: 0, dy: 0, scale: 1.6 - 0.6 * eo, alpha: alphaRamp(p) };
+  }
+}
+
+/** The In/Out contribution for a clip at `elapsedSeconds` (clip-relative): the entrance and exit
+ *  transforms composed — offsets add, scales and opacities multiply. Either being absent leaves that side
+ *  neutral. This is the single function preview draws from; export builds the equivalent expressions
+ *  (`buildTextInOutExpressions`) and a test evaluates them against this to keep the two in lockstep. */
+export function computeClipTextInOut(
+  animationIn: TextInOutAnimation | undefined,
+  animationOut: TextInOutAnimation | undefined,
+  elapsedSeconds: number,
+  clipDurationSeconds: number,
+  distance: number
+): TextInOutTransform {
+  let result: TextInOutTransform = { dx: 0, dy: 0, scale: 1, alpha: 1 };
+  const dIn = textInOutDuration(animationIn, clipDurationSeconds);
+  if (animationIn && dIn > 0) {
+    const tr = computeTextInOutTransform(animationIn.type, elapsedSeconds / dIn, distance);
+    result = { dx: result.dx + tr.dx, dy: result.dy + tr.dy, scale: result.scale * tr.scale, alpha: result.alpha * tr.alpha };
+  }
+  const dOut = textInOutDuration(animationOut, clipDurationSeconds);
+  if (animationOut && dOut > 0) {
+    const tr = computeTextInOutTransform(animationOut.type, (clipDurationSeconds - elapsedSeconds) / dOut, distance);
+    result = { dx: result.dx + tr.dx, dy: result.dy + tr.dy, scale: result.scale * tr.scale, alpha: result.alpha * tr.alpha };
+  }
+  return result;
+}
+
+/** FFmpeg-expression twins of `computeTextInOutTransform`, for one side (In or Out). `progressExpr` is an
+ *  expression that evaluates to the 0..1 progress (already clamped by the caller); `distance` is the same
+ *  pixel distance. Each returned string is a self-contained expression (commas unescaped — the caller
+ *  quotes/escapes it for its context) or the neutral literal "0" / "1". Kept beside the JS version so
+ *  the two are edited together; `tests/textAnimation.test.ts` evaluates these strings and compares. */
+export function buildTextInOutExpressions(type: TextInOutType, progressExpr: string, distance: number): { dx: string; dy: string; scale: string; alpha: string } {
+  const p = `(${progressExpr})`;
+  const eo = `(1-pow(1-${p},3))`;
+  const eb = `(1+${BACK_OVERSHOOT + 1}*pow(${p}-1,3)+${BACK_OVERSHOOT}*pow(${p}-1,2))`;
+  const ramp = `min(1,${p}*3)`;
+  const d = String(Math.round(distance * 1000) / 1000);
+  const neutral = { dx: "0", dy: "0", scale: "1", alpha: "1" };
+  switch (type) {
+    case "fade":
+      return { ...neutral, alpha: eo };
+    case "slideUp":
+      return { ...neutral, dy: `${d}*(1-${eo})`, alpha: ramp };
+    case "slideDown":
+      return { ...neutral, dy: `-${d}*(1-${eo})`, alpha: ramp };
+    case "slideLeft":
+      return { ...neutral, dx: `${d}*(1-${eo})`, alpha: ramp };
+    case "slideRight":
+      return { ...neutral, dx: `-${d}*(1-${eo})`, alpha: ramp };
+    case "rise":
+      return { ...neutral, dy: `${d}*(1-${eb})`, alpha: ramp };
+    case "drop":
+      return { ...neutral, dy: `-${d}*(1-${eb})`, alpha: ramp };
+    case "pop":
+      return { ...neutral, scale: `max(${MIN_SCALE},${eb})`, alpha: ramp };
+    case "zoomIn":
+      return { ...neutral, scale: `(0.5+0.5*${eo})`, alpha: ramp };
+    case "zoomOut":
+      return { ...neutral, scale: `(1.6-0.6*${eo})`, alpha: ramp };
+  }
 }

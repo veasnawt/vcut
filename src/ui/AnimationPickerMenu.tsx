@@ -8,7 +8,7 @@ import type { Clip } from "../project/types.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { TextAnimationPickerGrid } from "./TextAnimationPickerGrid.tsx";
 
-const MENU_WIDTH = 220;
+const MENU_WIDTH = 300;
 
 /** Same "opens above its anchor" reasoning as `PixelEffectPickerMenu`/`ColorPickerMenu` — this button
  *  lives in the same bottom toolbar. */
@@ -27,11 +27,19 @@ export function AnimationPickerMenu({
   anchorRef,
   current,
   onPick,
+  currentIn,
+  onPickIn,
+  currentOut,
+  onPickOut,
   onClose,
 }: {
   anchorRef: React.RefObject<HTMLElement | null>;
   current: Clip["textAnimation"] | null | undefined;
   onPick: (next: Clip["textAnimation"] | null) => void;
+  currentIn?: Clip["textAnimationIn"] | null;
+  onPickIn?: (next: Clip["textAnimationIn"] | null) => void;
+  currentOut?: Clip["textAnimationOut"] | null;
+  onPickOut?: (next: Clip["textAnimationOut"] | null) => void;
   onClose: () => void;
 }) {
   const t = useTranslation();
@@ -68,12 +76,18 @@ export function AnimationPickerMenu({
       style={{ position: "fixed", bottom, left, width: MENU_WIDTH, ...verticalToolbarPopupStyle(anchorRef.current, MENU_WIDTH, 300), ...(dock ? DOCKED_PICKER_STYLE : {}) }}
       className="z-50 rounded-lg border border-white/10 bg-[#181b22] p-2.5 shadow-2xl"
     >
+      {/* Stays open after a pick when the In/Out tabs are offered: setting an entrance, then an exit, then a
+          loop is one flow, and the tiles keep showing what's applied. */}
       <TextAnimationPickerGrid
         current={current}
         onPick={(next) => {
           onPick(next);
-          onClose();
+          if (!onPickIn) onClose();
         }}
+        currentIn={currentIn}
+        onPickIn={onPickIn}
+        currentOut={currentOut}
+        onPickOut={onPickOut}
       />
     </div>,
     dock ?? document.body

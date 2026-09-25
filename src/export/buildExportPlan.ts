@@ -8,8 +8,17 @@ import {
   BOUNCE_AMPLITUDE_PX,
   BOUNCE_PERIOD_SECONDS,
   DEFAULT_WORD_HIGHLIGHT_COLOR,
+  FLOAT_AMPLITUDE_PX,
+  FLOAT_PERIOD_SECONDS,
+  HEARTBEAT_AMPLITUDE,
+  HEARTBEAT_PERIOD_SECONDS,
+  HEARTBEAT_SHARPNESS,
   PULSE_AMPLITUDE,
   PULSE_PERIOD_SECONDS,
+  SHAKE_AMPLITUDE_PX,
+  SHAKE_PERIOD_SECONDS,
+  buildTextInOutExpressions,
+  textInOutDuration,
   segmentLine,
   splitWords,
   TYPEWRITER_CHARS_PER_SECOND,
@@ -997,6 +1006,11 @@ function buildTextFadeParams(clip: Clip, fadeIn: number | undefined, fadeOut: Te
   const end = clipEnd(clip);
   const enableEnd = fadeOut?.extendsPastEnd ? end + fadeOut.duration : end;
 
+  // The clip's own entrance/exit animation contributes an opacity term too (a Fade, or the ramp every
+  // slide/zoom/pop starts with) — multiplied on top of whatever transition fade is already in play.
+  const inOutAlpha = buildClipTextInOutTerms(clip, 0)?.alpha;
+  const inOutAlphaExpr = inOutAlpha && inOutAlpha !== "1" ? escapeExpressionCommas(inOutAlpha) : "";
+
   const terms: string[] = [];
   if (fadeIn) terms.push(`(t-${t(start)})/${t(fadeIn)}`);
   if (fadeOut) {
@@ -1007,13 +1021,50 @@ function buildTextFadeParams(clip: Clip, fadeIn: number | undefined, fadeOut: Te
     const rampEnd = fadeOut.extendsPastEnd ? end + fadeOut.duration : end;
     terms.push(`(${t(rampEnd)}-t)/${t(fadeOut.duration)}`);
   }
-  if (terms.length === 0) return { enableEnd, alphaParam: "" };
+  if (terms.length === 0) return { enableEnd, alphaParam: inOutAlphaExpr ? `:alpha='${inOutAlphaExpr}'` : "" };
 
   // Nested `min(...)` (FFmpeg's `min`/`max` take exactly two args) clamped against 1 so a fade-in that
   // hasn't started yet — or a fade-out ramp evaluated before its own window — can't push alpha above
   // full opacity; each term individually already reaches exactly 1 at the instant its own ramp ends.
   const expr = terms.reduce((acc, term) => (acc ? `min(${acc}\\,${term})` : term), "");
-  return { enableEnd, alphaParam: `:alpha='min(1\\,${expr})'` };
+  return { enableEnd, alphaParam: `:alpha='min(1\\,${expr})${inOutAlphaExpr ? `*(${inOutAlphaExpr})` : ""}'` };
+}
+
+/** FFmpeg filter-graph escaping for a comma inside an expression — `,` would otherwise end the filter. */
+function escapeExpressionCommas(expression: string): string {
+  return expression.replace(/,/g, "\\,");
+}
+
+/** The clip's entrance + exit animations as FFmpeg expressions of absolute timeline `t`, composed the same
+ *  way `computeClipTextInOut` composes them (offsets add, scales and opacities multiply). `null` when the
+ *  clip has neither. Commas are left unescaped (callers escape for their context). Sides whose
+ *  expression is the neutral literal are dropped so an alpha-only Fade adds no `x`/`y`/`fontsize` terms. */
+function buildClipTextInOutTerms(clip: Clip, distance: number): { dx: string; dy: string; scale: string; alpha: string } | null {
+  if (!clip.textAnimationIn && !clip.textAnimationOut) return null;
+  const start = clip.timelineStart;
+  const end = clipEnd(clip);
+  const duration = end - start;
+  const dxs: string[] = [];
+  const dys: string[] = [];
+  const scales: string[] = [];
+  const alphas: string[] = [];
+  const add = (spec: Clip["textAnimationIn"], progress: (d: number) => string) => {
+    const d = textInOutDuration(spec, duration);
+    if (!spec || d <= 0) return;
+    const e = buildTextInOutExpressions(spec.type, progress(d), distance);
+    if (e.dx !== "0") dxs.push(`(${e.dx})`);
+    if (e.dy !== "0") dys.push(`(${e.dy})`);
+    if (e.scale !== "1") scales.push(`(${e.scale})`);
+    if (e.alpha !== "1") alphas.push(`(${e.alpha})`);
+  };
+  add(clip.textAnimationIn, (d) => `clip((t-${t(start)})/${t(d)},0,1)`);
+  add(clip.textAnimationOut, (d) => `clip((${t(end)}-t)/${t(d)},0,1)`);
+  return {
+    dx: dxs.length ? dxs.join("+") : "0",
+    dy: dys.length ? dys.join("+") : "0",
+    scale: scales.length ? scales.join("*") : "1",
+    alpha: alphas.length ? alphas.join("*") : "1",
+  };
 }
 
 /** "#rrggbb" → ASS's own `&H00BBGGRR` color syntax (alpha byte first, then BLUE-GREEN-RED — the
@@ -1517,19 +1568,39 @@ function buildDrawTextGeometry(
  *  seconds, not to a per-call local clock, so calling this once per slice — each slice just gating WHEN
  *  its own copy of the always-correctly-phased expression is visible — produces continuous,
  *  uninterrupted motion across slice boundaries with zero change to the formula itself. */
-function applyTextMotionAnimation(clip: Clip, y: string, fontSizeExpr: string): { y: string; fontSizeExpr: string } {
+function applyTextMotionAnimation(
+  clip: Clip,
+  x: string,
+  y: string,
+  fontSizeExpr: string,
+  fontSize: number
+): { x: string; y: string; fontSizeExpr: string } {
   const animation = clip.textAnimation;
   const speed = animation?.speed ?? 1;
   const start = clip.timelineStart;
+  const clock = `((t-${t(start)})*${n(speed)})`;
+  let outX = x;
+  let outY = y;
+  const scaleFactors: string[] = [];
   if (animation?.type === "bounce") {
-    const dyExpr = `-abs(sin(2*PI*((t-${t(start)})*${n(speed)})/${n(BOUNCE_PERIOD_SECONDS)}))*${n(BOUNCE_AMPLITUDE_PX)}`;
-    return { y: `${y}${dyExpr}`, fontSizeExpr };
+    outY += `-abs(sin(2*PI*${clock}/${n(BOUNCE_PERIOD_SECONDS)}))*${n(BOUNCE_AMPLITUDE_PX)}`;
+  } else if (animation?.type === "pulse") {
+    scaleFactors.push(`(1+sin(2*PI*${clock}/${n(PULSE_PERIOD_SECONDS)})*${n(PULSE_AMPLITUDE)})`);
+  } else if (animation?.type === "float") {
+    outY += `+sin(2*PI*${clock}/${n(FLOAT_PERIOD_SECONDS)})*${n(FLOAT_AMPLITUDE_PX)}`;
+  } else if (animation?.type === "shake") {
+    outX += `+sin(2*PI*${clock}/${n(SHAKE_PERIOD_SECONDS)})*${n(SHAKE_AMPLITUDE_PX)}`;
+  } else if (animation?.type === "heartbeat") {
+    scaleFactors.push(`(1+pow(abs(sin(PI*${clock}/${n(HEARTBEAT_PERIOD_SECONDS)}))\\,${n(HEARTBEAT_SHARPNESS)})*${n(HEARTBEAT_AMPLITUDE)})`);
   }
-  if (animation?.type === "pulse") {
-    const scaleExpr = `(1+sin(2*PI*((t-${t(start)})*${n(speed)})/${n(PULSE_PERIOD_SECONDS)})*${n(PULSE_AMPLITUDE)})`;
-    return { y, fontSizeExpr: `'${fontSizeExpr}*${scaleExpr}'` };
+  // Entrance / exit (`Clip.textAnimationIn` / `Out`) — see `buildClipTextInOutTerms`.
+  const inOut = buildClipTextInOutTerms(clip, fontSize);
+  if (inOut) {
+    if (inOut.dx !== "0") outX += `+${escapeExpressionCommas(inOut.dx)}`;
+    if (inOut.dy !== "0") outY += `+${escapeExpressionCommas(inOut.dy)}`;
+    if (inOut.scale !== "1") scaleFactors.push(escapeExpressionCommas(inOut.scale));
   }
-  return { y, fontSizeExpr };
+  return { x: outX, y: outY, fontSizeExpr: scaleFactors.length ? `'${fontSizeExpr}*${scaleFactors.join("*")}'` : fontSizeExpr };
 }
 
 function buildDrawTextFilter(params: {
@@ -1571,7 +1642,7 @@ function buildDrawTextFilter(params: {
     });
   }
 
-  const { y: yExpr, fontSizeExpr } = applyTextMotionAnimation(clip, geo.y, geo.fontSizeExpr);
+  const { x: xExpr, y: yExpr, fontSizeExpr } = applyTextMotionAnimation(clip, geo.x, geo.y, geo.fontSizeExpr, style.fontSize);
 
   const textFile = ffmpegPath(textFilePathFor(clip, content));
   const body = drawTextFilterBody({
@@ -1581,7 +1652,7 @@ function buildDrawTextFilter(params: {
     color: geo.color,
     styleParams: geo.styleParams,
     lineSpacing: geo.lineSpacing,
-    x: geo.x,
+    x: xExpr,
     y: yExpr,
     alphaParam,
     enableStart: start,
@@ -1628,7 +1699,7 @@ function buildKeyframedDrawTextCalls(params: {
     const isLast = i === slices.length - 1;
     const stepLabel = isLast ? outputLabel : `${outputLabel}_kf${i}`;
     const geo = buildDrawTextGeometry(slice.style, fontPathFor, params.drawtextTextAlign);
-    const { y, fontSizeExpr } = applyTextMotionAnimation(clip, geo.y, geo.fontSizeExpr);
+    const { x, y, fontSizeExpr } = applyTextMotionAnimation(clip, geo.x, geo.y, geo.fontSizeExpr, slice.style.fontSize);
     // Last slice's own window extends to the real fade-adjusted `enableEnd` (not clipped to its own
     // nominal boundary) — matches how the un-sliced path's one-and-only call already extends past the
     // clip's nominal end for a fade-out, and how `buildTypewriterDrawTextCalls`'s own last step does
@@ -1640,7 +1711,7 @@ function buildKeyframedDrawTextCalls(params: {
       color: geo.color,
       styleParams: geo.styleParams,
       lineSpacing: geo.lineSpacing,
-      x: geo.x,
+      x,
       y,
       alphaParam,
       enableStart: clip.timelineStart + slice.offset,

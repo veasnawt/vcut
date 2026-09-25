@@ -18,14 +18,23 @@ import type { EditorState } from "../store/editorStore.ts";
 export function buildComposePreviewProject(
   project: Project | null,
   composeText: EditorState["composeText"],
-  playhead: number
+  playhead: number,
+  nowSeconds?: number
 ): Project | null {
   if (!project || !composeText || composeText.content.trim() === "") return project;
 
   const asset = createTextAsset(composeText.content, composeText.style);
   const duration = defaultClipDuration(asset);
-  const clip = createClip({ assetId: asset.id, sourceIn: 0, sourceOut: duration, timelineStart: Math.max(0, playhead) });
+  // While the draft has any animation, the phantom LOOPS it in real time: the clip's start is slid back by
+  // however far through its own duration `nowSeconds` says we are, so the (paused) playhead lands
+  // that far into it and the entrance, the loop and the exit all play over and over as you compose.
+  // Static drafts keep the exact old placement.
+  const animated = Boolean(composeText.animation || composeText.animationIn || composeText.animationOut);
+  const loopOffset = animated && nowSeconds !== undefined && duration > 0 ? nowSeconds % duration : 0;
+  const clip = createClip({ assetId: asset.id, sourceIn: 0, sourceOut: duration, timelineStart: Math.max(0, playhead) - loopOffset });
   if (composeText.animation) clip.textAnimation = composeText.animation;
+  if (composeText.animationIn) clip.textAnimationIn = composeText.animationIn;
+  if (composeText.animationOut) clip.textAnimationOut = composeText.animationOut;
   const track = createTrack("text", "");
   track.clips.push(clip);
 

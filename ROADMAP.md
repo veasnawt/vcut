@@ -43,6 +43,12 @@ Last updated 2026-09-25.
 - Timeline: scrub/pan during playback (pauses while dragging, resumes at the release point); zoomed-out
   timelines keep a scroll range / full-width ruler.
 - Rotation handle snapping.
+- +Text opens the composer immediately (input focused) with Style / Font / Animation tabs, all live on the canvas.
+- Text animations: In / Out / Loop tabs — 10 entrances (mirrored as exits) and 3 new loops (Float, Shake,
+  Heartbeat) beside the original five. Preview and export share one set of easing definitions (a test checks the
+  FFmpeg expressions against the JS math); Khmer/styled text exports through the browser-render path too.
+  Not yet: per-letter / per-word cascades, rotation-based In/Out (spin, swing), In/Out on Word Highlight text and
+  on rotated text's motion (opacity fades do carry over).
 
 ## Known gaps, not scheduled
 

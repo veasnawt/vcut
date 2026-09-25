@@ -2760,7 +2760,8 @@ export class PlaybackEngine {
         elapsed,
         clipDuration(clip),
         project.customFonts,
-        clip.wordTimings
+        clip.wordTimings,
+        { in: clip.textAnimationIn, out: clip.textAnimationOut }
       );
     });
   }
@@ -2777,9 +2778,10 @@ export class PlaybackEngine {
     elapsedSeconds: number,
     clipDurationSeconds: number,
     customFonts: CustomFontAsset[],
-    wordTimings?: Clip["wordTimings"]
+    wordTimings?: Clip["wordTimings"],
+    inOut?: { in?: Clip["textAnimationIn"]; out?: Clip["textAnimationOut"] }
   ): void {
-    drawAnimatedTextFrame(context, frameWidth, frameHeight, content, style, animation, elapsedSeconds, clipDurationSeconds, customFonts, wordTimings);
+    drawAnimatedTextFrame(context, frameWidth, frameHeight, content, style, animation, elapsedSeconds, clipDurationSeconds, customFonts, wordTimings, inOut);
   }
 
   /** Renders one text asset's content+style. Mirrors `buildExportPlan`'s FFmpeg `drawtext` chain in

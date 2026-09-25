@@ -31,7 +31,7 @@
 import { clipDuration } from "../project/createProject.ts";
 import type { Clip, CustomFontAsset, TextStyle } from "../project/types.ts";
 import { computeSliceBoundaries } from "./buildExportPlan.ts";
-import { splitWords, wordBoundaries, type WordTiming } from "../timeline/textAnimation.ts";
+import { splitWords, textInOutDuration, wordBoundaries, type WordTiming } from "../timeline/textAnimation.ts";
 
 export interface KhmerTextWindow {
   /** Seconds from the CLIP's own start (not the timeline) — matches how `buildExportPlan.ts`'s own
@@ -59,6 +59,9 @@ export interface RenderKhmerTextParams {
    *  same optional/absent-means-fallback contract as `drawAnimatedTextFrame`'s own parameter of the
    *  same name. */
   wordTimings?: WordTiming[];
+  /** The clip's entrance / exit animations, passed straight to `drawAnimatedTextFrame` (which layers them on
+   *  top of `animation`). Absent when the clip has neither. */
+  inOut?: { in?: Clip["textAnimationIn"]; out?: Clip["textAnimationOut"] };
 }
 
 /** Renders one window's exact visible state to a transparent PNG and returns its path — supplied by
@@ -168,8 +171,49 @@ export async function renderKhmerClipWindows(clip: Clip, content: string, style:
   // position/scale) do — all three drive `computeTextAnimationTransform` on every frame, unlike
   // `typewriter` (a discrete revealed-prefix state) or no animation at all (one static frame for the
   // clip's whole duration).
-  const isMotion = animation?.type === "bounce" || animation?.type === "pulse" || animation?.type === "wiggle";
+  const isMotion =
+    animation?.type === "bounce" ||
+    animation?.type === "pulse" ||
+    animation?.type === "wiggle" ||
+    animation?.type === "float" ||
+    animation?.type === "shake" ||
+    animation?.type === "heartbeat";
+  const inOut = clip.textAnimationIn || clip.textAnimationOut ? { in: clip.textAnimationIn, out: clip.textAnimationOut } : undefined;
   const isTypewriter = animation?.type === "typewriter";
+
+  if (!isMotion && !isTypewriter && inOut) {
+    // Static text with an entrance and/or exit: one window per OUTPUT FRAME across just those spans
+    // (smooth motion, unlike the coarser slicing a continuous loop uses), and a single window for the
+    // settled middle — so a 5s caption with a 0.6s slide-in costs ~20 windows, not the whole clip's worth.
+    const dIn = textInOutDuration(clip.textAnimationIn, duration);
+    const dOut = textInOutDuration(clip.textAnimationOut, duration);
+    const frame = 1 / options.fps;
+    const bounds = new Set<number>([0, duration]);
+    for (let s = frame; s < dIn - 1e-9; s += frame) bounds.add(s);
+    if (dIn > 0) bounds.add(dIn);
+    if (dOut > 0) bounds.add(duration - dOut);
+    for (let s = duration - dOut + frame; s < duration - 1e-9 && dOut > 0; s += frame) bounds.add(s);
+    const sorted = [...bounds].filter((b) => b >= 0 && b <= duration).sort((a, b) => a - b);
+    const spanWindows: KhmerTextWindow[] = [];
+    for (let i = 1; i < sorted.length; i++) {
+      const startOffset = sorted[i - 1];
+      const endOffset = sorted[i];
+      if (endOffset - startOffset <= 1e-9) continue;
+      const imagePath = await options.renderFrame({
+        frameWidth: options.frameWidth,
+        frameHeight: options.frameHeight,
+        content,
+        style,
+        animation,
+        elapsedSeconds: startOffset + (endOffset - startOffset) / 2,
+        clipDurationSeconds: duration,
+        customFonts: options.customFonts,
+        inOut,
+      });
+      spanWindows.push({ startOffset, endOffset, imagePath });
+    }
+    return spanWindows;
+  }
 
   if (!isMotion && !isTypewriter) {
     const imagePath = await options.renderFrame({
@@ -207,6 +251,7 @@ export async function renderKhmerClipWindows(clip: Clip, content: string, style:
       elapsedSeconds: midpoint,
       clipDurationSeconds: duration,
       customFonts: options.customFonts,
+      inOut,
     });
     windows.push({ startOffset, endOffset, imagePath });
   }

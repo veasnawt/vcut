@@ -316,6 +316,7 @@ function StatusBar({
   const duplicateSelectedClips = useEditorStore((s) => s.duplicateSelectedClips);
   const extractAudioFromClip = useEditorStore((s) => s.extractAudioFromClip);
   const applyTextAnimationToSelection = useEditorStore((s) => s.applyTextAnimationToSelection);
+  const applyTextInOutToSelection = useEditorStore((s) => s.applyTextInOutToSelection);
   const applyTextStylePresetToSelection = useEditorStore((s) => s.applyTextStylePresetToSelection);
   const patchTextStyleForSelection = useEditorStore((s) => s.patchTextStyleForSelection);
   const setLivePreviewOverrides = useEditorStore((s) => s.setLivePreviewOverrides);
@@ -481,6 +482,8 @@ function StatusBar({
     : [];
   const animationDisabled = selectedTextClips.length === 0;
   const animationCurrent = selectedTextClips.length === 1 ? selectedTextClips[0]!.clip.textAnimation : undefined;
+  const animationInCurrent = selectedTextClips.length === 1 ? selectedTextClips[0]!.clip.textAnimationIn : undefined;
+  const animationOutCurrent = selectedTextClips.length === 1 ? selectedTextClips[0]!.clip.textAnimationOut : undefined;
   // Styles tool — same gating and same bulk/quick-apply role as Animation just above, for
   // `TextStylePreset` instead of `Clip.textAnimation`: promoted here so a look can be applied without
   // opening Inspector at all, backed by the exact same `applyTextStylePresetToSelection` Inspector's
@@ -934,7 +937,7 @@ function StatusBar({
               ref={animationButtonRef}
               title={t("Animation")}
               label={t("Animation")}
-              active={showAnimationMenu || Boolean(animationCurrent)}
+              active={showAnimationMenu || Boolean(animationCurrent || animationInCurrent || animationOutCurrent)}
               onClick={() => {
                 setPickerAnchorSource("button");
                 toggleToolbarTool(showAnimationMenu, setShowAnimationMenu);
@@ -947,6 +950,10 @@ function StatusBar({
                 anchorRef={pickerAnchorSource === "contextMenu" ? contextMenuAnchorRef : animationButtonRef}
                 current={animationCurrent}
                 onPick={applyTextAnimationToSelection}
+                currentIn={animationInCurrent}
+                onPickIn={(next) => applyTextInOutToSelection("in", next)}
+                currentOut={animationOutCurrent}
+                onPickOut={(next) => applyTextInOutToSelection("out", next)}
                 onClose={() => setShowAnimationMenu(false)}
               />
             )}

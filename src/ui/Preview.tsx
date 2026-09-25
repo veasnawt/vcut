@@ -213,7 +213,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
     const engine = new PlaybackEngine({
       getProject: () => {
         const state = useEditorStore.getState();
-        const composed = buildComposePreviewProject(state.project, state.composeText, state.playhead);
+        const composed = buildComposePreviewProject(state.project, state.composeText, state.playhead, performance.now() / 1000);
         return buildOutroPreviewProject(composed, showOutroMarkerRef.current);
       },
       getPlayhead: () => useEditorStore.getState().playhead,

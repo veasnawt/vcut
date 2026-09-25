@@ -1309,6 +1309,22 @@ export function setClipTextAnimation(project: Project, clipId: string, textAnima
   });
 }
 
+/** Sets or clears a text clip's entrance (`"in"`) or exit (`"out"`) animation — same shape as
+ *  `setClipTextAnimation`, one field per side. */
+export function setClipTextInOut(project: Project, clipId: string, which: "in" | "out", animation: Clip["textAnimationIn"] | null): Project {
+  return edit(project, (draft) => {
+    const found = findClip(draft, clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    if (found.track.locked) throw new EditError(`${found.track.name} is locked`);
+    const key = which === "in" ? "textAnimationIn" : "textAnimationOut";
+    if (!animation) {
+      delete found.clip[key];
+    } else {
+      found.clip[key] = { ...animation };
+    }
+  });
+}
+
 /** Mirrors `setClipTextAnimation`'s exact shape, for `Clip.pixelEffect` instead — see its own doc
  *  comment for why this isn't keyframeable and so needs no `*Keyframes` sibling the way
  *  `transform`/`effects`/`colorGrading` each have. */

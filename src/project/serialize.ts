@@ -25,7 +25,7 @@ import { DEFAULT_TEXT_STYLE, IDENTITY_CURVE, PROJECT_SCHEMA_VERSION } from "./ty
 import { FONT_REGISTRY } from "./fonts.ts";
 import { parseAssetAnimation, parseStickerSource } from "./stickers.ts";
 import { TRANSITION_TYPE_OPTIONS } from "../timeline/transitions.ts";
-import { TEXT_ANIMATION_TYPE_OPTIONS } from "../timeline/textAnimation.ts";
+import { TEXT_ANIMATION_TYPE_OPTIONS, TEXT_INOUT_TYPE_OPTIONS } from "../timeline/textAnimation.ts";
 import { PIXEL_EFFECT_TYPE_OPTIONS } from "../timeline/pixelEffects.ts";
 import { clampClipSpeed, normalizedSpeedCurve } from "../timeline/clipTiming.ts";
 import { CLIP_BLEND_MODES } from "./types.ts";
@@ -552,6 +552,19 @@ function parseChromaKey(raw: unknown): ChromaKeySettings | undefined {
   };
 }
 
+/** `textAnimationIn`/`Out`: an unknown `type` drops the field, a non-positive/absurd `duration` is
+ *  dropped (falling back to the default) rather than trusted — same leniency as `parseClipTextAnimation`. */
+function parseClipTextInOut(raw: unknown): Clip["textAnimationIn"] {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  const type = TEXT_INOUT_TYPE_OPTIONS.find((t) => t === r.type);
+  if (!type) return undefined;
+  return {
+    type,
+    ...(typeof r.duration === "number" && Number.isFinite(r.duration) && r.duration > 0 ? { duration: Math.min(5, Math.max(0.1, r.duration)) } : null),
+  };
+}
+
 /** Same leniency as `parseClipTransitionSpec` above, for `textAnimation` — an unknown/malformed `type`
  *  drops the field entirely (unlike a transition, there's no sensible "fall back to a default type"
  *  here — an animation with the wrong TYPE is just a different, still-fine-looking motion, but there's
@@ -681,6 +694,8 @@ function parseClip(raw: Record<string, unknown>): Clip {
   const transitionIn = parseClipTransitionSpec(raw.transitionIn);
   const transitionOut = parseClipTransitionSpec(raw.transitionOut);
   const textAnimation = parseClipTextAnimation(raw.textAnimation);
+  const textAnimationIn = parseClipTextInOut(raw.textAnimationIn);
+  const textAnimationOut = parseClipTextInOut(raw.textAnimationOut);
   const wordTimings = parseClipWordTimings(raw.wordTimings);
   const pixelEffect = parseClipPixelEffect(raw.pixelEffect);
   const faceEffects = parseClipFaceEffects(raw.faceEffects);
@@ -721,6 +736,8 @@ function parseClip(raw: Record<string, unknown>): Clip {
     ...(transitionIn ? { transitionIn } : null),
     ...(transitionOut ? { transitionOut } : null),
     ...(textAnimation ? { textAnimation } : null),
+    ...(textAnimationIn ? { textAnimationIn } : null),
+    ...(textAnimationOut ? { textAnimationOut } : null),
     ...(wordTimings ? { wordTimings } : null),
     ...(pixelEffect ? { pixelEffect } : null),
     ...(faceEffects ? { faceEffects } : null),

@@ -21,6 +21,7 @@ import type { Clip, CustomFontAsset, TextStyle } from "../project/types.ts";
 import { resolveFont, resolveFontVariant } from "../project/fonts.ts";
 import {
   activeWordIndexFromBoundaries,
+  computeClipTextInOut,
   computeTextAnimationTransform,
   DEFAULT_WORD_HIGHLIGHT_COLOR,
   segmentLine,
@@ -334,7 +335,7 @@ export function drawTextFrame(
  *  per-word timing when Auto Captions' transcription provider returned it (currently Kiri, for Khmer),
  *  `undefined` otherwise, in which case `wordHighlight` timing falls back to spreading evenly across
  *  `clipDurationSeconds` exactly as it always has (see `Clip.wordTimings`'s own doc comment). */
-export function drawAnimatedTextFrame(
+function drawAnimatedTextFrameLoop(
   context: CanvasRenderingContext2D,
   frameWidth: number,
   frameHeight: number,
@@ -395,5 +396,42 @@ export function drawAnimatedTextFrame(
   context.scale(scale, scale);
   context.translate(-pivotX, -pivotY);
   drawTextFrame(context, frameWidth, frameHeight, content, style, undefined, customFonts);
+  context.restore();
+}
+
+/** Draws one text clip's frame with everything animated: the looping `animation` (bounce, typewriter,
+ *  word highlight...) plus the one-shot entrance/exit (`inOut`) layered on top — offsets add, scale is
+ *  applied around the text block's own center, opacity multiplies. `inOut` absent (or neutral at this
+ *  instant, i.e. mid-clip) takes the exact pre-existing path untouched. Shared by the live preview and the
+ *  Khmer browser-render export harness, so both get In/Out for free. */
+export function drawAnimatedTextFrame(
+  context: CanvasRenderingContext2D,
+  frameWidth: number,
+  frameHeight: number,
+  content: string,
+  style: TextStyle,
+  animation: Clip["textAnimation"],
+  elapsedSeconds: number,
+  clipDurationSeconds: number,
+  customFonts: CustomFontAsset[],
+  wordTimings?: WordTiming[],
+  inOut?: { in?: Clip["textAnimationIn"]; out?: Clip["textAnimationOut"] }
+): void {
+  const io = inOut && (inOut.in || inOut.out) ? computeClipTextInOut(inOut.in, inOut.out, elapsedSeconds, clipDurationSeconds, style.fontSize) : null;
+  if (!io || (io.alpha === 1 && io.scale === 1 && io.dx === 0 && io.dy === 0)) {
+    drawAnimatedTextFrameLoop(context, frameWidth, frameHeight, content, style, animation, elapsedSeconds, clipDurationSeconds, customFonts, wordTimings);
+    return;
+  }
+  // Pivot on the block's real center, same as the loop animations' own scale/rotate.
+  const block = computeTextBlock(context, frameWidth, frameHeight, content, style, customFonts);
+  const pivotX = block.blockLeft + block.blockWidth / 2;
+  const pivotY = block.blockTop + block.blockHeight / 2;
+  context.save();
+  context.globalAlpha *= io.alpha;
+  context.translate(io.dx, io.dy);
+  context.translate(pivotX, pivotY);
+  context.scale(io.scale, io.scale);
+  context.translate(-pivotX, -pivotY);
+  drawAnimatedTextFrameLoop(context, frameWidth, frameHeight, content, style, animation, elapsedSeconds, clipDurationSeconds, customFonts, wordTimings);
   context.restore();
 }

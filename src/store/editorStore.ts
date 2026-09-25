@@ -9,8 +9,10 @@ import {
   AddClipCommand,
   AddTrackCommand,
   SetClipTextAnimationCommand,
+  SetClipTextInOutCommand,
   BatchCommand,
   buildTextAnimationCommand,
+  buildTextInOutCommand,
   buildTextStylePatchCommand,
   buildTextStylePresetCommand,
   CreateTextBehindSubjectCommand,
@@ -409,7 +411,7 @@ export interface EditorState {
    *  keeping it as the input's own local state, so `Preview`'s `getProject()` can read it back and
    *  render a live phantom clip on the canvas while composing, before anything real exists to render.
    *  Starts `""` the instant composing is armed (see `setComposeText`). */
-  composeText: { style: TextStyle; trackId?: string; content: string; animation?: Clip["textAnimation"] } | null;
+  composeText: { style: TextStyle; trackId?: string; content: string; animation?: Clip["textAnimation"]; animationIn?: Clip["textAnimationIn"]; animationOut?: Clip["textAnimationOut"] } | null;
   /** Arms composing with a style (and, from an empty track's own "+" button, a specific `trackId`) —
    *  `content` always starts empty here; `setComposeTextContent` is what tracks it live afterward. */
   setComposeText: (compose: { style: TextStyle; trackId?: string }) => void;
@@ -419,6 +421,8 @@ export interface EditorState {
   /** Sets (or clears, with `null`) the animation the new clip will be created with; previewed live on
    *  the phantom clip the same way `setComposeTextStyle` is. */
   setComposeTextAnimation: (animation: Clip["textAnimation"] | null) => void;
+  /** Same, for the entrance (`"in"`) / exit (`"out"`) animation. */
+  setComposeTextInOut: (which: "in" | "out", animation: Clip["textAnimationIn"] | null) => void;
   /** Live-updates the draft text while composing — see `composeText.content`'s own doc comment for why
    *  this lives in the store rather than as `NewTextComposer`'s own local input state. No-op if nothing
    *  is currently being composed. */
@@ -637,6 +641,8 @@ export interface EditorState {
    *  multi-text-clip selection gets one animation type in one undo step. Scoped to TYPE only —
    *  per-clip `speed`/`highlightColor` fine-tuning stays single-clip, Inspector-only. */
   applyTextAnimationToSelection: (animation: Clip["textAnimation"] | null) => void;
+  /** Same as `applyTextAnimationToSelection`, for a text clip's entrance (`"in"`) or exit (`"out"`) animation. */
+  applyTextInOutToSelection: (which: "in" | "out", animation: Clip["textAnimationIn"] | null) => void;
   /** Merges `patch` onto every selected TEXT clip's own CURRENT style independently, as one undo-able
    *  step — the font/size/alignment counterpart to `applyTextStylePresetToSelection` (which replaces
    *  the whole style, deliberately never touching these three fields — see `TextStylePreset`'s own
@@ -1168,6 +1174,14 @@ export const useEditorStore = create<EditorState>((set, get) => {
         return { composeText: animation ? { ...rest, animation } : rest };
       });
     },
+    setComposeTextInOut(which, animation) {
+      set((state) => {
+        if (!state.composeText) return {};
+        const key = which === "in" ? "animationIn" : "animationOut";
+        const { [key]: _previous, ...rest } = state.composeText;
+        return { composeText: animation ? { ...rest, [key]: animation } : rest };
+      });
+    },
     setComposeTextContent(content) {
       set((state) => (state.composeText ? { composeText: { ...state.composeText, content } } : {}));
     },
@@ -1207,6 +1221,8 @@ export const useEditorStore = create<EditorState>((set, get) => {
         })();
       const clipId = get().addAssetAtPlayhead(assetId, targetTrackId, { avoidOverlap: true });
       if (clipId && compose.animation) get().run(new SetClipTextAnimationCommand(clipId, compose.animation));
+      if (clipId && compose.animationIn) get().run(new SetClipTextInOutCommand(clipId, "in", compose.animationIn));
+      if (clipId && compose.animationOut) get().run(new SetClipTextInOutCommand(clipId, "out", compose.animationOut));
       if (clipId) set({ selectedClipIds: [clipId] });
     },
     cancelComposeText() {
@@ -1915,6 +1931,15 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const { project, selectedClipIds, language } = get();
       if (!project) return;
       const command = buildTextAnimationCommand(project, selectedClipIds, animation);
+      if (!command) return;
+      get().run(command);
+      get().setStatus(translateText(language, "Applied animation"));
+    },
+
+    applyTextInOutToSelection(which, animation) {
+      const { project, selectedClipIds, language } = get();
+      if (!project) return;
+      const command = buildTextInOutCommand(project, selectedClipIds, which, animation);
       if (!command) return;
       get().run(command);
       get().setStatus(translateText(language, "Applied animation"));

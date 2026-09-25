@@ -37,6 +37,7 @@ import {
   setClipPixelEffect,
   setClipFaceEffects,
   setClipTextAnimation,
+  setClipTextInOut,
   setClipTransitionIn,
   setClipTransitionOut,
   setExportCover,
@@ -1380,6 +1381,52 @@ export function buildTextAnimationCommand(project: Project, clipIds: string[], a
     const asset = findAsset(project, found.clip.assetId);
     if (!asset || asset.kind !== "text") continue;
     commands.push(new SetClipTextAnimationCommand(clipId, animation));
+  }
+  if (commands.length === 0) return null;
+  return commands.length > 1 ? new BatchCommand("Set Text Animation", commands) : commands[0];
+}
+
+/** Sets or clears a text clip's entrance / exit animation — `SetClipTextAnimationCommand`'s shape for
+ *  `Clip.textAnimationIn` / `textAnimationOut`. */
+export class SetClipTextInOutCommand implements Command {
+  label = "Set Text Animation";
+  private applied = false;
+  private previous: Clip["textAnimationIn"] | null = null;
+
+  private clipId: string;
+  private which: "in" | "out";
+  private animation: Clip["textAnimationIn"] | null;
+
+  constructor(clipId: string, which: "in" | "out", animation: Clip["textAnimationIn"] | null) {
+    this.clipId = clipId;
+    this.which = which;
+    this.animation = animation;
+  }
+
+  apply(project: Project): Project {
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    this.previous = (this.which === "in" ? found.clip.textAnimationIn : found.clip.textAnimationOut) ?? null;
+    this.applied = true;
+    return setClipTextInOut(project, this.clipId, this.which, this.animation);
+  }
+
+  revert(project: Project): Project {
+    if (!this.applied) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return setClipTextInOut(project, this.clipId, this.which, this.previous);
+  }
+}
+
+/** `buildTextAnimationCommand`'s twin for entrance/exit animations: one command per TEXT clip among
+ *  `clipIds` (batched when several), `null` when none qualify. */
+export function buildTextInOutCommand(project: Project, clipIds: string[], which: "in" | "out", animation: Clip["textAnimationIn"] | null): Command | null {
+  const commands: Command[] = [];
+  for (const clipId of clipIds) {
+    const found = findClip(project, clipId);
+    if (!found) continue;
+    const asset = findAsset(project, found.clip.assetId);
+    if (!asset || asset.kind !== "text") continue;
+    commands.push(new SetClipTextInOutCommand(clipId, which, animation));
   }
   if (commands.length === 0) return null;
   return commands.length > 1 ? new BatchCommand("Set Text Animation", commands) : commands[0];

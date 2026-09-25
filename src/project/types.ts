@@ -642,7 +642,22 @@ export type TransitionType =
  *  spread evenly across the clip's own duration (see `timeline/textAnimation.ts`'s `activeWordIndex`).
  *  Its highlight color is genuinely configurable (`Clip.textAnimation.highlightColor`) — the other four
  *  are fixed motion curves with nothing meaningful to expose as a setting yet. */
-export type TextAnimationType = "bounce" | "pulse" | "wiggle" | "typewriter" | "wordHighlight";
+export type TextAnimationType = "bounce" | "pulse" | "wiggle" | "float" | "shake" | "heartbeat" | "typewriter" | "wordHighlight";
+
+/** A one-shot text entrance ("In") or exit ("Out") animation — played over the first/last
+ *  `TextInOutAnimation.duration` seconds of a text clip, independent of (and stacking with) the clip's
+ *  looping `textAnimation`. An "Out" is its "In" played backwards over the clip's final seconds, so each
+ *  type here is defined once as an entrance (see `timeline/textAnimation.ts`'s `computeTextInOutTransform`)
+ *  and mirrored for exit. Every type is a pure position/scale/opacity change — deliberately no rotation,
+ *  so export can express all of them as plain `drawtext` expressions. */
+export type TextInOutType = "fade" | "slideUp" | "slideDown" | "slideLeft" | "slideRight" | "rise" | "drop" | "pop" | "zoomIn" | "zoomOut";
+
+export interface TextInOutAnimation {
+  type: TextInOutType;
+  /** Seconds. Absent means `TEXT_INOUT_DEFAULT_DURATION`; always clamped to at most half the clip so an
+   *  In and an Out on the same clip can never overlap. */
+  duration?: number;
+}
 
 /** A continuous per-pixel image-processing effect for a video/image clip — glitch (digital-corruption
  *  RGB-channel-split + slice-shift + noise) or water-ripple (a wavy, underwater-reflection sine
@@ -815,6 +830,10 @@ export interface Clip {
    *  functions — so none of them need their own notion of speed, they just see a bigger or smaller
    *  elapsed-time number than the clip's real playhead position. */
   textAnimation?: { type: TextAnimationType; highlightColor?: string; speed?: number };
+  /** Entrance / exit animations — see `TextInOutType`. Independent of `textAnimation` (a clip can have a
+   *  slide-in, a heartbeat loop and a fade-out at once). Text clips only, same as `textAnimation`. */
+  textAnimationIn?: TextInOutAnimation;
+  textAnimationOut?: TextInOutAnimation;
   /** Real per-word timing for `textAnimation.type === "wordHighlight"`, CLIP-RELATIVE seconds (same
    *  "elapsed" space every other per-clip timing value in this codebase uses) — one entry per word
    *  `timeline/textAnimation.ts`'s `splitWords(asset.textContent)` finds, in the same order. Only ever

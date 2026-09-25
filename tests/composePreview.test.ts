@@ -25,4 +25,14 @@ describe("buildComposePreviewProject", () => {
     const preview = buildComposePreviewProject(emptyProject(), { style: DEFAULT_TEXT_STYLE, content: "Hi" }, 0)!;
     assert.equal(preview.sequence.tracks[preview.sequence.tracks.length - 1].clips[0].textAnimation, undefined);
   });
+
+  it("loops an animated draft in real time by sliding the clip start back, and leaves a static draft alone", () => {
+    const project = emptyProject();
+    const animated = buildComposePreviewProject(project, { style: DEFAULT_TEXT_STYLE, content: "Hi", animationIn: { type: "pop" } }, 5, 1.25)!;
+    const animatedClip = animated.sequence.tracks[animated.sequence.tracks.length - 1].clips[0];
+    assert.ok(animatedClip.timelineStart < 5, "start is slid back so the playhead lands part-way into the clip");
+    assert.ok(5 - animatedClip.timelineStart <= 1.25 + 1e-9);
+    const still = buildComposePreviewProject(project, { style: DEFAULT_TEXT_STYLE, content: "Hi" }, 5, 1.25)!;
+    assert.equal(still.sequence.tracks[still.sequence.tracks.length - 1].clips[0].timelineStart, 5);
+  });
 });

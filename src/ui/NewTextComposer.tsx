@@ -43,6 +43,7 @@ export function NewTextComposer() {
   const setComposeTextContent = useEditorStore((s) => s.setComposeTextContent);
   const setComposeTextStyle = useEditorStore((s) => s.setComposeTextStyle);
   const setComposeTextAnimation = useEditorStore((s) => s.setComposeTextAnimation);
+  const setComposeTextInOut = useEditorStore((s) => s.setComposeTextInOut);
   const customFonts = useEditorStore((s) => s.project?.customFonts ?? []);
   const commitComposedText = useEditorStore((s) => s.commitComposedText);
   const cancelComposeText = useEditorStore((s) => s.cancelComposeText);
@@ -165,7 +166,16 @@ export function NewTextComposer() {
                 searchPlaceholder={t("Search fonts…")}
               />
             )}
-            {tab === "animation" && <TextAnimationPickerGrid current={composeText.animation} onPick={setComposeTextAnimation} />}
+            {tab === "animation" && (
+              <TextAnimationPickerGrid
+                current={composeText.animation}
+                onPick={setComposeTextAnimation}
+                currentIn={composeText.animationIn}
+                onPickIn={(next) => setComposeTextInOut("in", next)}
+                currentOut={composeText.animationOut}
+                onPickOut={(next) => setComposeTextInOut("out", next)}
+              />
+            )}
           </div>
         )}
         </div>

@@ -40,6 +40,7 @@ import {
   SetClipPanCommand,
   SetClipLutCommand,
   SetClipLutIntensityCommand,
+  SetClipTextInOutCommand,
   SetClipMaskCommand,
   SetClipMutedCommand,
   SetClipTextAnimationCommand,
@@ -62,7 +63,7 @@ import type { CropEdge } from "../playback/transformGeometry.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { formatTimecode } from "../timeline/time.ts";
-import { DEFAULT_WORD_HIGHLIGHT_COLOR } from "../timeline/textAnimation.ts";
+import { DEFAULT_WORD_HIGHLIGHT_COLOR, TEXT_INOUT_DEFAULT_DURATION } from "../timeline/textAnimation.ts";
 import {
   clipHasAnyKeyframes,
   hasColorGradingKeyframes,
@@ -2073,7 +2074,33 @@ export function Inspector() {
                     <TextAnimationPickerGrid
                       current={clip.textAnimation}
                       onPick={(next) => run(new SetClipTextAnimationCommand(clip.id, next))}
+                      currentIn={clip.textAnimationIn}
+                      onPickIn={(next) => run(new SetClipTextInOutCommand(clip.id, "in", next))}
+                      currentOut={clip.textAnimationOut}
+                      onPickOut={(next) => run(new SetClipTextInOutCommand(clip.id, "out", next))}
                     />
+                    {clip.textAnimationIn && (
+                      <NumberField
+                        label={t("In duration")}
+                        value={clip.textAnimationIn.duration ?? TEXT_INOUT_DEFAULT_DURATION}
+                        suffix="s"
+                        step={0.1}
+                        min={0.1}
+                        max={5}
+                        onCommit={(v) => run(new SetClipTextInOutCommand(clip.id, "in", { ...clip.textAnimationIn!, duration: v }))}
+                      />
+                    )}
+                    {clip.textAnimationOut && (
+                      <NumberField
+                        label={t("Out duration")}
+                        value={clip.textAnimationOut.duration ?? TEXT_INOUT_DEFAULT_DURATION}
+                        suffix="s"
+                        step={0.1}
+                        min={0.1}
+                        max={5}
+                        onCommit={(v) => run(new SetClipTextInOutCommand(clip.id, "out", { ...clip.textAnimationOut!, duration: v }))}
+                      />
+                    )}
                     {clip.textAnimation && (
                       <>
                         <NumberField
