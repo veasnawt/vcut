@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { isAppleWebKit, planMediaSync, shouldHoldClockForMedia } from "../src/playback/PlaybackEngine.ts";
+import { isAppleWebKit, pipelineScaleFor, planMediaSync, shouldHoldClockForMedia } from "../src/playback/PlaybackEngine.ts";
 
 describe("isAppleWebKit", () => {
   const cases: [string, string, boolean][] = [
@@ -118,5 +118,31 @@ describe("planMediaSync", () => {
 
   it("does nothing when already in sync", () => {
     assert.deepEqual(planMediaSync(base, 5, true), { playbackRate: null, seekTo: null });
+  });
+});
+
+// The readback pipeline (chroma key / curves / LUT / mask) runs at the smallest fixed fraction of the
+// source resolution that still covers every backing-store pixel the clip occupies -- fewer pixels than
+// that would visibly soften the preview, so the rule must round UP, never down.
+describe("pipelineScaleFor", () => {
+  it("rounds up to the next step so the pipeline never has fewer pixels than the screen shows", () => {
+    assert.equal(pipelineScaleFor(0.1), 0.125);
+    assert.equal(pipelineScaleFor(0.2), 0.25);
+    assert.equal(pipelineScaleFor(0.26), 0.375);
+    assert.equal(pipelineScaleFor(0.46), 0.5);
+    assert.equal(pipelineScaleFor(0.6), 0.75);
+  });
+
+  it("returns exactly a step when the need lands on it", () => {
+    for (const step of [0.125, 0.25, 0.375, 0.5, 0.75, 1]) assert.equal(pipelineScaleFor(step), step);
+  });
+
+  it("never exceeds full resolution, even when the clip is upscaled past its source", () => {
+    assert.equal(pipelineScaleFor(1.0001), 1);
+    assert.equal(pipelineScaleFor(4), 1);
+  });
+
+  it("falls back to full resolution for a nonsensical ratio rather than crashing or shrinking to nothing", () => {
+    for (const bad of [0, -1, NaN, Infinity]) assert.equal(pipelineScaleFor(bad), 1);
   });
 });

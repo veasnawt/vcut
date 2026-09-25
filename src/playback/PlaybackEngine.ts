@@ -124,6 +124,28 @@ function deviceScaleOf(context: CanvasRenderingContext2D): number {
   return Number.isFinite(scale) && scale > 0 ? scale : 1;
 }
 
+/** Fractions of a clip's own SOURCE resolution the per-pixel readback pipeline in `drawTransformed`
+ *  (chroma key, curves, LUT, mask, manual effects) is allowed to run at. Discrete on purpose: the
+ *  scratch canvas is re-created whenever its size changes, so a continuously-varying scale (a zoom
+ *  animation, a window resize) would reallocate it every frame — a handful of stable steps keeps that
+ *  to the rare frame a step boundary is actually crossed. */
+const PIPELINE_SCALE_STEPS = [0.125, 0.25, 0.375, 0.5, 0.75, 1];
+
+/** The smallest `PIPELINE_SCALE_STEPS` entry that still gives the readback pipeline at least as many
+ *  pixels as the clip actually occupies on the canvas's own backing store — never fewer, so nothing
+ *  visible is lost, but often far fewer than the SOURCE has: this pipeline used to run at the source's
+ *  full resolution (a 1080p or 4K video) even though the preview canvas is capped to the panel's own
+ *  on-screen size (see `setDisplaySize`), so a 1080p clip in a ~500px-wide panel paid for roughly 4x the
+ *  pixels the screen could ever show, on the main thread, every frame — measured at ~420ms/frame with
+ *  curves + LUT + mask on a 1080p clip in headless Chromium. `devicePixelsPerSourcePixel` is
+ *  `TransformedBox.width * deviceScaleOf(context) / TransformedBox.cropWidth`: how many backing-store
+ *  pixels one source pixel maps to once fit, scaled and cropped. */
+export function pipelineScaleFor(devicePixelsPerSourcePixel: number): number {
+  if (!Number.isFinite(devicePixelsPerSourcePixel) || devicePixelsPerSourcePixel <= 0) return 1;
+  for (const step of PIPELINE_SCALE_STEPS) if (step >= devicePixelsPerSourcePixel) return step;
+  return 1;
+}
+
 /** Blends two ALREADY-FULLY-DRAWN flat images (`outgoing`/`incoming`) onto `context`, per
  *  `transitionFamily`'s own shape for `type` — a pure, standalone function (not a method): directly
  *  usable without a live `PlaybackEngine` instance, which `TransitionPreviewTile.tsx`'s picker-grid
@@ -2337,11 +2359,18 @@ export class PlaybackEngine {
     // pipeline rather than a separate one.
     const needsManualEffects = !isIdentityEffects(effects) && !supportsCanvasFilter();
     if (chromaKey || needsColorGrading || needsLut || pixelEffect || needsManualEffects || mask) {
-      const scratch = this.chromaKeyCanvas(sourceWidth, sourceHeight);
+      // A pixel effect (glitch/water ripple) displaces by a fixed number of SOURCE pixels, so it must
+      // keep running at full resolution to look the same — everything else here is either per-pixel
+      // color math or expressed in resolution-independent fractions (mask, crop), so it's exactly as
+      // correct at the reduced resolution. See `pipelineScaleFor`.
+      const workScale = pixelEffect ? 1 : pipelineScaleFor((box.width * deviceScaleOf(context)) / box.cropWidth);
+      const workWidth = Math.max(1, Math.round(sourceWidth * workScale));
+      const workHeight = Math.max(1, Math.round(sourceHeight * workScale));
+      const scratch = this.chromaKeyCanvas(workWidth, workHeight);
       if (scratch) {
-        scratch.clearRect(0, 0, sourceWidth, sourceHeight);
-        scratch.drawImage(element, 0, 0, sourceWidth, sourceHeight);
-        const imageData = scratch.getImageData(0, 0, sourceWidth, sourceHeight);
+        scratch.clearRect(0, 0, workWidth, workHeight);
+        scratch.drawImage(element, 0, 0, workWidth, workHeight);
+        const imageData = scratch.getImageData(0, 0, workWidth, workHeight);
         if (chromaKey) applyChromaKey(imageData, chromaKey);
         if (needsColorGrading) applyColorGrading(imageData, this.resolveColorGradingLuts(clipId ?? "", colorGrading!));
         // Applied AFTER color grading, matching `Clip.lutId`'s own doc comment and
@@ -2377,7 +2406,7 @@ export class PlaybackEngine {
           // size) but this buffer is still at SOURCE resolution — convert, or a 4K source would get a
           // fraction of the blur a 720p one does.
           const sourcePxPerFramePx = box.width > 0 ? box.cropWidth / box.width : 1;
-          source = applyDownsampledBlur(source, sourceWidth, sourceHeight, effects.blur * sourcePxPerFramePx, "a");
+          source = applyDownsampledBlur(source, workWidth, workHeight, effects.blur * sourcePxPerFramePx * (workWidth / sourceWidth), "a");
         }
       }
     }
@@ -2396,12 +2425,17 @@ export class PlaybackEngine {
     context.translate(box.centerX, box.centerY);
     if (transform.rotationDeg !== 0) context.rotate((transform.rotationDeg * Math.PI) / 180);
     if (flipHorizontal || flipVertical) context.scale(flipHorizontal ? -1 : 1, flipVertical ? -1 : 1);
+    // `box`'s crop rect is in the ORIGINAL source's pixels; a processed `source` canvas may be smaller
+    // (reduced pipeline resolution, and/or `applyDownsampledBlur`'s own working size), so map it by the
+    // canvas's ACTUAL size rather than assuming it matches. 1 for an unprocessed element.
+    const mapX = source === element ? 1 : (source as HTMLCanvasElement).width / sourceWidth;
+    const mapY = source === element ? 1 : (source as HTMLCanvasElement).height / sourceHeight;
     context.drawImage(
       source,
-      box.cropX,
-      box.cropY,
-      box.cropWidth,
-      box.cropHeight,
+      box.cropX * mapX,
+      box.cropY * mapY,
+      box.cropWidth * mapX,
+      box.cropHeight * mapY,
       -box.width / 2,
       -box.height / 2,
       box.width,
