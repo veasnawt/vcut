@@ -33,7 +33,7 @@ Last updated 2026-09-25.
 | P1-12 Undo edge cases | Open |
 | P1-13 Long audio can exhaust browser memory | Open |
 | P1-14 Mobile import loads the whole file into memory | Open |
-| P1-15 No CI | In progress — `.github/workflows/vcut-ci.yml` added; failing after the vicons build step |
+| P1-15 No CI | Done — `.github/workflows/vcut-ci.yml` runs typecheck, the full suite (with a full-featured FFmpeg), studio lint and the production build on every push / PR |
 | P1-16 BP Studio embed may be blocked by `frame-ancestors` | Unchecked |
 
 ## Shipped since the audit (not in the original list)
@@ -61,7 +61,7 @@ Last updated 2026-09-25.
 ## Proposed order
 
 1. ~~P0-4 autosave reliability~~ (done).
-2. P1-15 CI green (protects everything after it).
+2. ~~P1-15 CI green~~ (done).
 3. P1-8 + P1-10 + P1-7 money/ops: durable job records with orphan refunds, webhook ordering, export retention.
 4. P1-1 smooth keyframes in export.
 5. P1-9 multi-tab overwrite protection, P1-11 copy/paste + shortcuts, P1-12 undo edge cases.
