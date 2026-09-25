@@ -132,6 +132,7 @@ export const KM_TRANSLATIONS: Record<string, string> = {
   "Duplicate": "ចម្លង",
   "Duplicated clip": "បានចម្លងឃ្លីប",
   "Copied clip": "បានចម្លងឃ្លីបទុក",
+  "Close Properties": "បិទលក្ខណៈ",
   "Word style": "រចនាបថពាក្យ",
   "Word colors": "ពណ៌ពាក្យ",
   "Word color {n}": "ពណ៌ពាក្យ {n}",

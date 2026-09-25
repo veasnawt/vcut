@@ -12,6 +12,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronUp,
+  Close,
   ClosedCaption,
   Copy,
   Create,
@@ -643,7 +644,18 @@ function StatusBar({
  shortLabel: t("Add"),
                   label: t("Add text"),
                   description: t("Type text and style it live on the canvas"),
-                  icon: <Text size={16} />,
+                  // A "+" badge on the glyph: this item adds a new text (the group button itself is a plain T).
+                  icon: (
+                    <span className="relative inline-flex">
+                      <Text size={16} />
+                      <span
+                        aria-hidden
+                        className="absolute -bottom-0.5 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-sky-500 text-[8px] font-bold leading-none text-white"
+                      >
+                        +
+                      </span>
+                    </span>
+                  ),
                   onSelect: () => {
                     closeAllToolbarTools();
                     setComposeText({ style: DEFAULT_TEXT_STYLE });
@@ -660,22 +672,6 @@ function StatusBar({
                     setShowTextImport(true);
                   },
                 },
-                ...(selectedClipIds.length === 0 || !captionsForClipDisabled
-                  ? [
-                      {
-                        id: "captions",
- shortLabel: t("Captions"),
-                        label: selectedClipIds.length === 0 ? t("Auto Captions") : t("Auto Captions for the selected clips"),
-                        description: t("Turn speech into timed captions"),
-                        icon: <ClosedCaption size={16} />,
-                        onSelect: () => {
-                          if (!canSwitchToolbarTool()) return;
-                          closeAllToolbarTools();
-                          setCaptionsDialog(selectedClipIds.length === 0 ? {} : { clipIds: selectedClipIds });
-                        },
-                      },
-                    ]
-                  : []),
                 ...(!stylesDisabled
                   ? [
                       {
@@ -959,6 +955,21 @@ function StatusBar({
             clips), Auto Captions, and — when a text clip is selected — Styles, Font and Animation. These used to be
             six separate toolbar buttons. The three selection-scoped ones open the same pickers as before, anchored
             to this button; they only appear in the menu when they have something to act on. */}
+        {/* Auto Captions — its own always-visible button (not tucked inside a group): it acts on the selected clips
+            when any has audio, otherwise on the whole sequence. */}
+        <ToolbarButton
+          title={t("Turn speech into timed captions")}
+          label={t("Captions")}
+          active={captionsDialog !== null}
+          pro={CREDITS_ENABLED}
+          onClick={() => {
+            if (!canSwitchToolbarTool()) return;
+            closeAllToolbarTools();
+            setCaptionsDialog(captionsForClipDisabled ? {} : { clipIds: selectedClipIds });
+          }}
+        >
+          <ClosedCaption size={18} />
+        </ToolbarButton>
         <ToolbarButton
           ref={expandedGroup === "text" ? undefined : textButtonRef}
           title={t("Text")}
@@ -966,16 +977,7 @@ function StatusBar({
           active={composeTextActive || showTextImport || captionsDialog !== null || showStyleMenu || showFontMenu || showAnimationMenu}
           onClick={() => setExpandedGroup("text")}
         >
-          {/* A small "+" badge on the glyph: the group's main job is adding a new text. */}
-          <span className="relative inline-flex">
-            <Text size={18} />
-            <span
-              aria-hidden
-              className="absolute -bottom-0.5 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-sky-500 text-[8px] font-bold leading-none text-white"
-            >
-              +
-            </span>
-          </span>
+          <Text size={18} />
         </ToolbarButton>
         {/* Audio — every audio tool behind one button: Import audio, Music, Sound effects, Record voiceover, the
             Mixer and the preview Mute. These used to be five separate toolbar buttons (Voice, Mute, Music, SFX,
@@ -2457,7 +2459,18 @@ function VCutAppInner({ projectId, projectName, onHome }: VCutAppProps) {
           {mobileSheet === "media" ? (
             <MediaPanel onAssetAdded={() => setMobileSheet(null)} />
           ) : mobileSheet === "inspector" ? (
-            <Inspector />
+            <>
+              <Inspector />
+              <button
+                type="button"
+                title={t("Close")}
+                aria-label={t("Close Properties")}
+                onClick={() => setMobileSheet(null)}
+                className="absolute right-2 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-md bg-white/10 text-white/70 transition hover:bg-white/20 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+              >
+                <Close size={16} />
+              </button>
+            </>
           ) : bottomPanel === "mixer" ? (
             <MixerPanel onFloat={() => beginFloat("mixer")} />
           ) : bottomPanel === "scopes" ? (

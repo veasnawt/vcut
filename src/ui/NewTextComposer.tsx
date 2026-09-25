@@ -20,6 +20,8 @@ const TABS: { id: ComposerTab; label: string }[] = [
 /** Height of the Style/Font/Animation panel under the input — fixed so switching tabs never makes the bar
  *  jump, and short enough that the canvas above stays visible: seeing the text change live is the point. */
 const PANEL_HEIGHT = "clamp(232px, 36vh, 340px)";
+/** Shorter panel while the on-screen keyboard is up, so it still fits above the keyboard. */
+const KEYBOARD_PANEL_HEIGHT = "clamp(120px, 24vh, 200px)";
 
 /** Where a NEW text clip's content gets typed, entirely BEFORE anything exists on the timeline — see
  *  `editorStore.ts`'s own `composeText` doc comment for why this has to be a standalone flow rather
@@ -49,6 +51,7 @@ export function NewTextComposer() {
   const cancelComposeText = useEditorStore((s) => s.cancelComposeText);
   const t = useTranslation();
   const [bottomInset, setBottomInset] = useState(0);
+  const keyboardOpen = bottomInset > 80;
   const inputRef = useRef<HTMLInputElement>(null);
   // Which panel is open under the input, if any — Style by default. The tabs are toggles (tap the open one to
   // close it and go back to typing); there is no separate "keyboard" tab, the field itself is the keyboard.
@@ -106,7 +109,15 @@ export function NewTextComposer() {
     // the same "tap away dismisses" convention every other popover/menu in this app already uses.
     // Deliberately NOT dimmed: unlike a modal dialog, this shouldn't visually block the canvas/timeline
     // behind it, since seeing where the new clip will land is exactly the context composing needs.
-    <div className="fixed inset-0 z-50" onClick={cancelComposeText} role="presentation">
+    <div
+      className="fixed inset-0 z-50"
+      // Cancel only on a press that starts on the backdrop itself. (A click would also fire when the bar resizes
+      // under a finger mid-tap, e.g. as the keyboard opens, and the tap would land on the backdrop.)
+      onPointerDown={(e) => {
+        if (e.target === e.currentTarget) cancelComposeText();
+      }}
+      role="presentation"
+    >
       <div
         onClick={(e) => e.stopPropagation()}
         style={{ position: "fixed", left: 0, right: 0, bottom: bottomInset, zIndex: 50 }}
@@ -120,11 +131,6 @@ export function NewTextComposer() {
           value={composeText.content}
           placeholder={t("Enter text")}
           onChange={(e) => setComposeTextContent(e.target.value)}
-          // On a touch device focusing the field raises the on-screen keyboard over any open panel, so close the
-          // panel; with a mouse the panel can stay open while you edit the words.
-          onFocus={() => {
-            if (typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches) setTab(null);
-          }}
           onKeyDown={(e) => {
             // Same "Enter commits, matches a mobile keyboard's own Go/Done key" convention
             // `MobileTextEditBar` uses; Escape cancels, matching every other popover/dialog in this app.
@@ -167,7 +173,7 @@ export function NewTextComposer() {
           ))}
         </div>
         {tab !== null && (
-          <div style={{ height: PANEL_HEIGHT }} className="overflow-y-auto overscroll-contain rounded-md bg-black/20 p-2">
+          <div style={{ height: keyboardOpen ? KEYBOARD_PANEL_HEIGHT : PANEL_HEIGHT }} className="overflow-y-auto overscroll-contain rounded-md bg-black/20 p-2">
             {tab === "style" && (
               <TextStylePresetGrid onPick={(preset) => setComposeTextStyle(applyTextStylePreset(composeText.style, preset))} />
             )}
