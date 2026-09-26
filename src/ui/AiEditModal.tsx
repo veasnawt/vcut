@@ -63,6 +63,7 @@ export function AiEditModal({ clipId, onClose }: { clipId: string; onClose: () =
   const [viewMode, setViewMode] = useState<"result" | "original">("result");
   const jobRef = useRef<{ cancel: () => void } | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
 
   const clip = project ? findClip(project, clipId)?.clip : undefined;
   const asset = project && clip ? findAsset(project, clip.assetId) : undefined;
@@ -82,6 +83,13 @@ export function AiEditModal({ clipId, onClose }: { clipId: string; onClose: () =
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose, generating]);
+
+  // The preview is where the progress and then the result show up, but the button that starts a run is far below it: bring
+  // the preview back into view when a run starts and again when its result arrives.
+  const hasResult = generatedAsset !== null;
+  useEffect(() => {
+    if (generating || hasResult) previewRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [generating, hasResult]);
 
   if (!project || !projectId || !clip || !asset) return null;
 
@@ -174,7 +182,7 @@ export function AiEditModal({ clipId, onClose }: { clipId: string; onClose: () =
 
         <div className="scrollbar-none min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-4 py-4">
           {/* 1. Preview */}
-          <div className="space-y-2">
+          <div ref={previewRef} className="scroll-mt-4 space-y-2">
             <div className="relative flex h-[24dvh] max-h-60 min-h-36 w-full items-center justify-center overflow-hidden rounded-xl border border-white/10 bg-black/40 sm:h-[26dvh] sm:max-h-64">
               {showResult && generatedAsset.kind === "video" ? (
                 <video key={resultUrl} src={resultUrl} controls loop muted autoPlay playsInline className="h-full w-full object-contain" />
