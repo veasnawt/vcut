@@ -4,6 +4,7 @@ import {
   fillTemplateSlot,
   buildProjectFromTemplate,
   instantiateTemplateContent,
+  pendingTemplateAiTasks,
   sanitizeProjectForTemplate,
   setTemplateClipText,
   templateAudioAssets,
@@ -14,6 +15,7 @@ import {
   templateVideoAssets,
   trimTemplateSlot,
 } from "../src/project/template.ts";
+import { withAiOrigin } from "../src/project/aiRecipe.ts";
 import { InsertTemplateCommand, RemoveTemplateGroupCommand, ReplaceTemplateClipCommand } from "../src/commands/index.ts";
 import { addClip, addTrack, setClipTransform } from "../src/timeline/operations.ts";
 import {
@@ -832,6 +834,41 @@ describe("InsertTemplateCommand", () => {
     const firstGroupId = afterSecond.sequence.tracks.find((t) => first.createdTrackIds.includes(t.id))!.templateGroup!.id;
     const secondGroupId = afterSecond.sequence.tracks.find((t) => second.createdTrackIds.includes(t.id))!.templateGroup!.id;
     assert.notEqual(firstGroupId, secondGroupId);
+  });
+});
+
+describe("InsertTemplateCommand + pending AI steps", () => {
+  it("carries a clip's templateAiSteps through onto its fresh id, so pendingTemplateAiTasks sees it on the live project once its slot is filled", () => {
+    // "aiResult" is what the template's own author actually filmed with — the OUTPUT of a cutout run on
+    // "original". `sanitizeProjectForTemplate` slots the ORIGINAL footage, not the AI result, and tags
+    // the clip with the step needed to reproduce it (see that function's own doc comment).
+    const original = videoAsset("original", 8);
+    const aiResult = withAiOrigin(videoAsset("aiResult", 5), "original", { tool: "cutout" });
+    let templateProject = emptyProject([original, aiResult]);
+    templateProject = addClip(templateProject, videoTrackId(templateProject), "aiResult", 0);
+    const resolved = sanitizeProjectForTemplate(templateProject);
+
+    // Fill the one open slot with the user's own real media, exactly as `ImportTemplateDialog.tsx`'s
+    // fill step does on its own scratch draft — `templateAiSteps` is untouched by this.
+    const built = buildProjectFromTemplate("draft", "My Template", resolved);
+    const slot = templateSlots(built)[0];
+    const usersPick = videoAsset("users-pick", 10);
+    const filled = fillTemplateSlot(built, slot.assetId, usersPick);
+
+    const liveProject = emptyProject([videoAsset("existing")]);
+    const command = new InsertTemplateCommand(
+      { width: filled.sequence.width, height: filled.sequence.height, fps: filled.sequence.fps, tracks: filled.sequence.tracks, assets: filled.assets },
+      0,
+      "My Template"
+    );
+    const result = command.apply(liveProject);
+
+    const tasks = pendingTemplateAiTasks(result);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0].step.tool, "cutout");
+    assert.equal(tasks[0].assetName, "users-pick.mp4");
+    const insertedClip = result.sequence.tracks.find((t) => command.createdTrackIds.includes(t.id))!.clips[0];
+    assert.equal(tasks[0].clipId, insertedClip.id);
   });
 });
 

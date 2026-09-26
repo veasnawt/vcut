@@ -7,12 +7,13 @@ import { startCheckout } from "../api/billing.ts";
 import { templatePosterUrl, templatePreviewUrl, type TemplateRow } from "../api/templates.ts";
 import { InsertTemplateCommand } from "../commands/index.ts";
 import { createProject } from "../project/createProject.ts";
-import { fillTemplateSlot, templateSlots, type TemplateSlot } from "../project/template.ts";
+import { fillTemplateSlot, pendingTemplateAiTasks, templateSlots, type TemplateSlot } from "../project/template.ts";
 import type { Asset, Project } from "../project/types.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
 import { REPLACE_FOOTAGE, ReplaceMediaDialog } from "./ReplaceMediaDialog.tsx";
+import { TemplateAiRunDialog } from "./TemplateAiRunDialog.tsx";
 import { useHorizontalScroll } from "./useHorizontalScroll.ts";
 
 type FeedMode = "mine" | "discover";
@@ -54,6 +55,16 @@ export function ImportTemplateDialog({ onClose }: { onClose: () => void }) {
   const [draftName, setDraftName] = useState("");
   const [fillTarget, setFillTarget] = useState<TemplateSlot | null>(null);
   const [inserting, setInserting] = useState(false);
+  // Set once the insert itself has landed on the live project — if it also carried pending AI steps
+  // (`Clip.templateAiSteps`, from a template whose author used a cutout/AI edit/object removal), those
+  // steps must actually run on the user's OWN just-picked media before it's what the timeline shows,
+  // same as the guided "start a new project from a template" flow already requires via this identical
+  // dialog. `instantiateTemplateContent` (what `InsertTemplateCommand` uses) carries `templateAiSteps`
+  // straight through onto the freshly-inserted clips' own ids, so `TemplateAiRunDialog` — entirely
+  // unmodified, and normally only ever mounted from `TemplateFillScreen.tsx` — works here for free: it
+  // reads whatever the CURRENT live project's pending tasks are and runs `runTemplateAiStep` (a store
+  // action already scoped to the live, real, server-saved project) against them directly.
+  const [aiRunOpen, setAiRunOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -161,8 +172,15 @@ export function ImportTemplateDialog({ onClose }: { onClose: () => void }) {
           draftName
         )
       );
-      setStatus(t('Inserted "{name}" into the timeline', { name: draftName }));
-      onClose();
+      // `run()` above applies synchronously, so the live project already reflects the insert here —
+      // `pendingTemplateAiTasks` needs to see the FRESH clip ids the insert just created, not the
+      // draft's own now-stale ones.
+      if (pendingTemplateAiTasks(useEditorStore.getState().project!).length > 0) {
+        setAiRunOpen(true);
+      } else {
+        setStatus(t('Inserted "{name}" into the timeline', { name: draftName }));
+        onClose();
+      }
     } finally {
       setInserting(false);
     }
@@ -362,6 +380,27 @@ export function ImportTemplateDialog({ onClose }: { onClose: () => void }) {
           onPick={(asset: Asset) => {
             setDraft((prev) => (prev ? fillTemplateSlot(prev, fillTarget.assetId, asset) : prev));
             setFillTarget(null);
+          }}
+        />
+      )}
+
+      {aiRunOpen && (
+        <TemplateAiRunDialog
+          onDone={() => {
+            setAiRunOpen(false);
+            setStatus(t('Inserted "{name}" into the timeline', { name: draftName }));
+            onClose();
+          }}
+          onStop={() => {
+            // The insert already happened for real — unlike the guided flow's own "Not now" (which just
+            // returns to its still-open Fill screen), there's no earlier step left to fall back to here.
+            // Closing leaves those clips showing their own raw, unprocessed picks rather than blocking
+            // the rest of the editor on an AI run the user chose to step away from — same "nothing is
+            // silently broken, just not yet what the template intended" state a clip with pending
+            // `templateAiSteps` always renders/exports as (see that field's own doc comment).
+            setAiRunOpen(false);
+            setStatus(t('Inserted "{name}" — some AI effects still need to run', { name: draftName }));
+            onClose();
           }}
         />
       )}
