@@ -143,21 +143,33 @@ export function applySliceGlitch(imageData: ImageData, elapsedSeconds: number, s
   }
 }
 
-/** The same Slice Glitch as an FFmpeg `geq` expression of the plane's own `X`/`Y`/`W`/`H` and time `T`, so an export renders
- *  the strips the preview shows (same hash, same burst clock). */
-export function sliceGlitchGeqExpression(speed = 1): string {
+/** The same Slice Glitch as FFmpeg filter lines, from the stream labelled `input` to `output`. Each strip is cropped out of the
+ *  frame and overlaid back at its shifted position, both with per-frame expressions of the time `t` (same hash and burst clock as
+ *  the preview), so the work is a few thin strips per frame. (This used to be one `geq=` expression over the whole frame; `geq`
+ *  evaluates its expression for every pixel, and at video resolution that took minutes per clip.) A strip that carries transparency
+ *  (a cutout) is added over the original rather than replacing it, so a shifted strip leaves a faint ghost behind. */
+export function buildSliceGlitchLines(input: string, output: string, speed = 1): string[] {
   const num = (v: number) => String(Math.round(v * 1e6) / 1e6);
-  const burst = `floor(T*${num(speed)}/${num(SLICE_GLITCH_BURST_SECONDS)})`;
+  const burst = `floor(t*${num(speed)}/${num(SLICE_GLITCH_BURST_SECONDS)})`;
   const rand = (seedExpr: string) => `((sin((${seedExpr})*12.9898)*43758.5453)-floor(sin((${seedExpr})*12.9898)*43758.5453))`;
-  const terms: string[] = [];
-  for (let index = 0; index < SLICE_GLITCH_COUNT; index++) {
-    const seed = `${burst}*7+${index * 3}`;
-    const top = `${rand(seed)}*${num(1 - SLICE_GLITCH_HEIGHT_FRACTION)}*H`;
-    const shift = `(${rand(`${seed}+1`)}*2-1)*${num(SLICE_GLITCH_MAX_SHIFT_FRACTION)}*W`;
-    // A strip of `band` rows starting at `top`: between() is inclusive, so stop one row short.
-    terms.push(`between(Y,round(${top}),round(${top})+round(${num(SLICE_GLITCH_HEIGHT_FRACTION)}*H)-1)*round(${shift})`);
+  const lines: string[] = [];
+  const count = SLICE_GLITCH_COUNT;
+  lines.push(`[${input}]split=${count + 1}[${output}_base]${Array.from({ length: count }, (_, i) => `[${output}_s${i}]`).join("")}`);
+  for (let i = 0; i < count; i++) {
+    const seed = `${burst}*7+${i * 3}`;
+    const topRows = `round(${rand(seed)}*${num(1 - SLICE_GLITCH_HEIGHT_FRACTION)}*ih)`;
+    lines.push(`[${output}_s${i}]crop=w=iw:h=round(${num(SLICE_GLITCH_HEIGHT_FRACTION)}*ih):x=0:y='${topRows}'[${output}_c${i}]`);
   }
-  return `p(X+${terms.join("+")},Y)`;
+  let previous = `${output}_base`;
+  for (let i = 0; i < count; i++) {
+    const seed = `${burst}*7+${i * 3}`;
+    const top = `round(${rand(seed)}*${num(1 - SLICE_GLITCH_HEIGHT_FRACTION)}*H)`;
+    const shift = `round((${rand(`${seed}+1`)}*2-1)*${num(SLICE_GLITCH_MAX_SHIFT_FRACTION)}*W)`;
+    const last = i === count - 1;
+    lines.push(`[${previous}][${output}_c${i}]overlay=x='-${shift}':y='${top}':eval=frame:format=auto[${last ? output : `${output}_o${i}`}]`);
+    previous = `${output}_o${i}`;
+  }
+  return lines;
 }
 
 /** Mutates `imageData` in place with a digital-corruption look: a per-frame RGB channel split (jumps

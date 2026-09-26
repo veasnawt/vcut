@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import { applySliceGlitch, sliceGlitchGeqExpression, sliceGlitchSlices, SLICE_GLITCH_COUNT } from "../src/timeline/pixelEffects.ts";
+import { applySliceGlitch, buildSliceGlitchLines, sliceGlitchSlices, SLICE_GLITCH_COUNT } from "../src/timeline/pixelEffects.ts";
 import { deserializeProject, serializeProject } from "../src/project/serialize.ts";
 import { findClip } from "../src/project/createProject.ts";
 import { emptyProject } from "./fixture.ts";
@@ -88,9 +88,10 @@ describe("Slice Glitch export matches the preview (real FFmpeg)", () => {
       fs.writeFileSync(rawIn, Buffer.from(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength));
       const rawOut = path.join(dir, "out.rgba");
       // T is the frame's timestamp: seek so frame 0 sits at `time` with setpts.
+      const graph = [`[0:v]format=rgba,setpts=PTS+${time}/TB[in]`, ...buildSliceGlitchLines("in", "out", 1)].join(";");
       execFileSync(
         ffmpeg!,
-        ["-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${width}x${height}`, "-framerate", "30", "-i", rawIn, "-vf", `format=gbrap,setpts=PTS+${time}/TB,geq=r='${sliceGlitchGeqExpression(1).replace(/p\(/g, "p(")}':g='${sliceGlitchGeqExpression(1)}':b='${sliceGlitchGeqExpression(1)}':a='${sliceGlitchGeqExpression(1)}'`, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-y", rawOut],
+        ["-v", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${width}x${height}`, "-framerate", "30", "-i", rawIn, "-filter_complex", graph, "-map", "[out]", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-y", rawOut],
         { stdio: "pipe" }
       );
       const exported = fs.readFileSync(rawOut);
@@ -101,13 +102,15 @@ describe("Slice Glitch export matches the preview (real FFmpeg)", () => {
       for (let y = 0; y < height; y++) {
         let rowDiff = 0;
         let rowMoved = false;
+        // Away from the left/right edge: where a strip moved away from an edge the preview stretches the edge pixel, while the export
+        // leaves the original picture showing — the one intended difference.
         for (let x = 0; x < width; x++) {
           const i = (y * width + x) * 4;
-          if (Math.abs(exported[i] - preview.data[i]) > 3) rowDiff++;
+          if (x >= 40 && x < width - 40 && Math.abs(exported[i] - preview.data[i]) > 3) rowDiff++;
           if (frame.data[i] !== preview.data[i]) rowMoved = true;
         }
         if (rowMoved) movedRows++;
-        if (rowDiff > width * 0.02) differingRows++;
+        if (rowDiff > (width - 80) * 0.02) differingRows++;
       }
       assert.ok(movedRows > 0, "the preview should move something at this time");
       assert.ok(differingRows <= 1, `${differingRows} of ${movedRows} moved rows differ between export and preview`);

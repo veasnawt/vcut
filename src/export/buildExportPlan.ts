@@ -54,7 +54,7 @@ import {
   WHIP_PAN_BLUR_RADIUS_PX,
   ZOOM_BLUR_SCALE,
   ZOOM_BLUR_SIGMA_PX,
-  sliceGlitchGeqExpression,
+  buildSliceGlitchLines,
 } from "../timeline/pixelEffects.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { findTransitionOut, findTransitionPartner } from "../timeline/transitions.ts";
@@ -676,9 +676,8 @@ function buildTransformFilters(params: {
       return `,geq=lum='${expr}':cb='${expr}':cr='${expr}'`;
     }
     if (pixelEffect.type === "sliceGlitch") {
-      // The alpha plane is shifted too (`a=`), so a cutout's outline and shape travel with each strip.
-      const expr = sliceGlitchGeqExpression(speed);
-      return `,geq=lum='${expr}':cb='${expr}':cr='${expr}':a='${expr}'`;
+      return ""; // built as its own filter branch below (`buildSliceGlitchLines`), not an inline filter
+
     }
     // "glitch"
     const shift = Math.round(GLITCH_SHIFT_PX * speed) || GLITCH_SHIFT_PX;
@@ -761,16 +760,21 @@ function buildTransformFilters(params: {
   // The outline is drawn on the FINISHED shape (after scale, crop padding and rotation), so its thickness is in real output
   // pixels and follows the rotated edge. It adds an even transparent margin on every side, which keeps the clip centred
   // where it was: the overlay below centres on the clip's own size.
-  const geometryChain =
-    `${mainChain}${needsCommaBefore ? "," : ""}${eqFilter}${curvesFilter ? `,${curvesFilter}` : ""}${lutFilter}${pixelEffectFilter}${flipFilter},${scaleFilter}${blurFilter}${padFilter}${animatedScale ? "" : `,${rotateFilter}`}`;
+  const sliceGlitch = pixelEffect?.type === "sliceGlitch";
+  const preGeometry = `${mainChain}${needsCommaBefore ? "," : ""}${eqFilter}${curvesFilter ? `,${curvesFilter}` : ""}${lutFilter}`;
+  const postGeometry = `${flipFilter},${scaleFilter}${blurFilter}${padFilter}${animatedScale ? "" : `,${rotateFilter}`}`;
+  // Slice Glitch is a small filter graph of its own (a few cropped strips overlaid back, shifted), so the chain is cut there.
+  const sliceLines = sliceGlitch ? buildSliceGlitchLines(`${outputLabel}_pe_in`, `${outputLabel}_pe_out`, pixelEffect?.speed ?? 1) : [];
+  const geometryChain = sliceGlitch ? `[${outputLabel}_pe_out]${postGeometry.replace(/^,/, "")}` : `${preGeometry}${pixelEffectFilter}${postGeometry}`;
   const finishTail = `setsar=1,fps=${fps},setpts=PTS-STARTPTS[${clipLabel}]`;
   const clipLines = hasOutline
     ? [
+        ...(sliceGlitch ? [`${preGeometry}[${outputLabel}_pe_in]`, ...sliceLines] : []),
         `${geometryChain}[${outputLabel}_prol]`,
         ...buildOutlineLines(`${outputLabel}_prol`, `${outputLabel}_olout`, outline!, n),
         `[${outputLabel}_olout]${opacityFilter ? `${opacityFilter.slice(1)},` : ""}${finishTail}`,
       ]
-    : [`${geometryChain}${opacityFilter},${finishTail}`];
+    : [...(sliceGlitch ? [`${preGeometry}[${outputLabel}_pe_in]`, ...sliceLines] : []), `${geometryChain}${opacityFilter},${finishTail}`];
 
   return [
     ...maskLines,
