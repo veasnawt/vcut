@@ -34,7 +34,7 @@ function TemplateCard({
         wide ? "w-full" : "w-[9.5rem] sm:w-40"
       } ${selected ? "border-sky-400 ring-1 ring-sky-400/70" : "border-white/10 hover:border-white/25"}`}
     >
-      <div className="relative aspect-[4/3] w-full overflow-hidden bg-[#0b0d13]">
+      <div className="relative aspect-square w-full overflow-hidden bg-[#0b0d13]">
         {!exampleFailed ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
