@@ -2733,6 +2733,21 @@ describe("buildExportPlan with transitions", () => {
     assert.ok(closeTo(duration, 10));
   });
 
+  it("exports at an even size when the project's own size is odd (libx264 refuses odd dimensions)", () => {
+    const base = emptyProject();
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    project = {
+      ...project,
+      sequence: { ...project.sequence, width: 941, height: 1672 },
+      exportSettings: { ...project.exportSettings, width: 941, height: 1672 },
+    };
+
+    const graph = filterGraph(plan(project).args);
+
+    assert.match(graph, /scale=940:1672:force_original_aspect_ratio=decrease,pad=940:1672/);
+    assert.ok(graph.endsWith("pad=940:1672:(ow-iw)/2:(oh-ih)/2,setsar=1[conformed]"), "the closing stage is even-sized");
+  });
+
   it("pads BOTH sides of a transition's audio so acrossfade never gets less than its duration (regression)", () => {
     // Real production failure: AI-generated clips often have an audio stream a little shorter than their picture. An
     // `acrossfade` longer than one of its inputs produces garbage samples (values around 1e31), and the server's AAC

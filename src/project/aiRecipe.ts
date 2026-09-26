@@ -26,14 +26,15 @@ export function estimateAiStepCredits(step: AiRecipeStep, seconds: number, isIma
   }
 }
 
-/** A short human label for a step ("Cutout", "AI Edit: make it anime"). */
+/** A short human label for a step ("Cutout", "AI Edit"). */
 export function aiStepLabel(step: AiRecipeStep): string {
   switch (step.tool) {
     case "cutout":
     case "video-cutout":
       return "Cutout";
     case "ai-edit":
-      return step.prompt ? `AI Edit: ${step.prompt}` : "AI Edit";
+      // The prompt is the template author's work and can run to a paragraph: people running a template see the step, not the words.
+      return "AI Edit";
     case "remove-object":
       return "Remove Object";
   }

@@ -2064,8 +2064,11 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
   // aspect ratio) while fixing the actual bug: every POSITION is now computed once, correctly, against
   // the canvas it was authored on, and only pure, uniform, distortion-free scaling happens afterward.
   const { width, height } = project.sequence;
-  const outputWidth = project.exportSettings.width;
-  const outputHeight = project.exportSettings.height;
+  // Rounded DOWN to an even number: libx264 with yuv420p refuses an odd width or height ("width not divisible by 2"), which is what
+  // a project sized from a photo or video with odd dimensions (941x1672, say) exported at its own size used to fail with. The
+  // closing scale/pad stage below then conforms the picture to the even size.
+  const outputWidth = Math.max(2, Math.floor(project.exportSettings.width / 2) * 2);
+  const outputHeight = Math.max(2, Math.floor(project.exportSettings.height / 2) * 2);
   // See `computeTextFadeOutExtendedDuration`'s own doc comment: a text clip's fade-out can visibly need
   // MORE time than `sequenceDuration`'s plain per-clip formula accounts for.
   const duration = Math.max(sequenceDuration(project), computeTextFadeOutExtendedDuration(project));
