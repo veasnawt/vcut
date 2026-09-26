@@ -204,6 +204,9 @@ export interface AiRecipeStep {
   tool: "cutout" | "video-cutout" | "ai-edit" | "remove-object";
   prompt?: string;
   strength?: "subtle" | "balanced" | "creative";
+  /** AI Edit: what to keep as it is, and how far to go (0 faithful .. 100 imaginative) — see `project/aiEdit.ts`. */
+  preserve?: ("face" | "pose" | "outfit" | "background")[];
+  creativity?: number;
   region?: { x: number; y: number; width: number; height: number };
   /** Video cutout: seconds into the ORIGINAL asset where the cutout file starts, so the preview can keep the cutout locked to
    *  the original's own picture (their files are not the same length or frame rate). */

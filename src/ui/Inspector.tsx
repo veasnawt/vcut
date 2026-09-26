@@ -1,5 +1,6 @@
 "use client";
 
+import { AI_EDIT_IMAGE_CREDITS } from "../project/aiEdit.ts";
 import React, { useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Ai, ChevronDown, Delete, Text, Upload, User } from "@veasnawt/vicons";
@@ -647,7 +648,7 @@ function SmartCutoutSection({ clipId }: { clipId: string }) {
             </div>
             <span className="font-semibold text-white text-[12px]">{t("AI Generative Edit")}</span>
           </div>
-          <span className="text-[10px] text-white/40">3 {t("credits")}</span>
+          <span className="text-[10px] text-white/40">{t("from")} {AI_EDIT_IMAGE_CREDITS} {t("credits")}</span>
         </div>
         <p className="text-[11px] text-white/45 leading-relaxed">
           {t("Transform visual style, replace scene elements, or alter outfits with text prompts.")}

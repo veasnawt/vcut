@@ -228,6 +228,8 @@ function parseAiStep(value: unknown): AiRecipeStep | undefined {
     tool: r.tool as AiRecipeStep["tool"],
     ...(typeof r.prompt === "string" ? { prompt: r.prompt.slice(0, 500) } : null),
     ...(r.strength === "subtle" || r.strength === "balanced" || r.strength === "creative" ? { strength: r.strength } : null),
+    ...(Array.isArray(r.preserve) ? { preserve: (["face", "pose", "outfit", "background"] as const).filter((k) => (r.preserve as unknown[]).includes(k)) } : null),
+    ...(typeof r.creativity === "number" && Number.isFinite(r.creativity) ? { creativity: Math.min(100, Math.max(0, Math.round(r.creativity))) } : null),
     ...(validRegion ? { region: validRegion } : null),
     ...(typeof r.sourceStart === "number" && Number.isFinite(r.sourceStart) && r.sourceStart >= 0 ? { sourceStart: r.sourceStart } : null),
     ...(r.keepAudio === true ? { keepAudio: true } : null),

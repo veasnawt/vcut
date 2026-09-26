@@ -97,7 +97,7 @@ export function buildAiFramePngArgs(
 export function buildCutoutInputArgs(
   input: string,
   output: string,
-  opts: { startSeconds: number; durationSeconds: number; maxEdge?: number; fps?: number }
+  opts: { startSeconds: number; durationSeconds: number; maxEdge?: number; fps?: number; audio?: boolean }
 ): string[] {
   const edge = Math.max(2, Math.floor(opts.maxEdge ?? 720));
   const scale = `scale='min(${edge},iw)':'min(${edge},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2`;
@@ -105,7 +105,7 @@ export function buildCutoutInputArgs(
     "-ss", String(Math.max(0, opts.startSeconds)),
     "-i", input,
     "-t", String(opts.durationSeconds),
-    "-an",
+    ...(opts.audio ? ["-c:a", "aac", "-b:a", "128k", "-ac", "2"] : ["-an"]),
     "-vf", `fps=${opts.fps ?? 24},${scale},format=yuv420p`,
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
     "-movflags", "+faststart",

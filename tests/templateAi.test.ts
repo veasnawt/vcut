@@ -56,7 +56,8 @@ describe("AI recipe helpers", () => {
 
   it("prices each tool like its route", () => {
     assert.equal(estimateAiStepCredits({ tool: "cutout" }, 0, true), 3);
-    assert.equal(estimateAiStepCredits({ tool: "ai-edit" }, 0, true), 6);
+    assert.equal(estimateAiStepCredits({ tool: "ai-edit" }, 0, true), 16);
+    assert.equal(estimateAiStepCredits({ tool: "ai-edit" }, 4, false), 120);
     assert.equal(estimateAiStepCredits({ tool: "video-cutout" }, 6, false), 12);
     assert.equal(estimateAiStepCredits({ tool: "video-cutout" }, 1, false), 3);
     assert.equal(estimateAiStepCredits({ tool: "remove-object" }, 3.2, false), 64);

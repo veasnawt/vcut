@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check } from "@veasnawt/vicons";
 import { thumbnailUrl } from "../api/client.ts";
 import { templateAiSummary } from "../project/aiRecipe.ts";
+import { sequenceDuration } from "../project/createProject.ts";
 import { sanitizeProjectForTemplate, templateSlotCandidates } from "../project/template.ts";
 import { formatDuration } from "../timeline/time.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -44,6 +45,41 @@ export function SaveAsTemplateDialog({ onClose }: { onClose: () => void }) {
   }, [project]);
   const [uncheckedIds, setUncheckedIds] = useState<Set<string>>(new Set());
 
+  // The cover: whatever frame the preview shows at the chosen time, grabbed from the editor's own canvas (so it is exactly
+  // what the author sees), and sent along with the save. Without one the server grabs a frame from the rendered preview.
+  const setPlayhead = useEditorStore((s) => s.setPlayhead);
+  const startPlayhead = useRef(useEditorStore.getState().playhead);
+  const duration = project ? sequenceDuration(project) : 0;
+  const [coverTime, setCoverTime] = useState(() => {
+    const at = useEditorStore.getState().playhead;
+    // A playhead parked at 0 is usually a flash or a fade-in: start a little way in instead.
+    return at > 0.05 ? at : Math.min(duration * 0.15, Math.max(0, duration - 0.1));
+  });
+  const [cover, setCover] = useState<{ dataUrl: string; base64: string } | null>(null);
+  useEffect(() => {
+    if (duration <= 0) return;
+    setPlayhead(coverTime);
+    // Waits for the preview to finish seeking and draw the frame.
+    const timer = window.setTimeout(() => {
+      const source = document.querySelector<HTMLCanvasElement>("canvas[data-vcut-preview-canvas]");
+      if (!source || source.width === 0) return;
+      const scale = Math.min(1, 540 / source.width);
+      const out = document.createElement("canvas");
+      out.width = Math.max(2, Math.round(source.width * scale));
+      out.height = Math.max(2, Math.round(source.height * scale));
+      const ctx = out.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(source, 0, 0, out.width, out.height);
+      try {
+        const dataUrl = out.toDataURL("image/jpeg", 0.86);
+        setCover({ dataUrl, base64: dataUrl.slice(dataUrl.indexOf(",") + 1) });
+      } catch {
+        setCover(null);
+      }
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [coverTime, duration, setPlayhead]);
+
   function toggle(assetId: string) {
     setUncheckedIds((prev) => {
       const next = new Set(prev);
@@ -57,15 +93,21 @@ export function SaveAsTemplateDialog({ onClose }: { onClose: () => void }) {
     const trimmed = name.trim();
     if (!trimmed || busy) return;
     setBusy(true);
-    await saveAsTemplate(trimmed, [...uncheckedIds]);
+    await saveAsTemplate(trimmed, [...uncheckedIds], cover?.base64);
     setBusy(false);
+    setPlayhead(startPlayhead.current);
+    onClose();
+  }
+
+  function cancel() {
+    setPlayhead(startPlayhead.current);
     onClose();
   }
 
   return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
-      onClick={onClose}
+      onClick={cancel}
       role="dialog"
       aria-modal="true"
       aria-label={t("Save as template")}
@@ -88,6 +130,28 @@ export function SaveAsTemplateDialog({ onClose }: { onClose: () => void }) {
           autoFocus
           className="mt-3 w-full shrink-0 rounded-md border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/30 outline-none focus:border-sky-400"
         />
+
+        {duration > 0 && (
+          <div className="mt-4 flex shrink-0 items-center gap-3">
+            <div className="flex h-24 w-[3.4rem] shrink-0 items-center justify-center overflow-hidden rounded-md border border-white/10 bg-black/50" style={{ aspectRatio: project ? `${project.sequence.width} / ${project.sequence.height}` : undefined, width: "auto" }}>
+              {cover ? <img src={cover.dataUrl} alt={t("Cover")} className="h-full w-auto object-contain" draggable={false} /> : <span className="px-1 text-center text-[9px] text-white/35">{t("Loading…")}</span>}
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-medium text-white/50">{t("Cover")} · {formatDuration(coverTime)}</p>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(0.1, duration)}
+                step={0.05}
+                value={Math.min(coverTime, duration)}
+                onChange={(e) => setCoverTime(Number(e.target.value))}
+                aria-label={t("Cover frame")}
+                className="h-9 w-full cursor-pointer accent-sky-400"
+              />
+              <p className="text-[10px] leading-snug text-white/35">{t("The picture shown on the template before it plays.")}</p>
+            </div>
+          </div>
+        )}
 
         {candidates.length > 0 && projectId && (
           <div className="mt-4 flex min-h-0 flex-1 flex-col">
@@ -134,7 +198,7 @@ export function SaveAsTemplateDialog({ onClose }: { onClose: () => void }) {
         )}
 
         <div className="mt-5 flex shrink-0 items-center justify-end gap-2">
-          <button onClick={onClose} disabled={busy} className="rounded-md px-3 py-1.5 text-xs font-medium text-white/60 transition hover:bg-white/10 hover:text-white disabled:opacity-50">
+          <button onClick={cancel} disabled={busy} className="rounded-md px-3 py-1.5 text-xs font-medium text-white/60 transition hover:bg-white/10 hover:text-white disabled:opacity-50">
             {t("Cancel")}
           </button>
           <button

@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import * as api from "../api/client.ts";
+import { creativityFromStrength, type AiEditPreserve } from "../project/aiEdit.ts";
 import { ApiRequestError } from "../api/client.ts";
 import { reportError } from "../api/crashLog.ts";
-import type { AiAspectRatio, AiImageModel, AiVideoProgress, CaptionSegment, SourceRect, StickerSearchResult, StockSearchResult } from "../api/client.ts";
+import type { AiAspectRatio, AiEditRequestOptions, AiImageModel, AiVideoProgress, CaptionSegment, SourceRect, StickerSearchResult, StockSearchResult } from "../api/client.ts";
 import type { ClipboardEntry, Command } from "../commands/index.ts";
 import {
   AddCaptionsCommand,
@@ -572,7 +573,10 @@ export interface EditorState {
   createTextBehindSubject: (clipId: string, initialText?: string) => Promise<void>;
   aiEditModalClipId: string | null;
   openAiEdit: (clipId: string | null) => void;
-  runAiEdit: (clipId: string, prompt: string, strength?: "subtle" | "balanced" | "creative") => Promise<Asset>;
+  /** AI Edit on a picture (or the playhead frame of a video clip). */
+  runAiEdit: (clipId: string, prompt: string, options?: AiEditRequestOptions) => Promise<Asset>;
+  /** AI Edit on a whole video clip: a job that takes minutes. `onProgress` gets 0..1; `cancel` stops it. */
+  startAiVideoEdit: (clipId: string, prompt: string, options?: AiEditRequestOptions, onProgress?: (fraction: number) => void) => { done: Promise<Asset>; cancel: () => void };
   removeAsset: (asset: Asset) => Promise<void>;
   /** Places a user's account-wide library item (from `MediaLibrary.tsx`'s own "All my media" view — see
    *  `api.LibraryMediaItem`'s own doc comment) into THIS project, as a real, placeable `Asset`. Pure and
@@ -643,7 +647,7 @@ export interface EditorState {
    *  `api.saveAsTemplate`'s own doc comment for exactly what's kept vs. dropped). Reports success/
    *  failure via `setStatus`, the same fire-and-toast shape `removeFont` above already has — nothing
    *  else in the editor needs to react to a template existing, unlike an asset/clip mutation. */
-  saveAsTemplate: (name: string, keepAssetIds?: string[]) => Promise<void>;
+  saveAsTemplate: (name: string, keepAssetIds?: string[], coverBase64?: string) => Promise<void>;
   /** Creates a color-matte asset AND immediately places it as a clip at the playhead — same
    *  "lands the result somewhere visible in one action" shape `commitComposedText` gives the Text
    *  tool, just on a VIDEO track (a color matte is just a video-track clip whose source is a solid
@@ -757,6 +761,14 @@ const undoStack = new UndoStack();
 
 /** Results of template AI steps already run in this session, so clips of the same footage and length (a cutout and its stacked
  *  copies) reuse one run instead of paying for it again. Keyed by project, asset, tool and source window. */
+/** What an AI Edit step records about the options it ran with, so a template can repeat it. */
+function aiEditStepOptions(options: AiEditRequestOptions): { preserve?: AiEditPreserve[]; creativity?: number } {
+  return {
+    ...(options.preserve && options.preserve.length ? { preserve: options.preserve } : null),
+    ...(options.creativity !== undefined ? { creativity: options.creativity } : null),
+  };
+}
+
 const templateAiResults = new Map<string, { asset: Asset; keyColor?: string; windowSeconds?: number }>();
 
 let aiTaskCounter = 0;
@@ -1879,7 +1891,7 @@ export const useEditorStore = create<EditorState>((set, get) => {
       set({ aiEditModalClipId: clipId });
     },
 
-    async runAiEdit(clipId, prompt, strength = "balanced") {
+    async runAiEdit(clipId, prompt, options = {}) {
       const { projectId, project } = get();
       if (!projectId || !project) throw new Error("Project not loaded");
       const found = findClip(project, clipId);
@@ -1888,15 +1900,43 @@ export const useEditorStore = create<EditorState>((set, get) => {
       if (!asset) throw new Error("Asset not found");
 
       const newAsset = withAiOrigin(
-        await api.runAiEdit(projectId, asset.id, clipId, prompt, strength, sourceTimeAtPlayhead(found.clip, get().playhead)),
+        await api.runAiEdit(projectId, asset.id, clipId, prompt, options, sourceTimeAtPlayhead(found.clip, get().playhead)),
         asset.id,
-        { tool: "ai-edit", prompt, strength }
+        { tool: "ai-edit", prompt, ...aiEditStepOptions(options) }
       );
       const current = get().project;
       if (current) {
         applyProject({ ...current, assets: [...current.assets, newAsset] });
       }
       return newAsset;
+    },
+
+    startAiVideoEdit(clipId, prompt, options = {}, onProgress) {
+      let cancelled = false;
+      let cancelJob: () => void = () => {};
+      const done = (async () => {
+        const { projectId, project } = get();
+        if (!projectId || !project) throw new Error("Project not loaded");
+        const found = findClip(project, clipId);
+        const asset = found ? findAsset(project, found.clip.assetId) : undefined;
+        if (!found || !asset) throw new Error("Clip not found");
+        // The server reads the clip and its source window from the SAVED project.
+        await get().save();
+        if (cancelled) throw new Error("AI Edit was cancelled");
+        const job = api.runAiVideoEdit(projectId, clipId, prompt, options, onProgress);
+        cancelJob = job.cancel;
+        const edited = withAiOrigin(await job.done, asset.id, { tool: "ai-edit", prompt, ...aiEditStepOptions(options) });
+        const current = get().project;
+        if (current) applyProject({ ...current, assets: [...current.assets, edited] });
+        return edited;
+      })();
+      return {
+        done,
+        cancel: () => {
+          cancelled = true;
+          cancelJob();
+        },
+      };
     },
 
     async removeAsset(asset) {
@@ -1991,8 +2031,19 @@ export const useEditorStore = create<EditorState>((set, get) => {
             get().run(new SwapClipAssetCommand(clipId, withAiOrigin(result, asset.id, step)));
           }
         } else if (step.tool === "ai-edit") {
-          const result = await api.runAiEdit(projectId, asset.id, clipId, step.prompt ?? "", step.strength ?? "balanced");
-          get().run(new SwapClipAssetCommand(clipId, withAiOrigin(result, asset.id, step)));
+          const options: AiEditRequestOptions = { preserve: step.preserve, creativity: step.creativity ?? creativityFromStrength(step.strength) };
+          if (asset.kind === "video") {
+            const cacheKey = `${projectId}|${asset.id}|ai-edit|${step.prompt}|${options.creativity}|${(options.preserve ?? []).join(",")}|${found.clip.sourceIn}|${found.clip.sourceOut}`;
+            let edited = templateAiResults.get(cacheKey)?.asset;
+            if (!edited) {
+              edited = await api.runAiVideoEdit(projectId, clipId, step.prompt ?? "", options).done;
+              templateAiResults.set(cacheKey, { asset: edited });
+            }
+            get().run(new ReplaceClipAssetCommand(clipId, withAiOrigin(edited, asset.id, step)));
+          } else {
+            const result = await api.runAiEdit(projectId, asset.id, clipId, step.prompt ?? "", options);
+            get().run(new SwapClipAssetCommand(clipId, withAiOrigin(result, asset.id, step)));
+          }
         } else {
           const rect = step.region ? denormalizeRegion(step.region, asset) : null;
           if (!rect) return { ok: false, error: "The area to erase can't be worked out for this media" };
@@ -2146,12 +2197,13 @@ export const useEditorStore = create<EditorState>((set, get) => {
       }
     },
 
-    async saveAsTemplate(name, keepAssetIds) {
+    async saveAsTemplate(name, keepAssetIds, coverBase64) {
       const { projectId } = get();
       if (!projectId) return;
       try {
-        await api.saveAsTemplate(projectId, name, keepAssetIds);
-        get().setStatus(translateText(get().language, 'Saved "{name}" as a template', { name }));
+        await api.saveAsTemplate(projectId, name, keepAssetIds, coverBase64);
+        // The template itself is stored, but its preview video renders in the background for a few minutes.
+        get().setStatus(translateText(get().language, 'Saved "{name}". Its preview is still rendering and will show in Templates in a few minutes.', { name }));
       } catch (err) {
         const message = err instanceof Error ? err.message : "Could not save that template";
         get().setStatus(translateText(get().language, message), "error");

@@ -30,6 +30,7 @@ export interface TemplateRow {
   ownerId: string;
   /** See `hostedClient.ts`'s own `TemplateRow.aiCredits`. */
   aiCredits?: number;
+  previewReady?: boolean;
   creatorDisplayName?: string | null;
   likeCount?: number;
   commentCount?: number;

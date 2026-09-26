@@ -1,5 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import { getAccessToken, getCachedAccessToken } from "@veasnawt/auth";
+import type { AiEditPreserve } from "../project/aiEdit.ts";
 import { deserializeProject } from "../project/serialize.ts";
 import type { TemplateProjectData } from "../project/template.ts";
 import type { StickerProvider, StickerType } from "../project/stickers.ts";
@@ -694,25 +695,83 @@ export async function cutoutVideoClip(projectId: string, clipId: string, keepAud
   return { asset: await importMedia(projectId, file), keyColor: body.keyColor, windowSeconds: body.windowSeconds };
 }
 
-/** AI Edit — applies user's text prompt to an image/video frame using instruction-based editing. */
+export interface AiEditRequestOptions {
+  /** What must stay as it is (see `project/aiEdit.ts`). */
+  preserve?: AiEditPreserve[];
+  /** 0 faithful .. 100 imaginative. */
+  creativity?: number;
+}
+
+/** AI Edit on a picture — applies the user's instruction to an image (or the playhead frame of a video). Synchronous:
+ *  a still takes seconds. For a whole video clip use `runAiVideoEdit`. */
 export async function runAiEdit(
   projectId: string,
   assetId: string,
   clipId: string | undefined,
   prompt: string,
-  strength: "subtle" | "balanced" | "creative" = "balanced",
+  options: AiEditRequestOptions = {},
   timeSeconds?: number
 ): Promise<Asset> {
   const deliverBytes = !HOSTED;
   const response = await centralFetch(`/ai-edit?projectId=${encodeURIComponent(projectId)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ assetId, clipId, prompt, strength, deliverBytes, timeSeconds }),
+    body: JSON.stringify({ assetId, clipId, prompt, preserve: options.preserve, creativity: options.creativity, deliverBytes, timeSeconds }),
   });
   const body = await unwrap<{ asset: Asset; bytesBase64?: string }>(response);
   if (!body.bytesBase64) return body.asset;
   const file = new File([base64ToBytes(body.bytesBase64).buffer as ArrayBuffer], body.asset.name, { type: "image/png" });
   return importMedia(projectId, file);
+}
+
+/** AI Edit on a whole video clip (`ai-edit/video/route.ts`) — a job that takes minutes, watched over SSE like AI video
+ *  generation. Resolves with the edited clip's asset; `onProgress` gets 0..1. `cancel` stops the job. */
+export function runAiVideoEdit(
+  projectId: string,
+  clipId: string,
+  prompt: string,
+  options: AiEditRequestOptions = {},
+  onProgress?: (fraction: number) => void
+): { done: Promise<Asset>; cancel: () => void } {
+  let jobId: string | null = null;
+  let stop: (() => void) | null = null;
+  let cancelled = false;
+  const done = new Promise<Asset>((resolve, reject) => {
+    void (async () => {
+      try {
+        const response = await centralFetch(`/ai-edit/video?projectId=${encodeURIComponent(projectId)}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clipId, prompt, preserve: options.preserve, creativity: options.creativity, deliverBytes: !HOSTED }),
+        });
+        const started = await unwrap<AiVideoStarted>(response);
+        jobId = started.jobId;
+        if (cancelled) return void centralFetch(`/ai-edit/video?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
+        stop = watchAiVideo(
+          projectId,
+          started.jobId,
+          (update) => {
+            onProgress?.(update.progress);
+            if (update.status === "done" && update.asset) resolve(update.asset);
+            else if (update.status === "failed") reject(new Error(update.error ?? "AI Edit failed"));
+            else if (update.status === "cancelled") reject(new Error("AI Edit was cancelled"));
+          },
+          (message) => reject(new Error(message)),
+          "/ai-edit/video"
+        );
+      } catch (err) {
+        reject(err);
+      }
+    })();
+  });
+  return {
+    done,
+    cancel: () => {
+      cancelled = true;
+      stop?.();
+      if (jobId) void centralFetch(`/ai-edit/video?jobId=${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
+    },
+  };
 }
 
 export interface AiVideoStarted {
@@ -763,9 +822,11 @@ export function watchAiVideo(
   projectId: string,
   jobId: string,
   onUpdate: (progress: AiVideoProgress) => void,
-  onError: (message: string) => void
+  onError: (message: string) => void,
+  /** Which job route to watch: AI video generation, or `/ai-edit/video`. */
+  route = "/ai-video"
 ): () => void {
-  const source = new EventSource(centralSseUrl(`${BASE}/ai-video?jobId=${encodeURIComponent(jobId)}`));
+  const source = new EventSource(centralSseUrl(`${BASE}${route}?jobId=${encodeURIComponent(jobId)}`));
 
   source.onmessage = (event) => {
     void (async () => {
@@ -1673,11 +1734,11 @@ export async function captionsAvailable(): Promise<boolean> {
  *  session in the first place. */
 /** `keepAssetIds`: which of `templateSlotCandidates`' own candidates the author chose to keep FIXED
  *  rather than let become a fillable slot — see `SaveAsTemplateDialog.tsx`'s own checklist. */
-export async function saveAsTemplate(projectId: string, name: string, keepAssetIds?: string[]): Promise<{ id: string; name: string }> {
+export async function saveAsTemplate(projectId: string, name: string, keepAssetIds?: string[], coverBase64?: string): Promise<{ id: string; name: string }> {
   const response = await apiFetch(`${BASE}/templates`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ projectId, name, keepAssetIds }),
+    body: JSON.stringify({ projectId, name, keepAssetIds, ...(coverBase64 ? { coverBase64 } : null) }),
   });
   return unwrap<{ id: string; name: string }>(response);
 }

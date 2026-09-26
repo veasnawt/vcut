@@ -450,6 +450,7 @@ export function Preview({ onResizeStart }: { onResizeStart: (e: React.MouseEvent
               easy to mistake for each other with only `bg-black` against `bg-[#0a0c10]` before. */}
           <canvas
             ref={setCanvas}
+            data-vcut-preview-canvas=""
             onClick={handleCanvasClick}
             className="bg-black shadow-2xl ring-1 ring-white/15"
             style={{ width: `${displaySize?.width ?? 1}px`, height: `${displaySize?.height ?? 1}px` }}

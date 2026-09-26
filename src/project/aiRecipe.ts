@@ -1,11 +1,12 @@
 import { clipDuration } from "./createProject.ts";
+import { AI_EDIT_IMAGE_CREDITS, aiEditVideoCredits } from "./aiEdit.ts";
 import type { AiRecipeStep, Asset, Clip } from "./types.ts";
 
 /** Credit prices of the AI tools, mirrored from the routes that charge them (`ai-background-remove`, `ai-edit`,
  *  `ai-video-cutout`, `inpaint/predict`) so a template can quote its total BEFORE anyone runs it. Keep in step with
  *  the server constants. */
 export const AI_CUTOUT_CREDITS = 3;
-export const AI_EDIT_CREDITS = 6;
+export const AI_EDIT_CREDITS = AI_EDIT_IMAGE_CREDITS;
 export const VIDEO_CUTOUT_CREDITS_PER_SECOND = 2;
 export const VIDEO_CUTOUT_MIN_CREDITS = 3;
 export const REMOVE_OBJECT_IMAGE_CREDITS = 16;
@@ -17,7 +18,7 @@ export function estimateAiStepCredits(step: AiRecipeStep, seconds: number, isIma
     case "cutout":
       return AI_CUTOUT_CREDITS;
     case "ai-edit":
-      return AI_EDIT_CREDITS;
+      return isImage ? AI_EDIT_CREDITS : aiEditVideoCredits(seconds);
     case "video-cutout":
       return Math.max(VIDEO_CUTOUT_MIN_CREDITS, Math.ceil(Math.max(0, seconds) * VIDEO_CUTOUT_CREDITS_PER_SECOND));
     case "remove-object":
