@@ -3,6 +3,7 @@ import { getAccessToken, getCachedAccessToken } from "@veasnawt/auth";
 import type { AiEditPreserve } from "../project/aiEdit.ts";
 import { deserializeProject } from "../project/serialize.ts";
 import type { TemplateProjectData } from "../project/template.ts";
+import type { TemplateRow } from "./templates.ts";
 import type { StickerProvider, StickerType } from "../project/stickers.ts";
 import type { MusicCategory, MusicTrack } from "../project/music.ts";
 import type { Asset, CustomFontAsset, CustomSfxAsset, LutAsset, Project } from "../project/types.ts";
@@ -267,6 +268,40 @@ export async function loadTemplateForDraft(templateId: string): Promise<{ name: 
   if (isNative) return nativeLoadTemplateForDraft(templateId);
   const response = await apiFetch(`${BASE}/templates/${encodeURIComponent(templateId)}/project`, { cache: "no-store" });
   return unwrap<{ name: string; project: TemplateProjectData }>(response);
+}
+
+/** Whether the in-editor Templates tool (`ImportTemplateDialog.tsx`) can run at all right now — hosted
+ *  web and desktop both reach the live templates API through this same file's own `apiFetch`/`BASE`, the
+ *  same way `loadTemplateForDraft` above already does; native has no server of its own to route through
+ *  and isn't wired up for this yet (see this feature's own doc comment on `importTemplateIntoProject`
+ *  for the honest scope cut — a future pass would add a `nativeStorage.ts` counterpart the same way
+ *  every other template function here already has one). */
+export const templateImportAvailable = !isNative;
+
+/** Every template the CALLER can browse from inside the editor's own "Templates" tool — "mine" (private
+ *  and published, same set `GET /api/vcut/templates` already lists in the Templates TAB) or "discover"
+ *  (everyone else's published ones). Read-only; the dialog itself does its own client-side search/tag
+ *  filtering over whatever this returns, same as the Templates tab. */
+export async function listTemplatesForImport(mode: "mine" | "discover"): Promise<TemplateRow[]> {
+  const response = await apiFetch(`${BASE}/templates${mode === "discover" ? "/discover" : ""}`, { cache: "no-store" });
+  const body = await unwrap<{ templates: TemplateRow[] }>(response);
+  return body.templates;
+}
+
+/** Resolves one template for the in-editor Templates tool: real audio (copied into the CALLER's own
+ *  library, same as starting a brand-new project from a template does — see `templates/[id]/import/
+ *  route.ts`'s own doc comment for exactly why this one performs that copy immediately rather than
+ *  deferring it the way the draft-preview route above does), video/image clips still placeholders for
+ *  `ImportTemplateDialog.tsx`'s own "fill these slots" step to resolve. `projectId` is the project this
+ *  will be inserted INTO — required so the server can prove it's a real project the caller owns before
+ *  doing any of that real work on their behalf. */
+export async function importTemplateIntoProject(templateId: string, projectId: string): Promise<{ name: string; tags: string[]; project: TemplateProjectData }> {
+  const response = await apiFetch(`${BASE}/templates/${encodeURIComponent(templateId)}/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projectId }),
+  });
+  return unwrap<{ name: string; tags: string[]; project: TemplateProjectData }>(response);
 }
 
 /** Creates a real project from a template — the server builds it, and copies the template's bundled
@@ -1740,11 +1775,17 @@ export async function captionsAvailable(): Promise<boolean> {
  *  session in the first place. */
 /** `keepAssetIds`: which of `templateSlotCandidates`' own candidates the author chose to keep FIXED
  *  rather than let become a fillable slot — see `SaveAsTemplateDialog.tsx`'s own checklist. */
-export async function saveAsTemplate(projectId: string, name: string, keepAssetIds?: string[], coverBase64?: string): Promise<{ id: string; name: string }> {
+export async function saveAsTemplate(
+  projectId: string,
+  name: string,
+  keepAssetIds?: string[],
+  coverBase64?: string,
+  tags?: string[]
+): Promise<{ id: string; name: string }> {
   const response = await apiFetch(`${BASE}/templates`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ projectId, name, keepAssetIds, ...(coverBase64 ? { coverBase64 } : null) }),
+    body: JSON.stringify({ projectId, name, keepAssetIds, ...(coverBase64 ? { coverBase64 } : null), ...(tags && tags.length ? { tags } : null) }),
   });
   return unwrap<{ id: string; name: string }>(response);
 }

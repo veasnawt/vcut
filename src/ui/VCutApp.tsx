@@ -34,13 +34,14 @@ import {
   Settings,
   Split,
   Star,
+  Store,
   Text,
   Video,
   Upload,
   Volume,
 } from "@veasnawt/vicons";
 import { startCheckout } from "../api/billing.ts";
-import { CREDITS_ENABLED, thumbnailUrl } from "../api/client.ts";
+import { CREDITS_ENABLED, templateImportAvailable, thumbnailUrl } from "../api/client.ts";
 import { reportError } from "../api/crashLog.ts";
 import { isDesktopSignInAvailable, openDesktopSignIn, subscribeToDesktopAuthCallback } from "../api/desktopAuth.ts";
 import { subscribeToNativeAuthCallback } from "../api/nativeAuth.ts";
@@ -81,6 +82,7 @@ import { MobileSignInDialog } from "./MobileSignInDialog.tsx";
 import { NewTextComposer } from "./NewTextComposer.tsx";
 import { SaveConflictDialog } from "./SaveConflictDialog.tsx";
 import { PixelEffectPickerMenu } from "./PixelEffectPickerMenu.tsx";
+import { ImportTemplateDialog } from "./ImportTemplateDialog.tsx";
 import { SaveAsTemplateDialog } from "./SaveAsTemplateDialog.tsx";
 import { StylePickerMenu } from "./StylePickerMenu.tsx";
 import { addDragListeners, clientPoint, preventDefaultIfMouse } from "./pointerEvents.ts";
@@ -354,6 +356,7 @@ function StatusBar({
   const [showMusic, setShowMusic] = useState(false);
   const [showSfx, setShowSfx] = useState(false);
   const [showStickers, setShowStickers] = useState(false);
+  const [showImportTemplate, setShowImportTemplate] = useState(false);
   const [showVoiceRecord, setShowVoiceRecord] = useState(false);
   const [aiEditClipId, setAiEditClipId] = useState<string | null>(null);
   const composeTextActive = useEditorStore((s) => s.composeText !== null);
@@ -1120,6 +1123,16 @@ function StatusBar({
             <ToolbarButton title={t("Stickers and GIFs")} label={t("Stickers")} active={showStickers} onClick={() => toggleToolbarTool(showStickers, setShowStickers)}>
               <Emoji size={18} />
             </ToolbarButton>
+            {templateImportAvailable && (
+              <ToolbarButton
+                title={t("Insert a template's own edit into this timeline")}
+                label={t("Templates")}
+                active={showImportTemplate}
+                onClick={() => toggleToolbarTool(showImportTemplate, setShowImportTemplate)}
+              >
+                <Store size={18} />
+              </ToolbarButton>
+            )}
             <ToolbarButton
               ref={colorButtonRef}
               title={t("Add a color background")}
@@ -1460,6 +1473,7 @@ function StatusBar({
       {showMusic && <MusicPanel onClose={() => setShowMusic(false)} />}
       {showSfx && <SfxPanel onClose={() => setShowSfx(false)} />}
       {showStickers && <StickersPanel onClose={() => setShowStickers(false)} />}
+      {showImportTemplate && <ImportTemplateDialog onClose={() => setShowImportTemplate(false)} />}
       {(aiEditClipId || aiEditModalClipId) && (
         <AiEditModal
           clipId={(aiEditClipId || aiEditModalClipId)!}

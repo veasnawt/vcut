@@ -31,6 +31,8 @@ export interface TemplateRow {
   /** See `hostedClient.ts`'s own `TemplateRow.aiCredits`. */
   aiCredits?: number;
   previewReady?: boolean;
+  /** See `hostedClient.ts`'s own `TemplateRow.tags`. `[]`, never absent. */
+  tags: string[];
   creatorDisplayName?: string | null;
   likeCount?: number;
   commentCount?: number;

@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   fillTemplateSlot,
   buildProjectFromTemplate,
+  instantiateTemplateContent,
   sanitizeProjectForTemplate,
   setTemplateClipText,
   templateAudioAssets,
@@ -13,6 +14,7 @@ import {
   templateVideoAssets,
   trimTemplateSlot,
 } from "../src/project/template.ts";
+import { InsertTemplateCommand } from "../src/commands/index.ts";
 import { addClip, addTrack, setClipTransform } from "../src/timeline/operations.ts";
 import {
   audioAsset,
@@ -332,6 +334,66 @@ describe("buildProjectFromTemplate", () => {
 
     assert.ok(built.sequence.tracks.some((t) => t.kind === "audio"), "expected an audio track to survive");
     assert.equal(clipsOf(built, audioTrackId(built)).length, 0);
+  });
+});
+
+describe("instantiateTemplateContent", () => {
+  it("is what buildProjectFromTemplate is built on: offset 0 gives identical tracks/assets", () => {
+    let base = emptyProject([colorAsset(), textAsset()]);
+    base = addTrack(base, "text");
+    let project = addClip(base, videoTrackId(base), "color1", 0);
+    project = addClip(project, textTrackId(project), "text1", 2);
+    const template = sanitizeProjectForTemplate(project);
+
+    const built = buildProjectFromTemplate("bp-compare", "Compare", template);
+    const { assets, tracks } = instantiateTemplateContent(template);
+
+    assert.deepEqual(
+      tracks.map((t) => ({ kind: t.kind, clips: t.clips.map((c) => c.timelineStart) })),
+      built.sequence.tracks.map((t) => ({ kind: t.kind, clips: t.clips.map((c) => c.timelineStart) }))
+    );
+    assert.equal(assets.length, built.assets.length);
+  });
+
+  it("shifts every clip's timelineStart by offsetSeconds, on every track", () => {
+    let base = emptyProject([videoAsset(), textAsset()]);
+    base = addTrack(base, "text");
+    let project = addClip(base, videoTrackId(base), "asset1", 0);
+    project = addClip(project, textTrackId(project), "text1", 3);
+    const template = sanitizeProjectForTemplate(project);
+
+    const { tracks } = instantiateTemplateContent(template, 10);
+
+    const videoTrack = tracks.find((t) => t.kind === "video" && t.clips.length > 0)!;
+    const textTrack = tracks.find((t) => t.kind === "text")!;
+    assert.equal(videoTrack.clips[0].timelineStart, 10);
+    assert.equal(textTrack.clips[0].timelineStart, 13);
+  });
+
+  it("never lets a clip land before 0, even with a large negative offset", () => {
+    const base = emptyProject([videoAsset()]);
+    const project = addClip(base, videoTrackId(base), "asset1", 5);
+    const template = sanitizeProjectForTemplate(project);
+
+    const { tracks } = instantiateTemplateContent(template, -100);
+
+    const videoTrack = tracks.find((t) => t.clips.length > 0)!;
+    assert.equal(videoTrack.clips[0].timelineStart, 0);
+  });
+
+  it("re-mints every id fresh on each call, so two instantiations of the same template never collide", () => {
+    const base = emptyProject([videoAsset()]);
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const template = sanitizeProjectForTemplate(project);
+
+    const first = instantiateTemplateContent(template);
+    const second = instantiateTemplateContent(template);
+
+    assert.notEqual(first.assets[0].id, second.assets[0].id);
+    assert.notEqual(first.tracks[0].id, second.tracks[0].id);
+    const firstClip = first.tracks.flatMap((t) => t.clips)[0];
+    const secondClip = second.tracks.flatMap((t) => t.clips)[0];
+    assert.notEqual(firstClip.id, secondClip.id);
   });
 });
 
@@ -688,5 +750,50 @@ describe("setTemplateClipText", () => {
     const project = addClip(base, videoTrackId(base), "v1", 0);
     const untouched = setTemplateClipText(project, "nonexistent-id", "New text");
     assert.deepEqual(untouched, project);
+  });
+});
+
+describe("InsertTemplateCommand", () => {
+  it("merges the resolved template's tracks/assets after the project's own, offset to the given point", () => {
+    let base = emptyProject([videoAsset("existing")]);
+    let project = addClip(base, videoTrackId(base), "existing", 0);
+    const originalTrackCount = project.sequence.tracks.length;
+    const originalAssetCount = project.assets.length;
+
+    const templateBase = emptyProject([videoAsset("tpl")]);
+    const templateProject = addClip(templateBase, videoTrackId(templateBase), "tpl", 0);
+    const resolved = sanitizeProjectForTemplate(templateProject);
+
+    const command = new InsertTemplateCommand(resolved, 20);
+    const result = command.apply(project);
+
+    assert.equal(result.sequence.tracks.length, originalTrackCount + resolved.tracks.length);
+    assert.equal(result.assets.length, originalAssetCount + resolved.assets.length);
+    // Appended, not interleaved — the pre-existing track (and its clip) is exactly where it was.
+    assert.equal(clipsOf(result, videoTrackId(result))[0].timelineStart, 0);
+    // The inserted content lands at the given offset, on a brand-new track.
+    const insertedTrack = result.sequence.tracks.find((t) => command.createdTrackIds.includes(t.id))!;
+    assert.equal(insertedTrack.clips[0].timelineStart, 20);
+  });
+
+  it("undoes back to the exact project it started from", () => {
+    const base = emptyProject([videoAsset("existing")]);
+    const project = addClip(base, videoTrackId(base), "existing", 0);
+    const templateBase = emptyProject([videoAsset("tpl")]);
+    const templateProject = addClip(templateBase, videoTrackId(templateBase), "tpl", 0);
+    const resolved = sanitizeProjectForTemplate(templateProject);
+
+    const command = new InsertTemplateCommand(resolved, 0);
+    command.apply(project);
+
+    assert.deepEqual(command.revert(), project);
+  });
+
+  it("throws a clear error if undone before ever being applied", () => {
+    const templateBase = emptyProject([videoAsset("tpl")]);
+    const templateProject = addClip(templateBase, videoTrackId(templateBase), "tpl", 0);
+    const resolved = sanitizeProjectForTemplate(templateProject);
+    const command = new InsertTemplateCommand(resolved, 0);
+    assert.throws(() => command.revert(), /never applied/);
   });
 });

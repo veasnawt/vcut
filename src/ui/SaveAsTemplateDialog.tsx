@@ -45,6 +45,27 @@ export function SaveAsTemplateDialog({ onClose }: { onClose: () => void }) {
   }, [project]);
   const [uncheckedIds, setUncheckedIds] = useState<Set<string>>(new Set());
 
+  // Free-form search words ("intro", "outro", "vlog", ...) — set once here, at save time (see
+  // `sanitizeTemplateTags` server-side for how these get normalized: lowercased, deduped, capped at 8
+  // tags of 24 characters). `tagInput` is whatever's still being typed, not yet committed to `tags`.
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState("");
+  function addTag(raw: string) {
+    const tag = raw.trim().toLowerCase().replace(/^#+/, "").slice(0, 24);
+    if (!tag || tags.includes(tag) || tags.length >= 8) return;
+    setTags((prev) => [...prev, tag]);
+  }
+  function commitTagInput() {
+    addTag(tagInput);
+    setTagInput("");
+  }
+  function removeTag(tag: string) {
+    setTags((prev) => prev.filter((t) => t !== tag));
+  }
+  // A few common ones, one tap each — the exact "intro"/"outro" case this feature was asked for, plus
+  // the other shapes a template search would realistically group by.
+  const TAG_SUGGESTIONS = ["intro", "outro", "vlog", "transition", "meme", "slideshow"];
+
   // The cover: whatever frame the preview shows at the chosen time, grabbed from the editor's own canvas (so it is exactly
   // what the author sees), and sent along with the save. Without one the server grabs a frame from the rendered preview.
   const setPlayhead = useEditorStore((s) => s.setPlayhead);
@@ -93,7 +114,7 @@ export function SaveAsTemplateDialog({ onClose }: { onClose: () => void }) {
     const trimmed = name.trim();
     if (!trimmed || busy) return;
     setBusy(true);
-    await saveAsTemplate(trimmed, [...uncheckedIds], cover?.base64);
+    await saveAsTemplate(trimmed, [...uncheckedIds], cover?.base64, tags);
     setBusy(false);
     setPlayhead(startPlayhead.current);
     onClose();
@@ -130,6 +151,53 @@ export function SaveAsTemplateDialog({ onClose }: { onClose: () => void }) {
           autoFocus
           className="mt-3 w-full shrink-0 rounded-md border border-white/15 bg-white/5 px-3 py-2 text-sm text-white placeholder:text-white/30 outline-none focus:border-sky-400"
         />
+
+        <div className="mt-3 shrink-0">
+          <p className="text-[11px] font-medium text-white/50">
+            {t("Tags")} <span className="font-normal text-white/30">{t("(optional — helps people find it later)")}</span>
+          </p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md border border-white/15 bg-white/5 px-2 py-1.5 focus-within:border-sky-400">
+            {tags.map((tag) => (
+              <span key={tag} className="flex items-center gap-1 rounded-full bg-sky-500/20 py-0.5 pl-2.5 pr-1 text-[11px] text-sky-200">
+                #{tag}
+                <button type="button" onClick={() => removeTag(tag)} aria-label={t("Remove tag {tag}", { tag })} className="rounded-full p-0.5 text-sky-200/70 hover:bg-white/10 hover:text-white">
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                    <path d="M6 6l12 12M18 6 6 18" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </span>
+            ))}
+            {tags.length < 8 && (
+              <input
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === ",") {
+                    e.preventDefault();
+                    commitTagInput();
+                  } else if (e.key === "Backspace" && !tagInput && tags.length > 0) {
+                    removeTag(tags[tags.length - 1]);
+                  }
+                }}
+                onBlur={commitTagInput}
+                placeholder={tags.length === 0 ? t("intro, outro, vlog…") : ""}
+                className="min-w-[6rem] flex-1 bg-transparent py-0.5 text-xs text-white placeholder:text-white/30 outline-none"
+              />
+            )}
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {TAG_SUGGESTIONS.filter((s) => !tags.includes(s)).map((suggestion) => (
+              <button
+                key={suggestion}
+                type="button"
+                onClick={() => addTag(suggestion)}
+                className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] text-white/50 transition hover:border-white/25 hover:text-white/80"
+              >
+                +{suggestion}
+              </button>
+            ))}
+          </div>
+        </div>
 
         {duration > 0 && (
           <div className="mt-4 flex shrink-0 items-center gap-3">

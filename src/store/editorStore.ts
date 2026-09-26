@@ -647,7 +647,7 @@ export interface EditorState {
    *  `api.saveAsTemplate`'s own doc comment for exactly what's kept vs. dropped). Reports success/
    *  failure via `setStatus`, the same fire-and-toast shape `removeFont` above already has — nothing
    *  else in the editor needs to react to a template existing, unlike an asset/clip mutation. */
-  saveAsTemplate: (name: string, keepAssetIds?: string[], coverBase64?: string) => Promise<void>;
+  saveAsTemplate: (name: string, keepAssetIds?: string[], coverBase64?: string, tags?: string[]) => Promise<void>;
   /** Creates a color-matte asset AND immediately places it as a clip at the playhead — same
    *  "lands the result somewhere visible in one action" shape `commitComposedText` gives the Text
    *  tool, just on a VIDEO track (a color matte is just a video-track clip whose source is a solid
@@ -2197,11 +2197,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
       }
     },
 
-    async saveAsTemplate(name, keepAssetIds, coverBase64) {
+    async saveAsTemplate(name, keepAssetIds, coverBase64, tags) {
       const { projectId } = get();
       if (!projectId) return;
       try {
-        await api.saveAsTemplate(projectId, name, keepAssetIds, coverBase64);
+        await api.saveAsTemplate(projectId, name, keepAssetIds, coverBase64, tags);
         // The template itself is stored, but its preview video renders in the background for a few minutes.
         get().setStatus(translateText(get().language, 'Saved "{name}". Its preview is still rendering and will show in Templates in a few minutes.', { name }));
       } catch (err) {

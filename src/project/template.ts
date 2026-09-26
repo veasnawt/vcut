@@ -204,9 +204,20 @@ export function templateSlotCandidates(project: Project): { asset: Asset; requir
  *  `mediaDir` right afterward and rewrites this entry to a completely normal, real asset before ever
  *  persisting or returning the project — by the time anything else sees it, `templateBundledAudio` is
  *  already gone. */
-export function buildProjectFromTemplate(bpProjectId: string, name: string, template: TemplateProjectData): Project {
-  const project = createProject(bpProjectId, name, { width: template.width, height: template.height, fps: template.fps });
-
+/** Builds a fresh, independent copy of a template's own tracks and assets — every id re-minted (so two
+ *  instantiations of the same template, or the same template used twice in one project, never collide),
+ *  every clip's `timelineStart` shifted by `offsetSeconds`. Shared by `buildProjectFromTemplate` below
+ *  (offset 0 — a brand-new project starts the template at its own beginning) and
+ *  `InsertTemplateCommand` (`commands/index.ts`, the in-editor "Templates" tool — see its own doc
+ *  comment): inserting a template into an ALREADY-open project's timeline is the same construction,
+ *  just landing at the playhead instead of at 0, and merged into that project's own tracks/assets
+ *  afterward rather than replacing them.
+ *
+ *  Track count and order are preserved exactly, empty tracks included — same shape `buildProjectFromTemplate`
+ *  already returned before this was extracted from it; a caller that wants to skip an empty track (the
+ *  in-editor insert flow does) filters the result itself rather than this shared helper deciding for
+ *  every caller. */
+export function instantiateTemplateContent(template: TemplateProjectData, offsetSeconds = 0): { assets: Asset[]; tracks: Track[] } {
   const assetIdMap = new Map<string, string>();
   const assets: Asset[] = template.assets.map((asset) => {
     if (asset.kind === "color") {
@@ -219,9 +230,11 @@ export function buildProjectFromTemplate(bpProjectId: string, name: string, temp
       assetIdMap.set(asset.id, fresh.id);
       return fresh;
     }
-    // video/image (still a placeholder) or audio (still bundled-but-not-yet-copied) — either way, a
-    // freshly-minted id like every other asset here; `project/route.ts`'s own POST handler resolves
-    // the audio case into a real asset right after this returns (see this function's own doc comment).
+    // video/image (still a placeholder unless the caller already filled it — see `fillTemplateSlot`'s
+    // own note on when that happens before this runs) or audio (still bundled-but-not-yet-copied,
+    // resolved by the caller — `resolveTemplateBundledAudio` — right after this returns, same as
+    // `buildProjectFromTemplate`'s own doc comment already explains) — either way, a freshly-minted id
+    // like every other asset here.
     const freshId = newId("tplasset");
     assetIdMap.set(asset.id, freshId);
     return { ...asset, id: freshId };
@@ -239,12 +252,18 @@ export function buildProjectFromTemplate(bpProjectId: string, name: string, temp
       .map((clip): Clip | null => {
         const assetId = assetIdMap.get(clip.assetId);
         if (!assetId) return null;
-        return { ...clip, id: newId("c"), assetId };
+        return { ...clip, id: newId("c"), assetId, timelineStart: Math.max(0, clip.timelineStart + offsetSeconds) };
       })
       .filter((c): c is Clip => c !== null);
     return fresh;
   });
 
+  return { assets, tracks };
+}
+
+export function buildProjectFromTemplate(bpProjectId: string, name: string, template: TemplateProjectData): Project {
+  const project = createProject(bpProjectId, name, { width: template.width, height: template.height, fps: template.fps });
+  const { assets, tracks } = instantiateTemplateContent(template);
   project.assets = assets;
   project.sequence.tracks = tracks;
   // Permanent, never cleared even once every slot is filled — see `Project.templateOrigin`'s own doc

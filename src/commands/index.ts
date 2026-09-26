@@ -54,6 +54,7 @@ import {
 import type { VideoCutoutInfo } from "../timeline/operations.ts";
 import { applyGridLayout, stackCopies } from "../timeline/collage.ts";
 import { fitClipsToBeats, splitClipAtBeats } from "../timeline/beatSync.ts";
+import { instantiateTemplateContent, type TemplateProjectData } from "../project/template.ts";
 import type { CellSource, GridOptions, StackOptions } from "../timeline/collage.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { hasTextStyleKeyframes } from "../timeline/keyframes.ts";
@@ -1960,6 +1961,51 @@ export class StackCopiesCommand implements Command {
     const result = stackCopies(project, this.clipId, this.options);
     this.createdClipIds = result.clipIds;
     return result.project;
+  }
+
+  revert(): Project {
+    if (!this.previousProject) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return this.previousProject;
+  }
+}
+
+/** Drops a resolved template's own edit straight onto the CURRENTLY OPEN project's timeline — the
+ *  in-editor "Templates" tool's own insert action (`ImportTemplateDialog.tsx`), as opposed to
+ *  `buildProjectFromTemplate`'s "start a brand-new project FROM a template instead," which also sets
+ *  `Project.templateOrigin` and permanently locks the normal timeline editor away. This command never
+ *  does either of those: the inserted clips land on perfectly ordinary new tracks, appended after every
+ *  track already on the timeline (later tracks composite ON TOP, same convention `PlaybackEngine`'s own
+ *  layering already follows — a template inserted this way plays over whatever's already there, which
+ *  reads right for both a lower-third/overlay template and one meant for an empty stretch of timeline)
+ *  — free to edit, move, retime or delete afterward like any other clip, same as everything else in this
+ *  project. `resolved` must have every one of its own slots already filled by the dialog's own picker
+ *  (`ReplaceMediaDialog`, reused as-is — its own doc comment covers why the SAME picker that fills a
+ *  brand-new template project's slots works unchanged here too): real files throughout, no leftover
+ *  `Asset.templatePlaceholder` — the ordinary editor has no "tap to fill this slot" affordance of its
+ *  own, so an unfilled one landing here would just be a clip with nothing to actually play.
+ *  `instantiateTemplateContent` still re-mints every id fresh, so inserting the same template twice (or
+ *  the same session inserting it into two different projects) never collides. */
+export class InsertTemplateCommand implements Command {
+  label = "Insert Template";
+  private resolved: TemplateProjectData;
+  private offsetSeconds: number;
+  private previousProject: Project | null = null;
+  createdTrackIds: string[] = [];
+
+  constructor(resolved: TemplateProjectData, offsetSeconds: number) {
+    this.resolved = resolved;
+    this.offsetSeconds = offsetSeconds;
+  }
+
+  apply(project: Project): Project {
+    this.previousProject = project;
+    const { assets, tracks } = instantiateTemplateContent(this.resolved, this.offsetSeconds);
+    this.createdTrackIds = tracks.map((t) => t.id);
+    const draft = structuredClone(project);
+    draft.assets = [...draft.assets, ...assets];
+    draft.sequence.tracks = [...draft.sequence.tracks, ...tracks];
+    draft.updatedAt = Date.now();
+    return draft;
   }
 
   revert(): Project {
