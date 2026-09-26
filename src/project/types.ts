@@ -102,18 +102,25 @@ export interface Asset {
      *  every other trim operation in this app already follows. */
     requiredDuration: number;
   };
-  /** Present ONLY on an audio asset inside a saved template's own stored structure — asked for
-   *  directly: unlike a video/image clip (which is deliberately turned into a fillable slot, since the
-   *  whole visual content is meant to be replaced), a template's background music/voiceover is part of
-   *  its own identity and should just carry over unchanged for every future use, the same way CapCut's
-   *  own templates keep their song. The real audio FILE is bundled with the template itself (see
-   *  `_lib/paths.ts`'s own `templateAudioPaths`, server-side) rather than referencing whichever project
-   *  happened to save the template — `relPath` still points at a real, playable file the whole time
-   *  (unlike `templatePlaceholder`'s always-empty one), just relative to the TEMPLATE's own storage
-   *  once saved, and copied into each new project's own `mediaDir` fresh (a real, independent file, not
-   *  a shared/symlinked one) the moment someone starts a project from it — never present on a real
-   *  project's own asset for that reason: by the time it reaches `project.assets`, it's indistinguishable
-   *  from any other imported audio file. */
+  /** Marks an asset a template carries over AS-IS rather than turning into a fillable slot, inside a
+   *  saved template's own stored structure: real background music/voiceover (asked for directly —
+   *  unlike a video/image clip, which is deliberately turned into a fillable slot since the whole visual
+   *  content is meant to be replaced, a template's own audio is part of its identity and should just
+   *  carry over unchanged for every future use), an animated sticker/GIF (decoration, not footage to
+   *  swap), or a video/image clip the template's own author explicitly opted OUT of slot-hood when
+   *  saving (`SaveAsTemplateDialog.tsx`'s own checkboxes, via `sanitizeProjectForTemplate`'s
+   *  `keepAssetIds` — a fixed intro/logo/background clip that shouldn't be swappable). The real file is
+   *  bundled with the template itself (see `_lib/paths.ts`'s own `templateAudioPaths`, server-side)
+   *  rather than referencing whichever project happened to save the template — `relPath` still points at
+   *  a real, playable file the whole time (unlike `templatePlaceholder`'s always-empty one), just
+   *  relative to the TEMPLATE's own storage once saved, and copied into each new project's own `mediaDir`
+   *  fresh (a real, independent file, not a shared/symlinked one) the moment someone starts a project
+   *  from it — `resolveTemplateBundledAudio` deliberately does NOT carry this flag onto that fresh copy,
+   *  so it's never present on a real project's own asset: by the time it reaches `project.assets`, it's
+   *  indistinguishable from any other imported file. A video/image CLIP kept this way is tagged
+   *  separately and durably instead — see `Clip.templateLocked`, which DOES survive onto the live,
+   *  inserted clip, for exactly the cases (like `TemplateGroupPanel.tsx`'s own "Edit template" panel)
+   *  that need to keep telling a locked clip apart from a real slot after the fact. */
   templateBundledAudio?: true;
   /** Present only on an ANIMATED image — a sticker or GIF from the Stickers tool. `relPath` is then an
    *  animated PNG that export loops, and this describes the preview sprite sheet and frame timing. See
@@ -928,6 +935,18 @@ export interface Clip {
   echoOf?: string;
   /** Template clips only: the AI steps to run on whatever media fills this clip's slot, in order (see `Asset.aiOrigin`). */
   templateAiSteps?: AiRecipeStep[];
+  /** Stamped by `sanitizeProjectForTemplate` on a video/image clip whose asset the template's own author
+   *  chose to KEEP rather than turn into a fillable slot (`Asset.templateBundledAudio`'s own doc comment
+   *  covers the two ways that happens: an explicit opt-out, or the asset being an animated sticker/GIF).
+   *  Unlike that asset-level flag — deliberately STRIPPED once the real file is copied into a new
+   *  project/owner, so the asset itself looks like any other real media once someone actually uses the
+   *  template — this rides along unchanged through `instantiateTemplateContent` onto the live, inserted
+   *  clip, specifically so something like `TemplateGroupPanel.tsx`'s own "Edit template" panel can still
+   *  tell a locked clip apart from a real slot afterward and show it as fixed rather than offering
+   *  "Replace" on it. Never set on an audio clip (background music/voiceover stays replaceable there
+   *  regardless — see `templateAudioAssets`'s own doc comment) or a text clip (never a slot to begin
+   *  with; edited through its own content-edit action instead). */
+  templateLocked?: true;
   /** Real per-word timing for `textAnimation.type === "wordHighlight"`, CLIP-RELATIVE seconds (same
    *  "elapsed" space every other per-clip timing value in this codebase uses) — one entry per word
    *  `timeline/textAnimation.ts`'s `splitWords(asset.textContent)` finds, in the same order. Only ever

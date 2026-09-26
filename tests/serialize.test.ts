@@ -527,6 +527,28 @@ describe("project serialization", () => {
     assert.equal(restored.sequence.tracks[0].templateGroup, undefined);
   });
 
+  it("round-trips a clip's templateLocked", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const raw = JSON.parse(serializeProject(project));
+    raw.sequence.tracks.find((t: { kind: string }) => t.kind === "video").clips[0].templateLocked = true;
+
+    const restored = deserializeProject(JSON.stringify(raw));
+
+    assert.equal(restored.sequence.tracks.find((t) => t.kind === "video")!.clips[0].templateLocked, true);
+  });
+
+  it("drops a templateLocked that isn't literally true rather than throwing", () => {
+    const base = emptyProject();
+    const project = addClip(base, videoTrackId(base), "asset1", 0);
+    const raw = JSON.parse(serializeProject(project));
+    raw.sequence.tracks.find((t: { kind: string }) => t.kind === "video").clips[0].templateLocked = "yes";
+
+    const restored = deserializeProject(JSON.stringify(raw));
+
+    assert.equal(restored.sequence.tracks.find((t) => t.kind === "video")!.clips[0].templateLocked, undefined);
+  });
+
   it("round-trips a track's gain and the sequence's masterGain", () => {
     const base = emptyProject();
     const raw = JSON.parse(serializeProject(base));

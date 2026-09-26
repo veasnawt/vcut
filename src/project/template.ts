@@ -130,7 +130,15 @@ export function sanitizeProjectForTemplate(project: Project, keepAssetIds: Reado
         return { ...clip, assetId: placeholder.id, ...(resolved.steps.length > 0 ? { templateAiSteps: resolved.steps } : null) };
       }
       keptAssetIds.add(clip.assetId);
-      return { ...clip };
+      // A video/image clip lands here (never became a placeholder) for the same two reasons its own
+      // asset gets `templateBundledAudio` stamped on it below: an animated sticker/GIF, or an explicit
+      // `keepAssetIds` opt-out. Unlike that asset-level flag (deliberately stripped once the real file
+      // is copied into a new project — see its own doc comment), this rides along on the CLIP so
+      // `TemplateGroupPanel.tsx`'s own "Edit template" panel can still show it as fixed, not a slot,
+      // long after the asset itself is indistinguishable from any other real media.
+      const isFootage = asset?.kind === "video" || asset?.kind === "image";
+      const locked = isFootage && (asset!.animation || keepAssetIds.has(asset!.id) || keepAssetIds.has(rootOf(asset!).root.id));
+      return { ...clip, ...(locked ? { templateLocked: true as const } : null) };
     }),
   }));
 

@@ -247,6 +247,23 @@ describe("templateSlotCandidates / keepAssetIds", () => {
     const v2Slot = template.assets.find((a) => a.templatePlaceholder);
     assert.ok(v2Slot);
     assert.notEqual(v2Slot!.id, "v2");
+    // The CLIP itself is tagged too — unlike the asset-level flag (stripped once the real file is
+    // copied into a new project), this is what survives to tell a locked clip apart from a real slot
+    // once it's actually been inserted somewhere (`TemplateGroupPanel.tsx`'s own doc comment).
+    const keptClip = template.tracks.flatMap((t) => t.clips).find((c) => c.assetId === "v1")!;
+    assert.equal(keptClip.templateLocked, true);
+    const slotClip = template.tracks.flatMap((t) => t.clips).find((c) => c.assetId === v2Slot!.id)!;
+    assert.equal(slotClip.templateLocked, undefined);
+  });
+
+  it("never locks a kept AUDIO clip — background music/voiceover stays replaceable regardless", () => {
+    const base = emptyProject([audioAsset("music")]);
+    const project = addClip(base, audioTrackId(base), "music", 0);
+
+    const template = sanitizeProjectForTemplate(project);
+
+    const clip = template.tracks.flatMap((t) => t.clips).find((c) => c.assetId === "music")!;
+    assert.equal(clip.templateLocked, undefined);
   });
 
   it("keeping every candidate leaves a template with zero fillable slots", () => {

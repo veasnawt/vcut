@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Close, Delete, Image as ImageIcon, Music, Text as TextIcon, Video } from "@veasnawt/vicons";
+import { Close, Delete, Image as ImageIcon, Lock, Music, Text as TextIcon, Video } from "@veasnawt/vicons";
 import { mediaUrl, thumbnailUrl } from "../api/client.ts";
 import { RemoveTemplateGroupCommand, ReplaceTemplateClipCommand } from "../commands/index.ts";
 import { templateGroupClips, templateGroupTracks, type TemplateGroupEntry } from "../project/template.ts";
@@ -88,6 +88,11 @@ export function TemplateGroupPanel({ groupId, onClose }: { groupId: string; onCl
                 const Icon = KIND_ICON[entry.asset.kind as keyof typeof KIND_ICON] ?? Video;
                 const isFootage = entry.asset.kind === "video" || entry.asset.kind === "image";
                 const isAudio = entry.asset.kind === "audio";
+                // Locked footage (`Clip.templateLocked`'s own doc comment) is the template author's own
+                // fixed intro/logo/background/sticker — never a slot, so it never offers "Replace" here,
+                // same "content editable, structure locked" boundary the guided template flow already
+                // draws. Audio stays replaceable regardless (`templateAudioAssets`'s own convention).
+                const isLocked = isFootage && entry.clip.templateLocked === true;
                 const thumb = isFootage ? thumbnailUrl(projectId, entry.asset) : null;
                 return (
                   <div key={entry.clip.id} className="flex items-center gap-2.5 rounded-lg bg-white/[0.03] px-2.5 py-2">
@@ -96,9 +101,15 @@ export function TemplateGroupPanel({ groupId, onClose }: { groupId: string; onCl
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-xs text-white/85">{entry.asset.kind === "text" ? entry.asset.textContent || t("Text") : entry.asset.name}</p>
-                      <p className="text-[10px] text-white/40">{formatDuration(entry.clip.sourceOut - entry.clip.sourceIn)}</p>
+                      <p className="text-[10px] text-white/40">
+                        {isLocked ? t("Fixed by the template") : formatDuration(entry.clip.sourceOut - entry.clip.sourceIn)}
+                      </p>
                     </div>
-                    {isFootage || isAudio ? (
+                    {isLocked ? (
+                      <span title={t("This clip can't be replaced")} className="flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium text-white/35">
+                        <Lock size={12} />
+                      </span>
+                    ) : isFootage || isAudio ? (
                       <button
                         onClick={() => setReplaceTarget({ ...(isAudio ? REPLACE_AUDIO : REPLACE_FOOTAGE), assetId: entry.asset.id, clipId: entry.clip.id })}
                         className="shrink-0 rounded-md bg-white/10 px-2.5 py-1.5 text-[11px] font-medium text-white/80 transition hover:bg-white/20"

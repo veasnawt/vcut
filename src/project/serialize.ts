@@ -823,6 +823,7 @@ function parseClip(raw: Record<string, unknown>): Clip {
     ...(textAnimationIn ? { textAnimationIn } : null),
     ...(textAnimationOut ? { textAnimationOut } : null),
     ...(templateAiSteps ? { templateAiSteps } : null),
+    ...(raw.templateLocked === true ? { templateLocked: true } : null),
     ...(outline ? { outline } : null),
     ...(typeof raw.echoOf === "string" && raw.echoOf ? { echoOf: raw.echoOf } : null),
     ...(wordTimings ? { wordTimings } : null),
