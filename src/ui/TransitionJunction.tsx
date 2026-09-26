@@ -4,8 +4,18 @@ import React, { useRef, useState } from "react";
 import { clampFrameDuration, timelineSpanPixels } from "../timeline/interaction.ts";
 import { TransitionGlyph } from "./TransitionGlyph.tsx";
 
-/** A junction control spans both neighbors. The centered strip represents the blend duration;
- *  it does not move either clip's cut or change the export's source-handle timing. */
+/** A junction control spans both neighbors, centered on their shared cut point — exactly where each
+ *  neighbor's OWN trim handle (`TimelineClip.tsx`'s `absolute inset-y-0 left-0`/`right-0`) also lives,
+ *  since a clip's trim handle is naturally full-height at its own edge. This used to be full-row-height
+ *  too and sat at a HIGHER z-index, so it silently won every pointer event in that shared strip — a
+ *  real, reported bug: trying to grab a clip's own resize handle right at a cut kept opening/dragging
+ *  the transition instead, no matter where along the row's height you clicked. Pinned to a thin strip at
+ *  the TOP of the row instead (`STRIP_HEIGHT`, not the full row height) so the rest of a clip's edge
+ *  stays exactly what it already was — its own full-height trim handle, completely unobstructed. Its own
+ *  duration-drag handles shrink along with it; duration is still just as adjustable from `Inspector.tsx`'s
+ *  Transition In/Out fields or the picker's own slider (`TransitionPickerMenu.tsx`) either way, so this
+ *  loses no real capability, just its own oversized hit target. The centered strip represents the blend
+ *  duration; it does not move either clip's cut or change the export's source-handle timing. */
 export function TransitionJunction({
   cutSeconds,
   duration,
@@ -41,7 +51,9 @@ export function TransitionJunction({
   const value = Math.min(draft ?? duration ?? 0, boundedMaximum);
   const active = duration !== null;
   const width = active ? timelineSpanPixels(value, pixelsPerSecond, 28) : 28;
-  const size = mobile ? 30 : 26;
+  // Thin strip pinned to the row's own top edge — see this component's own doc comment for why this is
+  // deliberately NOT the full row height any more.
+  const stripHeight = mobile ? 24 : 18;
   const stop = (e: React.SyntheticEvent) => e.stopPropagation();
 
   function finish(e: React.PointerEvent<HTMLDivElement>, commit: boolean) {
@@ -61,8 +73,8 @@ export function TransitionJunction({
         position: "absolute",
         left: cutSeconds * pixelsPerSecond - width / 2,
         width,
-        height: size,
-        top: `calc(50% - ${size / 2}px)`,
+        height: stripHeight,
+        top: 2,
         zIndex: 20,
       }}
       onMouseDown={stop}
@@ -99,13 +111,13 @@ export function TransitionJunction({
             {/* Floating center badge with overlapping-frames glyph + live duration */}
             <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
               {width >= 56 ? (
-                <div className="flex items-center gap-1.5 rounded-full border border-sky-400/40 bg-slate-950/90 px-2 py-0.5 shadow-sm">
-                  <TransitionGlyph size={12} className="shrink-0 text-sky-300" />
-                  <span className="text-[10px] font-semibold leading-none tabular-nums text-white/95">{value.toFixed(1)}s</span>
+                <div className="flex items-center gap-1 rounded-full border border-sky-400/40 bg-slate-950/90 px-1.5 py-0 shadow-sm">
+                  <TransitionGlyph size={10} className="shrink-0 text-sky-300" />
+                  <span className="text-[9px] font-semibold leading-none tabular-nums text-white/95">{value.toFixed(1)}s</span>
                 </div>
               ) : (
-                <div className="flex h-5 w-5 items-center justify-center rounded-full border border-sky-400/40 bg-slate-950/90 shadow-sm">
-                  <TransitionGlyph size={10} className="shrink-0 text-sky-300" />
+                <div className="flex h-4 w-4 items-center justify-center rounded-full border border-sky-400/40 bg-slate-950/90 shadow-sm">
+                  <TransitionGlyph size={9} className="shrink-0 text-sky-300" />
                 </div>
               )}
             </div>
