@@ -103,6 +103,7 @@ import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 import { useIsMobile } from "./useIsMobile.ts";
 import { VoiceRecordModal } from "./VoiceRecordModal.tsx";
 
+import { useHorizontalScroll } from "./useHorizontalScroll.ts";
 /** Same "single fire-and-navigate action, no special busy/error state" reasoning `Inspector.tsx`'s
  *  own `handleUpgradeClick` documents — duplicated rather than imported since it isn't exported from
  *  there (it's a private module-level helper, and this is 4 lines). Used by the header's own "Save as
@@ -338,6 +339,7 @@ function StatusBar({
   const project = useEditorStore((s) => s.project);
   const projectId = useEditorStore((s) => s.projectId);
   const t = useTranslation();
+  const toolbarRef = useHorizontalScroll();
   const isMobile = useIsMobile();
   const desktopLeft = effectiveToolbarPosition(toolbarPosition, !isMobile) === "left";
   // `null` = closed; `{}` = open, whole-sequence; `{ clipIds }` = open, scoped to the selected clip(s)
@@ -889,6 +891,7 @@ function StatusBar({
       )}
 
       <div
+        ref={toolbarRef}
         className="vcut-toolbar-tools scrollbar-none flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto"
         onScroll={(e) => {
           // See `toolsScrollSettleRef`'s own comment: deliberately NOT `setToolsScrolled` directly here.

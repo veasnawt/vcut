@@ -29,6 +29,7 @@ import { AiEditTemplateGallery } from "./AiEditTemplateGallery.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 import { ToolPanelFrame } from "./ToolPanelFrame.tsx";
 
+import { useHorizontalScroll } from "./useHorizontalScroll.ts";
 const PRESERVE_OPTIONS: { key: AiEditPreserve; label: string; hint: string }[] = [
   { key: "face", label: "Face", hint: "Same person" },
   { key: "pose", label: "Pose", hint: "Same framing" },
@@ -65,6 +66,7 @@ export function AiEditModal({ clipId, onClose }: { clipId: string; onClose: () =
   const [viewMode, setViewMode] = useState<"result" | "original">("result");
   const jobRef = useRef<{ cancel: () => void } | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  const stylesRef = useHorizontalScroll();
   const previewRef = useRef<HTMLDivElement | null>(null);
 
   const clip = project ? findClip(project, clipId)?.clip : undefined;
@@ -320,7 +322,7 @@ export function AiEditModal({ clipId, onClose }: { clipId: string; onClose: () =
           {/* 4. Quick styles */}
           <section className="space-y-2" aria-label={t("Quick Styles")}>
             <h3 className="text-xs font-semibold text-white/80">{t("Quick Styles")}</h3>
-            <div className="scrollbar-none -mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
+            <div ref={stylesRef} className="scrollbar-none -mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0">
               {AI_EDIT_QUICK_STYLES.map((style) => {
                 const on = promptHasPhrase(prompt, style.phrase);
                 return (

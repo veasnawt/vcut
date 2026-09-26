@@ -11,6 +11,7 @@ import {
 } from "../project/textStylePresets.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 
+import { useHorizontalScroll } from "./useHorizontalScroll.ts";
 const FAVORITES_STORAGE_KEY = "vcut_text_style_favorites";
 const RECENTS_STORAGE_KEY = "vcut_text_style_recents";
 
@@ -246,6 +247,7 @@ export function TextStylePresetGrid({
   fillHeight?: boolean;
 }) {
   const t = useTranslation();
+  const categoryRef = useHorizontalScroll();
   const [activeCategory, setActiveCategory] = useState<"all" | "favorites" | "recents" | PresetCategory>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [favorites, setFavorites] = useState<Set<string>>(() => loadFavoritesFromStorage());
@@ -344,7 +346,7 @@ export function TextStylePresetGrid({
       </div>
 
       {/* Category Pills */}
-      <div className="no-scrollbar -mx-0.5 flex gap-1 overflow-x-auto px-0.5 py-0.5">
+      <div ref={categoryRef} className="no-scrollbar -mx-0.5 flex gap-1 overflow-x-auto px-0.5 py-0.5">
         <button
           onClick={() => setActiveCategory("all")}
           className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium transition ${

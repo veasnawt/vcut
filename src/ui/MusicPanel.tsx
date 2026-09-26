@@ -22,6 +22,7 @@ import { ToolPanelFrame } from "./ToolPanelFrame.tsx";
 import { useEditorStore } from "../store/editorStore.ts";
 import { formatDuration } from "../timeline/time.ts";
 
+import { useHorizontalScroll } from "./useHorizontalScroll.ts";
 function CategoryIcon({ category }: { category: MusicCategory }) {
   switch (category) {
     case "trending":
@@ -48,6 +49,7 @@ function CategoryIcon({ category }: { category: MusicCategory }) {
  *  and one-click timeline placement at the playhead. */
 export function MusicPanel({ onClose }: { onClose: () => void }) {
   const t = useTranslation();
+  const categoriesRef = useHorizontalScroll();
   const projectId = useEditorStore((s) => s.projectId);
   const importMusicTrack = useEditorStore((s) => s.importMusicTrack);
   const setStatus = useEditorStore((s) => s.setStatus);
@@ -244,7 +246,7 @@ export function MusicPanel({ onClose }: { onClose: () => void }) {
         </div>
 
         {/* Category Pills */}
-        <div className="scrollbar-none flex gap-1.5 overflow-x-auto px-4 py-2 border-b border-white/5">
+        <div ref={categoriesRef} className="scrollbar-none flex gap-1.5 overflow-x-auto px-4 py-2 border-b border-white/5">
           {MUSIC_CATEGORIES.map((cat) => (
             <button
               key={cat.id}

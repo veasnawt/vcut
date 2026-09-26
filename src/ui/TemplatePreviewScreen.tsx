@@ -20,6 +20,7 @@ import { TemplateTrimDialog } from "./TemplateTrimDialog.tsx";
 import { useLibraryMedia } from "./useLibraryMedia.ts";
 import { VideoFrameThumbnail } from "./VideoFrameThumbnail.tsx";
 
+import { useHorizontalScroll } from "./useHorizontalScroll.ts";
 type TabKey = "video" | "audio" | "text";
 
 /** What a "Replace" picker offers/uploads/labels itself with — audio and video/image are different
@@ -61,6 +62,7 @@ const REPLACE_FOOTAGE: Omit<ReplaceTarget, "assetId"> = {
  *  that kind of content — a text-free template never shows a Text tab with nothing to do in it. */
 export function TemplatePreviewScreen({ onBack }: { onBack?: () => void }) {
   const t = useTranslation();
+  const filmstripRef = useHorizontalScroll();
   const [exportOpen, setExportOpen] = useState(false);
   const [replaceTarget, setReplaceTarget] = useState<ReplaceTarget | null>(null);
   const [trimmingAsset, setTrimmingAsset] = useState<Asset | null>(null);
@@ -159,7 +161,7 @@ export function TemplatePreviewScreen({ onBack }: { onBack?: () => void }) {
       {(hasVideo || hasAudio || hasText) && project && projectId && (
         <div className="shrink-0 border-t border-white/10">
           {filmstripClips.length > 0 && (
-            <div className="scrollbar-thin flex gap-2 overflow-x-auto p-3 pb-2">
+            <div ref={filmstripRef} className="scrollbar-thin flex gap-2 overflow-x-auto p-3 pb-2">
               {filmstripClips.map((entry) => (
                 <FilmstripTile key={entry.clip.id} entry={entry} projectId={projectId} selected={entry.clip.id === selectedClipId} onSelect={() => selectClip(entry)} />
               ))}

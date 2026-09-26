@@ -15,6 +15,7 @@ import { TemplateScreenHeader } from "./TemplateScreenHeader.tsx";
 import { useLibraryMedia } from "./useLibraryMedia.ts";
 import { VideoFrameThumbnail } from "./VideoFrameThumbnail.tsx";
 
+import { useHorizontalScroll } from "./useHorizontalScroll.ts";
 /** Covers `LibraryGridTile`'s own general `LibraryMediaItem.kind` (video/audio/image — a user's
  *  library can hold all three) even though a slot's own `TemplateSlot["kind"]` only ever needs
  *  "video"/"image" — audio is deliberately never a slot at all (see `Asset.templateBundledAudio`'s
@@ -51,6 +52,7 @@ export function TemplateFillScreen({
   draft?: { onProjectCreated: (projectId: string, name: string) => void };
 }) {
   const t = useTranslation();
+  const slotsRef = useHorizontalScroll();
   const project = useEditorStore((s) => s.project);
   const projectId = useEditorStore((s) => s.projectId);
   const importFiles = useEditorStore((s) => s.importFiles);
@@ -203,7 +205,7 @@ export function TemplateFillScreen({
       </div>
 
       <div className="shrink-0 border-t border-white/10 p-3">
-        <div className="scrollbar-thin flex gap-2 overflow-x-auto pb-1">
+        <div ref={slotsRef} className="scrollbar-thin flex gap-2 overflow-x-auto pb-1">
           {allSlots.map((slot, i) => {
             const filled = filledBySlotId[slot.assetId];
             const isActive = activeSlotAssetId === slot.assetId;

@@ -6,6 +6,7 @@ import { aiEditThumbUrl } from "../api/client.ts";
 import { AI_EDIT_CATEGORIES, templatesInCategory, type AiEditCategoryId, type AiEditTemplate } from "../project/aiEdit.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 
+import { useHorizontalScroll } from "./useHorizontalScroll.ts";
 /** One template card. The thumbnail is a real example of the template (an AI Edit result on a sample portrait); if that
  *  image can't load, the user's own picture with the template's look laid over it (a CSS filter and a tint) stands in, and
  *  a plain gradient when there is no picture at all. */
@@ -79,6 +80,8 @@ export function AiEditTemplateGallery({
   const t = useTranslation();
   const [category, setCategory] = useState<AiEditCategoryId>("for-you");
   const [expanded, setExpanded] = useState(false);
+  const chipsRef = useHorizontalScroll();
+  const cardsRef = useHorizontalScroll();
   const templates = templatesInCategory(category);
 
   return (
@@ -96,7 +99,7 @@ export function AiEditTemplateGallery({
         </button>
       </div>
 
-      <div className="scrollbar-none -mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:px-0" role="tablist" aria-label={t("Template categories")}>
+      <div ref={chipsRef} className="scrollbar-none -mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:px-0" role="tablist" aria-label={t("Template categories")}>
         {AI_EDIT_CATEGORIES.map((c) => (
           <button
             key={c.id}
@@ -120,7 +123,7 @@ export function AiEditTemplateGallery({
           ))}
         </div>
       ) : (
-        <div className="scrollbar-none -mx-4 flex snap-x snap-proximity gap-2.5 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
+        <div ref={cardsRef} className="scrollbar-none -mx-4 flex snap-x snap-proximity gap-2.5 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
           {templates.map((template) => (
             <TemplateCard key={template.id} template={template} imageUrl={imageUrl} selected={selectedId === template.id} wide={false} onPick={() => onPick(template)} />
           ))}
