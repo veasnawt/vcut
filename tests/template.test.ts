@@ -17,7 +17,7 @@ import {
   trimTemplateSlot,
 } from "../src/project/template.ts";
 import { withAiOrigin } from "../src/project/aiRecipe.ts";
-import { InsertTemplateCommand, RemoveTemplateGroupCommand, ReplaceTemplateClipCommand } from "../src/commands/index.ts";
+import { InsertTemplateCommand, MoveTemplateGroupCommand, RemoveTemplateGroupCommand, ReplaceTemplateClipCommand } from "../src/commands/index.ts";
 import { addClip, addTrack, setClipTransform } from "../src/timeline/operations.ts";
 import {
   audioAsset,
@@ -921,7 +921,7 @@ describe("pendingTemplateAiTasks / matchingTemplateAiClipIds", () => {
     assert.deepEqual(new Set(matched), new Set(tasks[0].affectedClipIds));
   });
 
-  it("does not merge two clips sharing a slot but trimmed to different lengths — a genuinely different edit each", () => {
+  it("does not merge two VIDEO clips sharing a slot but trimmed to different lengths — a genuinely different edit each", () => {
     const original = videoAsset("original", 20);
     const aiResult = withAiOrigin(videoAsset("aiResult", 20), "original", { tool: "cutout" });
     let templateProject = emptyProject([original, aiResult]);
@@ -948,6 +948,37 @@ describe("pendingTemplateAiTasks / matchingTemplateAiClipIds", () => {
 
     const tasks = pendingTemplateAiTasks(filled);
     assert.equal(tasks.length, 2, "different trim lengths must stay separate tasks");
+  });
+
+  it("DOES merge two IMAGE clips sharing a slot even when trimmed to different lengths — a still has no 'which frames' to disagree about", () => {
+    // The exact real-world shape reported: the same AI-edited photo trimmed to several different
+    // lengths across its stacked copies (a "hold longer here, shorter there" template effect) kept
+    // listing one task per distinct length even after the first version of this dedup fix, since that
+    // version's key still included the window for every asset kind, not just video.
+    const original = imageAsset("original");
+    const aiResult = withAiOrigin(imageAsset("aiResult"), "original", { tool: "ai-edit", prompt: "make it pop" });
+    let templateProject = emptyProject([original, aiResult]);
+    templateProject = addClip(templateProject, videoTrackId(templateProject), "aiResult", 0);
+    templateProject = addClip(templateProject, videoTrackId(templateProject), "aiResult", 10);
+    const trackId = videoTrackId(templateProject);
+    templateProject = {
+      ...templateProject,
+      sequence: {
+        ...templateProject.sequence,
+        tracks: templateProject.sequence.tracks.map((t) =>
+          t.id === trackId ? { ...t, clips: t.clips.map((c, i) => (i === 0 ? { ...c, sourceIn: 0, sourceOut: 3 } : { ...c, sourceIn: 0, sourceOut: 6 })) } : t
+        ),
+      },
+    };
+    const resolved = sanitizeProjectForTemplate(templateProject);
+
+    const built = buildProjectFromTemplate("draft", "Different lengths, same still", resolved);
+    const slot = templateSlots(built)[0];
+    const filled = fillTemplateSlot(built, slot.assetId, imageAsset("users-pick"));
+
+    const tasks = pendingTemplateAiTasks(filled);
+    assert.equal(tasks.length, 1, "an image's own trim length never changes what the edit does — must collapse to one task");
+    assert.equal(tasks[0].affectedClipIds.length, 2);
   });
 });
 
@@ -1051,6 +1082,69 @@ describe("RemoveTemplateGroupCommand", () => {
 
   it("throws a clear error if undone before ever being applied", () => {
     const command = new RemoveTemplateGroupCommand("tplgroup_1");
+    assert.throws(() => command.revert(), /never applied/);
+  });
+});
+
+describe("MoveTemplateGroupCommand", () => {
+  function insertedGroup() {
+    const project = emptyProject([videoAsset("existing")]);
+    let templateBase = emptyProject([videoAsset("tpl"), textAsset()]);
+    templateBase = addTrack(templateBase, "text");
+    let templateProject = addClip(templateBase, videoTrackId(templateBase), "tpl", 0);
+    templateProject = addClip(templateProject, textTrackId(templateProject), "text1", 3);
+    const resolved = sanitizeProjectForTemplate(templateProject);
+    const insert = new InsertTemplateCommand(resolved, 5, "My Template");
+    const afterInsert = insert.apply(project);
+    const groupId = afterInsert.sequence.tracks.find((t) => insert.createdTrackIds.includes(t.id))!.templateGroup!.id;
+    return { afterInsert, groupId, insert };
+  }
+
+  it("shifts every clip on every track in the group by the same delta, preserving their relative timing", () => {
+    const { afterInsert, groupId, insert } = insertedGroup();
+    const before = afterInsert.sequence.tracks
+      .filter((t) => insert.createdTrackIds.includes(t.id))
+      .flatMap((t) => t.clips)
+      .map((c) => c.timelineStart)
+      .sort((a, b) => a - b);
+
+    const result = new MoveTemplateGroupCommand(groupId, 2).apply(afterInsert);
+
+    const after = result.sequence.tracks
+      .filter((t) => insert.createdTrackIds.includes(t.id))
+      .flatMap((t) => t.clips)
+      .map((c) => c.timelineStart)
+      .sort((a, b) => a - b);
+    assert.deepEqual(after, before.map((s) => s + 2));
+    // A track outside the group is never touched.
+    const untouched = result.sequence.tracks.find((t) => !insert.createdTrackIds.includes(t.id))!;
+    assert.deepEqual(untouched.clips, afterInsert.sequence.tracks.find((t) => t.id === untouched.id)!.clips);
+  });
+
+  it("clamps a move so the group's own earliest clip never goes negative", () => {
+    const { afterInsert, groupId } = insertedGroup();
+    // The group's own earliest clip sits at 5 (the insert offset) — shifting by -100 must clamp to
+    // exactly -5, not drag the group into negative time.
+    const result = new MoveTemplateGroupCommand(groupId, -100).apply(afterInsert);
+    const earliest = Math.min(...result.sequence.tracks.flatMap((t) => t.clips).map((c) => c.timelineStart));
+    assert.equal(earliest, 0);
+  });
+
+  it("is a no-op when the group doesn't exist", () => {
+    const project = emptyProject([videoAsset("existing")]);
+    const result = new MoveTemplateGroupCommand("tplgroup_nonexistent", 5).apply(project);
+    assert.deepEqual(result, project);
+  });
+
+  it("undoes back to the exact project it started from", () => {
+    const { afterInsert, groupId } = insertedGroup();
+    const command = new MoveTemplateGroupCommand(groupId, 3);
+    command.apply(afterInsert);
+    assert.deepEqual(command.revert(), afterInsert);
+  });
+
+  it("throws a clear error if undone before ever being applied", () => {
+    const command = new MoveTemplateGroupCommand("tplgroup_1", 1);
     assert.throws(() => command.revert(), /never applied/);
   });
 });

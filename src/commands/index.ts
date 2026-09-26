@@ -2092,6 +2092,46 @@ export class RemoveTemplateGroupCommand implements Command {
   }
 }
 
+/** Drags an inserted template's own single lane bar (`TemplateGroupRow.tsx`'s `TemplateGroupLaneBar`)
+ *  earlier or later in time — shifts EVERY clip on EVERY track sharing `groupId` by the same
+ *  `deltaSeconds`, so the group's own internal timing (how its tracks/clips sit relative to each other)
+ *  never changes, only where the whole thing starts. Safe to shift uniformly with no carving/reordering:
+ *  a template group's own tracks are entirely its own (`InsertTemplateCommand` creates them fresh, never
+ *  mixing in clips from anything else), so a move can never collide with content outside the group, and
+ *  clips that didn't overlap each other before a uniform shift still don't after one. Clamped so the
+ *  group's own EARLIEST clip never goes negative — the same floor every other timeline move already
+ *  enforces, just computed once for the whole group instead of per clip. */
+export class MoveTemplateGroupCommand implements Command {
+  label = "Move Template";
+  private groupId: string;
+  private deltaSeconds: number;
+  private previousProject: Project | null = null;
+
+  constructor(groupId: string, deltaSeconds: number) {
+    this.groupId = groupId;
+    this.deltaSeconds = deltaSeconds;
+  }
+
+  apply(project: Project): Project {
+    this.previousProject = project;
+    const groupClips = project.sequence.tracks.flatMap((t) => (t.templateGroup?.id === this.groupId ? t.clips : []));
+    if (groupClips.length === 0) return project;
+    const earliest = Math.min(...groupClips.map((c) => c.timelineStart));
+    const delta = Math.max(this.deltaSeconds, -earliest);
+    const draft = structuredClone(project);
+    draft.sequence.tracks = draft.sequence.tracks.map((t) =>
+      t.templateGroup?.id === this.groupId ? { ...t, clips: t.clips.map((c) => ({ ...c, timelineStart: c.timelineStart + delta })) } : t
+    );
+    draft.updatedAt = Date.now();
+    return draft;
+  }
+
+  revert(): Project {
+    if (!this.previousProject) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return this.previousProject;
+  }
+}
+
 export class CreateTextBehindSubjectCommand implements Command {
   label = "Text Behind Subject";
   private previousProject: Project | null = null;

@@ -536,15 +536,20 @@ export function newTemplateId(): string {
   return newId("tpl");
 }
 
-/** Same asset, same step, same exact source window = the same edit — one duplicated/stacked clip using
- *  the identical picked media as another needs its AI step computed once, not once per copy. The raw
- *  `sourceIn`/`sourceOut` (not a rounded duration) is what actually distinguishes two DIFFERENT video
- *  windows of otherwise-identical length — the same precision the per-tool caches in
- *  `editorStore.ts`'s own `runTemplateAiStep` already key their video requests by. For an image, which
- *  has no such "which frames" meaning, this still just needs the two clips to agree on the same trim
- *  numbers, which any true duplicate already does. */
-function templateAiTaskKey(clip: Clip, step: AiRecipeStep): string {
-  return `${clip.assetId}|${JSON.stringify(step)}|${clip.sourceIn}|${clip.sourceOut}`;
+/** Same asset, same step = the same edit — one duplicated/stacked clip using the identical picked media
+ *  as another needs its AI step computed once, not once per copy. A VIDEO also needs the exact same
+ *  `sourceIn`/`sourceOut` window (not a rounded duration) to count as the same edit — two different
+ *  windows of otherwise-identical length can show genuinely different content, the same precision the
+ *  per-tool caches in `editorStore.ts`'s own `runTemplateAiStep` already key their video requests by. An
+ *  IMAGE has no such "which frames" meaning at all — trimming a still to a different LENGTH never
+ *  changes what the edit itself needs to do (same picture, same prompt), so its window is deliberately
+ *  left OUT of the key: a real, reported case otherwise stayed broken even after the first fix here, a
+ *  template with the same edited photo trimmed to several different lengths across its stacked copies
+ *  kept listing (and would have kept re-billing) one task per distinct length instead of collapsing to
+ *  the one edit they all actually share. */
+function templateAiTaskKey(clip: Clip, step: AiRecipeStep, assetKind: Asset["kind"]): string {
+  const window = assetKind === "image" ? "" : `|${clip.sourceIn}|${clip.sourceOut}`;
+  return `${clip.assetId}|${JSON.stringify(step)}${window}`;
 }
 
 /** One AI step still waiting to run on a filled template slot — one row per DISTINCT edit needed, not
@@ -577,7 +582,7 @@ export function pendingTemplateAiTasks(project: Project): TemplateAiTask[] {
       if (!step) continue;
       const asset = project.assets.find((a) => a.id === clip.assetId);
       if (!asset || asset.templatePlaceholder) continue;
-      const key = templateAiTaskKey(clip, step);
+      const key = templateAiTaskKey(clip, step, asset.kind);
       const existing = groups.get(key);
       if (existing) {
         existing.clipIds.push(clip.id);
@@ -610,12 +615,14 @@ export function matchingTemplateAiClipIds(project: Project, clipId: string): str
   const all = project.sequence.tracks.flatMap((t) => t.clips);
   const target = all.find((c) => c.id === clipId);
   const step = target?.templateAiSteps?.[0];
-  if (!target || !step) return [];
-  const targetKey = templateAiTaskKey(target, step);
+  const targetAsset = target && project.assets.find((a) => a.id === target.assetId);
+  if (!target || !step || !targetAsset) return [];
+  const targetKey = templateAiTaskKey(target, step, targetAsset.kind);
   return all
     .filter((c) => {
       const s = c.templateAiSteps?.[0];
-      return s ? templateAiTaskKey(c, s) === targetKey : false;
+      const asset = s && project.assets.find((a) => a.id === c.assetId);
+      return s && asset ? templateAiTaskKey(c, s, asset.kind) === targetKey : false;
     })
     .map((c) => c.id);
 }

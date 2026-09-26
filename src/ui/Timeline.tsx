@@ -1430,10 +1430,12 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
                         </div>
                       )}
                       <TemplateGroupLaneBar
+                        groupId={row.groupId}
                         name={row.name}
                         startSeconds={start}
                         endSeconds={end}
                         pixelsPerSecond={pixelsPerSecond}
+                        fps={project.sequence.fps}
                         onEdit={() => setOpenGroupId(row.groupId)}
                       />
                     </div>
