@@ -116,19 +116,32 @@ export function sliceGlitchSlices(burst: number, index: number): { topFraction: 
   };
 }
 
-/** Mutates `imageData` in place with the Slice Glitch look (see `SLICE_GLITCH_*`): thin horizontal strips jump sideways for a
- *  few frames. `intensity` scales how far they jump (0 = none). Like the other pixel effects it is a pure function of time. */
-export function applySliceGlitch(imageData: ImageData, elapsedSeconds: number, speed = 1, intensity = 1): void {
-  const { width, height, data } = imageData;
-  const source = data.slice();
+/** The strips of one Slice Glitch frame in pixels of a `width` x `height` picture: `top` row, height in rows, and how far each is
+ *  shifted sideways. Later strips are drawn over earlier ones. Shared by the CPU (`applySliceGlitch`) and GPU (`GlChromaKeyer`)
+ *  versions, so they cannot drift apart. Strips that move nothing are left out. */
+export function sliceGlitchStrips(elapsedSeconds: number, speed: number, width: number, height: number, intensity = 1): { top: number; rows: number; shift: number }[] {
   const burst = Math.floor((elapsedSeconds * speed) / SLICE_GLITCH_BURST_SECONDS);
   const band = Math.max(1, Math.round(height * SLICE_GLITCH_HEIGHT_FRACTION));
+  const strips: { top: number; rows: number; shift: number }[] = [];
   for (let index = 0; index < SLICE_GLITCH_COUNT; index++) {
     const { topFraction, shiftFraction } = sliceGlitchSlices(burst, index);
     const top = Math.round(topFraction * height);
     const shift = Math.round(shiftFraction * width * intensity);
     if (shift === 0) continue;
-    for (let y = top; y < Math.min(height, top + band); y++) {
+    strips.push({ top, rows: Math.min(height, top + band) - top, shift });
+  }
+  return strips;
+}
+
+/** Mutates `imageData` in place with the Slice Glitch look (see `SLICE_GLITCH_*`): thin horizontal strips jump sideways for a
+ *  few frames. `intensity` scales how far they jump (0 = none). Like the other pixel effects it is a pure function of time. */
+export function applySliceGlitch(imageData: ImageData, elapsedSeconds: number, speed = 1, intensity = 1): void {
+  const { width, height, data } = imageData;
+  const strips = sliceGlitchStrips(elapsedSeconds, speed, width, height, intensity);
+  if (strips.length === 0) return;
+  const source = data.slice();
+  for (const { top, rows, shift } of strips) {
+    for (let y = top; y < top + rows; y++) {
       const rowStart = y * width * 4;
       for (let x = 0; x < width; x++) {
         const sampleX = Math.min(width - 1, Math.max(0, x + shift));

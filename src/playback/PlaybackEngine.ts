@@ -9,7 +9,7 @@ import { applyColorGrading, buildCurveLut, composeLuts } from "../timeline/color
 import { resolveClipColorGrading, resolveClipEffects, resolveClipGain, resolveClipTransform, resolveTextCrop, resolveTextStyle } from "../timeline/keyframes.ts";
 import { applyLut3D, blendLut3D, normalizeLutIntensity, parseCubeLut } from "../timeline/lut.ts";
 import type { Lut3D } from "../timeline/lut.ts";
-import { applyGlitch, applyGlitchCut, applySliceGlitch, applyHorizontalBlur, applyWaterRipple, FLASH_ZOOM_PEAK, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
+import { applyGlitch, applyGlitchCut, applySliceGlitch, applyHorizontalBlur, applyWaterRipple, FLASH_ZOOM_PEAK, SLICE_GLITCH_BURST_SECONDS, ZOOM_BLUR_SCALE, ZOOM_BLUR_SIGMA_PX } from "../timeline/pixelEffects.ts";
 import {
   easeTransition,
   glitchCutBurst,
@@ -635,6 +635,9 @@ interface StallWatchEntry {
 }
 /** Media elements kept alive after they stop being needed. Keeping a few around makes scrubbing back
  *  and forth across a cut smooth, since the element is already decoded and buffered. */
+/** Longest side (device pixels) an outline layer is built at while playing / while paused (see `drawOutline`). */
+const OUTLINE_LAYER_PLAYING_MAX_PX = 720;
+const OUTLINE_LAYER_PAUSED_MAX_PX = 1600;
 const POOL_LIMIT = 8;
 /** How far the store's own `playhead` (see `internalClockTime`'s doc comment) may disagree with this
  *  engine's own running clock before it's treated as a REAL external change — a timeline scrub, a
@@ -1461,6 +1464,8 @@ export class PlaybackEngine {
       this.release(element);
       this.pool.delete(clipId);
       this.animationFrames.delete(clipId);
+      this.outlineLayers.delete(clipId);
+      this.keyedFrameCache.delete(clipId);
     }
   }
 
@@ -2479,12 +2484,14 @@ export class PlaybackEngine {
     const needsManualEffects = !isIdentityEffects(effects) && !supportsCanvasFilter();
     // A plain chroma key (nothing else in the pixel pipeline) runs on the GPU: no readback, no per-pixel JavaScript, so a keyed video
     // (an AI cutout) plays at video speed on a phone. Anything more complex, or a browser without WebGL, uses the CPU path below.
+    // Slice Glitch runs in the same shader (a clip with a glitch and no key, like a collage cell, uses it with a key that keys nothing).
+    const sliceGlitch = pixelEffect?.type === "sliceGlitch" ? pixelEffect : undefined;
     let keyedOnGpu = false;
     if (
-      chromaKey &&
+      (chromaKey || sliceGlitch) &&
       !needsColorGrading &&
       !needsLut &&
-      !pixelEffect &&
+      (!pixelEffect || sliceGlitch) &&
       !needsManualEffects &&
       !mask &&
       this.glKeyer.available &&
@@ -2498,7 +2505,13 @@ export class PlaybackEngine {
           if (sourceWidth * sourceHeight * step * step <= PLAYING_KEY_MAX_PIXELS * 2) break;
         }
       }
-      const keyed = this.glKeyer.render(element, Math.max(1, Math.round(sourceWidth * gpuScale)), Math.max(1, Math.round(sourceHeight * gpuScale)), chromaKey);
+      const keyed = this.glKeyer.render(
+        element,
+        Math.max(1, Math.round(sourceWidth * gpuScale)),
+        Math.max(1, Math.round(sourceHeight * gpuScale)),
+        chromaKey ?? null,
+        sliceGlitch ? { elapsedSeconds, speed: sliceGlitch.speed ?? 1 } : undefined
+      );
       if (keyed) {
         source = keyed;
         keyedOnGpu = true;
@@ -2610,7 +2623,13 @@ export class PlaybackEngine {
     const mapX = source === element ? 1 : (source as HTMLCanvasElement).width / sourceWidth;
     const mapY = source === element ? 1 : (source as HTMLCanvasElement).height / sourceHeight;
     if (outline && !isIdentityOutline(outline)) {
-      this.drawOutline(context, source, box.cropX * mapX, box.cropY * mapY, box.cropWidth * mapX, box.cropHeight * mapY, box.width, box.height, outline);
+      // What the outline is made from: this clip's own picture. It only changes when the video shows a new frame or one of
+      // the effects below changes, so the (expensive) outline is built at that rate rather than on every display refresh.
+      const frameKey =
+        (element instanceof HTMLVideoElement ? `${element.currentSrc}|${this.videoFrameToken(element)}` : "still") +
+        `|${pixelEffect ? (pixelEffect.type === "sliceGlitch" ? Math.floor((elapsedSeconds * (pixelEffect.speed ?? 1)) / SLICE_GLITCH_BURST_SECONDS) : Math.floor(elapsedSeconds * 24)) : ""}` +
+        `|${JSON.stringify([chromaKey, pixelEffect?.type, pixelEffect?.speed, mask, colorGrading, lutId, transform.crop, effects.blur])}`;
+      this.drawOutline(context, source, box.cropX * mapX, box.cropY * mapY, box.cropWidth * mapX, box.cropHeight * mapY, box.width, box.height, outline, clipId, frameKey);
     }
     context.drawImage(
       source,
@@ -2675,8 +2694,6 @@ export class PlaybackEngine {
   /** Audio assets already sent for an MP3 preview copy (see `host.onAudioUndecodable`). */
   private audioProxyRequested = new Set<string>();
 
-  private outlineCanvasEl: HTMLCanvasElement | null = null;
-
   /** Draws a clip's coloured outline and glow (see `ClipOutline`) — as flat-colour copies of its visible shape, under the
    *  clip itself. Called with the clip's own transform already applied to `context`, so distances here are in sequence
    *  pixels and the outline follows the rotated edge. The outline is the shape drawn at many offsets around a circle of the
@@ -2691,59 +2708,92 @@ export class PlaybackEngine {
     sh: number,
     width: number,
     height: number,
-    outline: ClipOutline
+    outline: ClipOutline,
+    clipId: string | undefined,
+    frameKey: string
   ): void {
+    // The outline and glow are built into one layer (the picture's shape, its glow and its edge, with room around it for the
+    // glow), and drawn with a single `drawImage` per display refresh. The layer is rebuilt only when `frameKey` changes — a video
+    // frame, a glitch step, an edit — and at a size that suits playback: a glow is soft anyway, and building it at full size on
+    // every refresh (dozens of full-size copies plus a blur, per clip) is what made a template with outlined cutouts stutter.
     const dpr = deviceScaleOf(context);
-    // A flat-colour silhouette of the visible shape, at roughly the size it's shown at (never larger than needed).
-    const targetW = Math.max(1, Math.min(2048, Math.round(width * dpr)));
-    const targetH = Math.max(1, Math.min(2048, Math.round(height * dpr)));
-    const canvas = this.outlineCanvasEl ?? document.createElement("canvas");
-    if (!this.outlineCanvasEl) this.outlineCanvasEl = canvas;
-    if (canvas.width !== targetW || canvas.height !== targetH) {
-      canvas.width = targetW;
-      canvas.height = targetH;
+    const playing = this.host.isPlaying();
+    const longSide = Math.max(width, height) * dpr;
+    const layerScale = (Math.min(1, (playing ? OUTLINE_LAYER_PLAYING_MAX_PX : OUTLINE_LAYER_PAUSED_MAX_PX) / Math.max(1, longSide)) * dpr);
+    const glow = Math.max(0, outline.glow);
+    const radius = Math.max(0, outline.width);
+    // Room around the picture for the glow to spread into (frame pixels), then in layer pixels.
+    const padFrame = glow * 1.7 + radius + 2;
+    const pad = Math.ceil(padFrame * layerScale);
+    const shapeW = Math.max(1, Math.round(width * layerScale));
+    const shapeH = Math.max(1, Math.round(height * layerScale));
+    const layerW = shapeW + pad * 2;
+    const layerH = shapeH + pad * 2;
+    const signature = `${frameKey}|${JSON.stringify(outline)}|${layerW}x${layerH}`;
+    const cacheKey = clipId ?? "outline";
+    let entry = this.outlineLayers.get(cacheKey);
+    if (!entry) {
+      entry = { layer: document.createElement("canvas"), shape: document.createElement("canvas"), signature: "" };
+      this.outlineLayers.set(cacheKey, entry);
     }
-    const silhouette = canvas.getContext("2d");
-    if (!silhouette) return;
-    const paint = (color: string) => {
-      silhouette.globalCompositeOperation = "source-over";
-      silhouette.clearRect(0, 0, targetW, targetH);
-      silhouette.drawImage(source, sx, sy, sw, sh, 0, 0, targetW, targetH);
-      silhouette.globalCompositeOperation = "source-in";
-      silhouette.fillStyle = color;
-      silhouette.fillRect(0, 0, targetW, targetH);
-      silhouette.globalCompositeOperation = "source-over";
-    };
-
+    if (entry.signature !== signature) {
+      const { layer, shape } = entry;
+      if (layer.width !== layerW || layer.height !== layerH) {
+        layer.width = layerW;
+        layer.height = layerH;
+      }
+      if (shape.width !== shapeW || shape.height !== shapeH) {
+        shape.width = shapeW;
+        shape.height = shapeH;
+      }
+      const target = layer.getContext("2d");
+      const silhouette = shape.getContext("2d");
+      if (!target || !silhouette) return;
+      const paint = (color: string) => {
+        silhouette.globalCompositeOperation = "source-over";
+        silhouette.clearRect(0, 0, shapeW, shapeH);
+        silhouette.drawImage(source, sx, sy, sw, sh, 0, 0, shapeW, shapeH);
+        silhouette.globalCompositeOperation = "source-in";
+        silhouette.fillStyle = color;
+        silhouette.fillRect(0, 0, shapeW, shapeH);
+        silhouette.globalCompositeOperation = "source-over";
+      };
+      target.clearRect(0, 0, layerW, layerH);
+      if (glow > 0) {
+        paint(outline.glowColor ?? outline.color);
+        // Draw the silhouette far off the layer and offset its shadow back into view, so only the blurred shadow shows.
+        const far = 20000;
+        target.shadowColor = outline.glowColor ?? outline.color;
+        target.shadowBlur = glow * layerScale;
+        target.shadowOffsetX = far;
+        target.shadowOffsetY = 0;
+        // Twice: the export brightens its blurred glow (x2), and one shadow pass alone reads noticeably fainter.
+        target.drawImage(shape, pad - far, pad);
+        target.drawImage(shape, pad - far, pad);
+        target.shadowColor = "transparent";
+        target.shadowBlur = 0;
+        target.shadowOffsetX = 0;
+      }
+      if (radius > 0) {
+        paint(outline.color);
+        const radiusLayer = radius * layerScale;
+        const steps = Math.max(12, Math.min(32, Math.ceil(radiusLayer * 4)));
+        for (let i = 0; i < steps; i++) {
+          const angle = (i / steps) * Math.PI * 2;
+          target.drawImage(shape, pad + Math.cos(angle) * radiusLayer, pad + Math.sin(angle) * radiusLayer);
+        }
+      }
+      entry.signature = signature;
+    }
+    const padOut = pad / layerScale;
     context.save();
     context.filter = "none";
-    const glow = Math.max(0, outline.glow);
-    if (glow > 0) {
-      paint(outline.glowColor ?? outline.color);
-      // Draw the silhouette far off-canvas and offset its shadow back into view, so only the blurred shadow shows.
-      const far = 20000;
-      context.shadowColor = outline.glowColor ?? outline.color;
-      context.shadowBlur = glow * dpr;
-      context.shadowOffsetX = far * dpr;
-      context.shadowOffsetY = 0;
-      // Twice: the export brightens its blurred glow (x2), and one shadow pass alone reads noticeably fainter.
-      context.drawImage(canvas, -width / 2 - far, -height / 2, width, height);
-      context.drawImage(canvas, -width / 2 - far, -height / 2, width, height);
-      context.shadowColor = "transparent";
-      context.shadowBlur = 0;
-      context.shadowOffsetX = 0;
-    }
-    const radius = Math.max(0, outline.width);
-    if (radius > 0) {
-      paint(outline.color);
-      const steps = Math.max(16, Math.min(48, Math.ceil(radius * 4)));
-      for (let i = 0; i < steps; i++) {
-        const angle = (i / steps) * Math.PI * 2;
-        context.drawImage(canvas, -width / 2 + Math.cos(angle) * radius, -height / 2 + Math.sin(angle) * radius, width, height);
-      }
-    }
+    context.drawImage(entry.layer, -width / 2 - padOut, -height / 2 - padOut, width + padOut * 2, height + padOut * 2);
     context.restore();
   }
+
+  /** The built outline layer per clip (see `drawOutline`). */
+  private outlineLayers = new Map<string, { layer: HTMLCanvasElement; shape: HTMLCanvasElement; signature: string }>();
 
   /** A solid-fill canvas per distinct (color, size) pair, memoized (the same color/frame-size combo
    *  repeats far more often than it changes) rather than rebuilt every frame. Sized to MATCH
