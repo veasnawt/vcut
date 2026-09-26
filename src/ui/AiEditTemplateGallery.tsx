@@ -2,11 +2,13 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp } from "@veasnawt/vicons";
+import { aiEditThumbUrl } from "../api/client.ts";
 import { AI_EDIT_CATEGORIES, templatesInCategory, type AiEditCategoryId, type AiEditTemplate } from "../project/aiEdit.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 
-/** One template card: the user's own picture with the template's look laid over it (a CSS filter and a tint), so the
- *  thumbnail shows roughly what the style does to THEIR media — a plain gradient when there is no picture to show. */
+/** One template card. The thumbnail is a real example of the template (an AI Edit result on a sample portrait); if that
+ *  image can't load, the user's own picture with the template's look laid over it (a CSS filter and a tint) stands in, and
+ *  a plain gradient when there is no picture at all. */
 function TemplateCard({
   template,
   imageUrl,
@@ -22,6 +24,7 @@ function TemplateCard({
   onPick: () => void;
 }) {
   const t = useTranslation();
+  const [exampleFailed, setExampleFailed] = useState(false);
   return (
     <button
       type="button"
@@ -32,11 +35,26 @@ function TemplateCard({
       } ${selected ? "border-sky-400 ring-1 ring-sky-400/70" : "border-white/10 hover:border-white/25"}`}
     >
       <div className="relative aspect-[4/3] w-full overflow-hidden bg-[#0b0d13]">
-        {imageUrl && (
+        {!exampleFailed ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={imageUrl} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" style={{ filter: template.look.filter }} />
+          <img
+            src={aiEditThumbUrl(template.id)}
+            alt=""
+            loading="lazy"
+            draggable={false}
+            onError={() => setExampleFailed(true)}
+            className="h-full w-full object-cover"
+            style={{ objectPosition: "50% 28%" }}
+          />
+        ) : (
+          <>
+            {imageUrl && (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={imageUrl} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" style={{ filter: template.look.filter }} />
+            )}
+            <div className="absolute inset-0" style={{ background: template.look.tint, mixBlendMode: imageUrl ? "soft-light" : "normal" }} />
+          </>
         )}
-        <div className="absolute inset-0" style={{ background: template.look.tint, mixBlendMode: imageUrl ? "soft-light" : "normal" }} />
         <div className="absolute inset-0 bg-gradient-to-t from-black/55 via-transparent to-transparent" />
         {selected && <span className="absolute right-1.5 top-1.5 rounded-full bg-sky-500 px-1.5 py-0.5 text-[9px] font-semibold text-white">{t("Selected")}</span>}
       </div>

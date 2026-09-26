@@ -702,6 +702,12 @@ export interface AiEditRequestOptions {
   creativity?: number;
 }
 
+/** The example picture on an AI Edit template card (a real result of that template's prompt, shipped in the web app's
+ *  `public/ai-edit-thumbs/`). The mobile and desktop apps load it from the live site, like other hosted assets. */
+export function aiEditThumbUrl(templateId: string): string {
+  return `${isNative ? "https://vcut.io" : ""}/ai-edit-thumbs/${encodeURIComponent(templateId)}.jpg`;
+}
+
 /** AI Edit on a picture — applies the user's instruction to an image (or the playhead frame of a video). Synchronous:
  *  a still takes seconds. For a whole video clip use `runAiVideoEdit`. */
 export async function runAiEdit(
