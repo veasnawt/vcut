@@ -66,12 +66,20 @@ export function ImportTemplateDialog({ onClose }: { onClose: () => void }) {
         if (!cancelled) setTemplates(rows);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setListError(err instanceof Error ? err.message : t("Couldn't load templates."));
+        if (!cancelled) setListError(err instanceof Error ? err.message : "Couldn't load templates.");
       });
     return () => {
       cancelled = true;
     };
-  }, [mode, t]);
+    // Deliberately just `[mode]` — `t` (`useTranslation()`) returns a brand-new function every render
+    // (no memoization of its own), and this component also subscribes to `playhead`/`project`, which
+    // change often during ordinary use. Including `t` here re-ran this fetch on every one of those
+    // renders — cancelling the in-flight request before it ever resolved, so the list never left
+    // "Loading…" (a real bug, caught live: reproduced against the deployed app, not just reasoned
+    // about). The one string built inside this effect skips `t()` for the same reason `TemplateViewer.
+    // tsx`'s own identical-shaped effect already does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode]);
 
   const availableTags = useMemo(() => {
     const counts = new Map<string, number>();
