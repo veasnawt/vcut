@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Close, Delete, Image as ImageIcon, Lock, Music, Text as TextIcon, Video } from "@veasnawt/vicons";
 import { mediaUrl, thumbnailUrl } from "../api/client.ts";
 import { RemoveTemplateGroupCommand, ReplaceTemplateClipCommand } from "../commands/index.ts";
-import { templateGroupClips, templateGroupTracks, type TemplateGroupEntry } from "../project/template.ts";
+import { templateGroupClips, templateGroupItems, templateGroupTracks, type TemplateGroupItem } from "../project/template.ts";
 import type { Asset } from "../project/types.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
@@ -41,10 +41,14 @@ export function TemplateGroupPanel({ groupId, onClose }: { groupId: string; onCl
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   if (!project || !projectId) return null;
-  const entries = templateGroupClips(project, groupId);
+  // The header's own count is the TRUE number of clips (so "44 clips from this template" still means
+  // what it says); the rendered list below groups them by shared asset instead (`TemplateGroupItem`'s
+  // own doc comment) — the two numbers deliberately don't have to match.
+  const clipCount = templateGroupClips(project, groupId).length;
+  const items = templateGroupItems(project, groupId);
   const groupName = templateGroupTracks(project, groupId)[0]?.templateGroup?.name;
 
-  function jumpTo(entry: TemplateGroupEntry) {
+  function jumpTo(entry: TemplateGroupItem) {
     select([entry.clip.id]);
     setPlayhead(entry.clip.timelineStart);
     onClose();
@@ -72,7 +76,7 @@ export function TemplateGroupPanel({ groupId, onClose }: { groupId: string; onCl
         <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-4 py-3">
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold text-white">{groupName ?? t("Template")}</h2>
-            <p className="text-[11px] text-white/50">{t("{n} clips from this template", { n: entries.length })}</p>
+            <p className="text-[11px] text-white/50">{t("{n} clips from this template", { n: clipCount })}</p>
           </div>
           <button onClick={onClose} aria-label={t("Close")} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-white/50 transition hover:bg-white/10 hover:text-white">
             <Close size={16} />
@@ -80,11 +84,11 @@ export function TemplateGroupPanel({ groupId, onClose }: { groupId: string; onCl
         </div>
 
         <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-3">
-          {entries.length === 0 ? (
+          {items.length === 0 ? (
             <p className="px-1 py-6 text-center text-xs text-white/40">{t("This template's tracks are gone.")}</p>
           ) : (
             <div className="space-y-1.5">
-              {entries.map((entry) => {
+              {items.map((entry) => {
                 const Icon = KIND_ICON[entry.asset.kind as keyof typeof KIND_ICON] ?? Video;
                 const isFootage = entry.asset.kind === "video" || entry.asset.kind === "image";
                 const isAudio = entry.asset.kind === "audio";
@@ -103,6 +107,7 @@ export function TemplateGroupPanel({ groupId, onClose }: { groupId: string; onCl
                       <p className="truncate text-xs text-white/85">{entry.asset.kind === "text" ? entry.asset.textContent || t("Text") : entry.asset.name}</p>
                       <p className="text-[10px] text-white/40">
                         {isLocked ? t("Fixed by the template") : formatDuration(entry.clip.sourceOut - entry.clip.sourceIn)}
+                        {entry.clipIds.length > 1 ? t(" · used in {n} clips", { n: entry.clipIds.length }) : ""}
                       </p>
                     </div>
                     {isLocked ? (
@@ -131,7 +136,7 @@ export function TemplateGroupPanel({ groupId, onClose }: { groupId: string; onCl
         <div className="shrink-0 border-t border-white/10 p-3">
           <button
             onClick={() => setConfirmRemove(true)}
-            disabled={entries.length === 0}
+            disabled={clipCount === 0}
             className="flex w-full items-center justify-center gap-1.5 rounded-md border border-rose-500/25 bg-rose-500/10 py-2 text-xs font-medium text-rose-300 transition hover:bg-rose-500/20 disabled:opacity-40"
           >
             <Delete size={13} />

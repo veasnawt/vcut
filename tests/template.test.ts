@@ -10,6 +10,8 @@ import {
   setTemplateClipText,
   templateAudioAssets,
   templateClips,
+  templateGroupClips,
+  templateGroupItems,
   templateSlotCandidates,
   templateSlotRequiredLength,
   templateSlots,
@@ -979,6 +981,43 @@ describe("pendingTemplateAiTasks / matchingTemplateAiClipIds", () => {
     const tasks = pendingTemplateAiTasks(filled);
     assert.equal(tasks.length, 1, "an image's own trim length never changes what the edit does — must collapse to one task");
     assert.equal(tasks[0].affectedClipIds.length, 2);
+  });
+});
+
+describe("templateGroupItems", () => {
+  it("groups footage clips sharing the same asset into one row, but keeps text clips as separate rows", () => {
+    // The exact real-world shape reported: a template using one stacked/duplicated picture across many
+    // clips listed one "Replace" row per CLIP in the panel — 44 identical-looking rows for one picture.
+    const project = emptyProject([videoAsset("existing")]);
+    let templateBase = emptyProject([imageAsset("pic"), textAsset()]);
+    templateBase = addTrack(templateBase, "text");
+    let templateProject = addClip(templateBase, videoTrackId(templateBase), "pic", 0);
+    templateProject = addClip(templateProject, videoTrackId(templateProject), "pic", 2);
+    templateProject = addClip(templateProject, videoTrackId(templateProject), "pic", 4);
+    templateProject = addClip(templateProject, textTrackId(templateProject), "text1", 0);
+    templateProject = addClip(templateProject, textTrackId(templateProject), "text1", 2);
+    const resolved = sanitizeProjectForTemplate(templateProject);
+    const insert = new InsertTemplateCommand(resolved, 0, "My Template");
+    const afterInsert = insert.apply(project);
+    const groupId = afterInsert.sequence.tracks.find((t) => insert.createdTrackIds.includes(t.id))!.templateGroup!.id;
+
+    // The raw, ungrouped list still reports the true clip count (3 image + 2 text = 5).
+    assert.equal(templateGroupClips(afterInsert, groupId).length, 5);
+
+    const items = templateGroupItems(afterInsert, groupId);
+    // The 3 duplicated image clips collapse to ONE row; the 2 text clips stay as 2 separate rows —
+    // 1 + 2 = 3 rows total, not 5.
+    assert.equal(items.length, 3);
+    const imageItem = items.find((i) => i.asset.kind === "image")!;
+    assert.equal(imageItem.clipIds.length, 3);
+    const textItems = items.filter((i) => i.asset.kind === "text");
+    assert.equal(textItems.length, 2);
+    assert.ok(textItems.every((i) => i.clipIds.length === 1));
+  });
+
+  it("is empty once the group's tracks are gone, same as templateGroupClips", () => {
+    const project = emptyProject([videoAsset("existing")]);
+    assert.deepEqual(templateGroupItems(project, "tplgroup_nonexistent"), []);
   });
 });
 

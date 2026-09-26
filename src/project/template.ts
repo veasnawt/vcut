@@ -507,6 +507,51 @@ export function templateGroupClips(project: Project, groupId: string): TemplateG
     .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
 }
 
+/** One row for the "Edit template" panel (`TemplateGroupPanel.tsx`) — video/image/audio clips sharing
+ *  the exact same asset collapse into ONE row, the same "one row per distinct footage, not per clip"
+ *  convention `templateAudioAssets` already established for a template's own bundled music. A real,
+ *  reported bug otherwise: a template using one stacked/duplicated picture across dozens of clips (the
+ *  same real-world template that also triggered the AI-effects dedup fix — see `pendingTemplateAiTasks`'s
+ *  own doc comment) listed one "Replace" row per CLIP instead of per distinct picture, a wall of
+ *  identical-looking rows for something ONE click already handles: `ReplaceTemplateClipCommand`'s own
+ *  `fillTemplateSlot` already updates every clip sharing an asset in one action, however many rows
+ *  happened to show it. A text clip is NOT grouped this way — each one is its own row, jumped to
+ *  individually via "Select" rather than replaced, so seeing every occurrence separately is the point. */
+export interface TemplateGroupItem {
+  /** One of `clipIds` — used to resolve a thumbnail/duration/name and as the target clip for a
+   *  footage/audio Replace (cascades to every id in `clipIds` via `fillTemplateSlot`'s own project-wide
+   *  asset-id matching) or a text Select. */
+  clip: Clip;
+  /** Every clip using this exact asset — `[clip.id]` alone for a text row, which is never grouped. */
+  clipIds: string[];
+  asset: Asset;
+}
+
+/** Groups `templateGroupClips` by shared asset (see `TemplateGroupItem`'s own doc comment) — the whole
+ *  point of this existing as a separate function from `templateGroupClips` itself, which still returns
+ *  the raw, ungrouped, one-per-clip list other callers (like the group's own real clip COUNT) still
+ *  want. Preserves each item's own first-occurrence position, same convention `sanitizeProjectForTemplate`
+ *  already uses for a template's own slots. */
+export function templateGroupItems(project: Project, groupId: string): TemplateGroupItem[] {
+  const items: TemplateGroupItem[] = [];
+  const byAssetId = new Map<string, TemplateGroupItem>();
+  for (const entry of templateGroupClips(project, groupId)) {
+    if (entry.asset.kind === "text") {
+      items.push({ clip: entry.clip, clipIds: [entry.clip.id], asset: entry.asset });
+      continue;
+    }
+    const existing = byAssetId.get(entry.asset.id);
+    if (existing) {
+      existing.clipIds.push(entry.clip.id);
+      continue;
+    }
+    const item: TemplateGroupItem = { clip: entry.clip, clipIds: [entry.clip.id], asset: entry.asset };
+    byAssetId.set(entry.asset.id, item);
+    items.push(item);
+  }
+  return items;
+}
+
 /** Every track tagged with `templateGroup.id === groupId`, in their current timeline order — what
  *  `RemoveTemplateGroupCommand` removes as one step, and what a group's own displayed name is read off
  *  (every track in a group carries the identical `{id, name}`, so the first one found is representative
