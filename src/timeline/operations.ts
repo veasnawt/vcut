@@ -646,13 +646,15 @@ export interface VideoCutoutInfo {
   windowSeconds: number;
 }
 
-/** Clip fields that make a matted video play in place of the clip it was cut from: it starts at 0 (the cutout file
+/** Clip fields that make a matted video play in place of the clip it was cut from (the key is tight on purpose: the matte's
+ *  background is one flat colour, so a small similarity removes it, while a wide one also eats light skin and clothes, which sit
+ *  close to the mint key in RGB — measured on real footage: 0.2 turned a cream jacket and a face grey, 0.1 keeps them): it starts at 0 (the cutout file
  *  holds only the clip's own window), keeps the clip's speed, and keys out the flat background colour. */
 export function videoCutoutFields(source: Clip, info: VideoCutoutInfo): Pick<Clip, "sourceIn" | "sourceOut" | "chromaKey" | "speed"> {
   return {
     sourceIn: 0,
     sourceOut: info.windowSeconds,
-    chromaKey: { color: info.keyColor, similarity: 0.2, smoothness: 0.08, despill: 0.9 },
+    chromaKey: { color: info.keyColor, similarity: 0.1, smoothness: 0.06, despill: 0.9 },
     ...(source.speed !== undefined ? { speed: source.speed } : null),
   };
 }

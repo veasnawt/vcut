@@ -755,6 +755,10 @@ export interface EditorState {
  *  derived booleans and labels are mirrored into the store for the UI to read. */
 const undoStack = new UndoStack();
 
+/** Results of template AI steps already run in this session, so clips of the same footage and length (a cutout and its stacked
+ *  copies) reuse one run instead of paying for it again. Keyed by project, asset, tool and source window. */
+const templateAiResults = new Map<string, { asset: Asset; keyColor?: string; windowSeconds?: number }>();
+
 let aiTaskCounter = 0;
 let aiNoticeTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1974,7 +1978,12 @@ export const useEditorStore = create<EditorState>((set, get) => {
         await get().save();
         if (step.tool === "cutout" || step.tool === "video-cutout") {
           if (asset.kind === "video") {
-            const cutout = await api.cutoutVideoClip(projectId, clipId, step.keepAudio ?? false);
+            const cacheKey = `${projectId}|${asset.id}|video-cutout|${step.keepAudio ? "a" : "s"}|${found.clip.sourceIn}|${found.clip.sourceOut}`;
+            let cutout = templateAiResults.get(cacheKey) as { asset: Asset; keyColor: string; windowSeconds: number } | undefined;
+            if (!cutout) {
+              cutout = await api.cutoutVideoClip(projectId, clipId, step.keepAudio ?? false);
+              templateAiResults.set(cacheKey, cutout);
+            }
             const tagged = withAiOrigin(cutout.asset, asset.id, { ...step, sourceStart: found.clip.sourceIn });
             get().run(new ApplyVideoCutoutCommand(clipId, tagged, { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds }));
           } else {

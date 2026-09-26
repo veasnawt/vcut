@@ -64,6 +64,9 @@ export interface TemplateAiSummary {
 export function templateAiSummary(tracks: readonly { clips: readonly Clip[] }[], assets: readonly Asset[]): TemplateAiSummary {
   let steps = 0;
   let credits = 0;
+  // Clips of the same footage with the same step and length share ONE run (the template runner reuses the result), so the cost is
+  // counted once — e.g. a cutout used for a subject and its stacked echo copies.
+  const seen = new Set<string>();
   for (const track of tracks) {
     for (const clip of track.clips) {
       if (!clip.templateAiSteps?.length) continue;
@@ -71,6 +74,9 @@ export function templateAiSummary(tracks: readonly { clips: readonly Clip[] }[],
       const isImage = asset?.kind === "image";
       const seconds = clipDuration(clip);
       for (const step of clip.templateAiSteps) {
+        const key = `${clip.assetId}|${JSON.stringify(step)}|${Math.round(seconds * 100)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         steps += 1;
         credits += estimateAiStepCredits(step, seconds, isImage);
       }

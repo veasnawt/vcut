@@ -174,3 +174,14 @@ describe("using an AI template", () => {
     assert.equal(dropped.sequence.tracks.flatMap((t) => t.clips).some((c) => c.id === overlayId), false);
   });
 });
+
+describe("template AI cost", () => {
+  it("counts one run for clips of the same footage, step and length (a cutout and its stacked copies)", () => {
+    const raw = video("raw");
+    const cutout = withAiOrigin(video("cutout", { duration: 5 }), "raw", cutoutStep);
+    const template = sanitizeProjectForTemplate(build([raw, cutout], [[clip("a", "cutout")], [clip("b", "cutout")], [clip("c", "cutout", { sourceOut: 4 })]]));
+    const summary = templateAiSummary(template.tracks, template.assets);
+    // two lengths (3 s x2 -> one run, 4 s -> another)
+    assert.equal(summary.steps, 2);
+  });
+});
