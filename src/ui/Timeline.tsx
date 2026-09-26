@@ -1436,6 +1436,7 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
                         endSeconds={end}
                         pixelsPerSecond={pixelsPerSecond}
                         fps={project.sequence.fps}
+                        onSnapGuideChange={setSnapGuideTime}
                         onEdit={() => setOpenGroupId(row.groupId)}
                       />
                     </div>

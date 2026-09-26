@@ -5,7 +5,14 @@ import { Store } from "@veasnawt/vicons";
 import { MoveTemplateGroupCommand } from "../commands/index.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import { useEditorStore } from "../store/editorStore.ts";
-import { snapToFrame } from "../timeline/time.ts";
+import { resolveMoveDrag } from "../timeline/interaction.ts";
+import { snapPoints } from "../timeline/queries.ts";
+
+// Same feel as a normal clip's own move-drag (`TimelineClip.tsx`'s identically-named constants) —
+// touch gets a fatter radius since a finger is less precise than a pointer. Duplicated rather than
+// imported since those are that file's own private constants; keep the two in sync if either changes.
+const SNAP_PIXELS = 16;
+const TOUCH_SNAP_PIXELS = 19;
 
 /** What a track that's part of one "Insert into Timeline" (`Track.templateGroup`) renders as instead of
  *  its own row — a real, direct request: even with every one of those tracks visually tagged (a colored
@@ -45,7 +52,9 @@ export function TemplateGroupRowHeader({ name, trackCount, height }: { name: str
  *  multi-track group has no clean meaning the way trimming one clip does), but the whole bar drags
  *  earlier/later as one unit, same as any other clip on the timeline — a real, direct request: a
  *  template that can't even be repositioned reads as a second-class citizen next to every other clip
- *  that can. */
+ *  that can, snapping included (`resolveMoveDrag`, the exact same resolver `TimelineClip.tsx`'s own
+ *  move-drag uses, treating the group's own `[startSeconds, endSeconds]` span as its "selection" the
+ *  same way a multi-clip group drag already does there). */
 export function TemplateGroupLaneBar({
   groupId,
   name,
@@ -53,6 +62,7 @@ export function TemplateGroupLaneBar({
   endSeconds,
   pixelsPerSecond,
   fps,
+  onSnapGuideChange,
   onEdit,
 }: {
   groupId: string;
@@ -61,15 +71,20 @@ export function TemplateGroupLaneBar({
   endSeconds: number;
   pixelsPerSecond: number;
   fps: number;
+  /** Timeline.tsx's own shared amber snap-guide line — the same callback `TimelineClip.tsx`'s own drag
+   *  already feeds, so a template bar's drag shows the identical guide instead of a separate one. */
+  onSnapGuideChange: (time: number | null) => void;
   onEdit: () => void;
 }) {
   const t = useTranslation();
   const run = useEditorStore((s) => s.run);
+  const project = useEditorStore((s) => s.project);
+  const playhead = useEditorStore((s) => s.playhead);
   // Live, LOCAL-only offset while a drag is in flight — nothing is committed to the (undo-tracked)
   // project until release, the same "preview locally, commit once on pointerup" shape every other
   // timeline drag in this app already follows (see `TransitionJunction.tsx`'s own duration drag).
   const [dragOffsetSeconds, setDragOffsetSeconds] = useState(0);
-  const drag = useRef<{ pointerId: number; startClientX: number } | null>(null);
+  const drag = useRef<{ pointerId: number; startClientX: number; isTouch: boolean; excludeClipIds: string[] } | null>(null);
 
   const left = (startSeconds + dragOffsetSeconds) * pixelsPerSecond;
   const width = Math.max(4, (endSeconds - startSeconds) * pixelsPerSecond);
@@ -79,7 +94,8 @@ export function TemplateGroupLaneBar({
     if (!current || current.pointerId !== e.pointerId) return;
     drag.current = null;
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-    if (commit && dragOffsetSeconds !== 0) run(new MoveTemplateGroupCommand(groupId, snapToFrame(dragOffsetSeconds, fps)));
+    onSnapGuideChange(null);
+    if (commit && dragOffsetSeconds !== 0) run(new MoveTemplateGroupCommand(groupId, dragOffsetSeconds));
     setDragOffsetSeconds(0);
   }
 
@@ -88,14 +104,36 @@ export function TemplateGroupLaneBar({
       style={{ left, width }}
       className="absolute inset-y-1 flex touch-none select-none items-center gap-2 overflow-hidden rounded-md border border-sky-400/40 bg-sky-500/[0.12] px-2 active:cursor-grabbing"
       onPointerDown={(e) => {
-        if (e.button !== 0) return;
-        drag.current = { pointerId: e.pointerId, startClientX: e.clientX };
+        if (e.button !== 0 && e.pointerType === "mouse") return;
+        if (!project) return;
+        // Excludes the group's OWN clips from its own snap candidates — otherwise it would constantly
+        // "snap" to its own unmoved edges, same reasoning `TimelineClip.tsx`'s own group-drag excludes
+        // every clip in the drag's own selection.
+        const excludeClipIds = project.sequence.tracks
+          .filter((tr) => tr.templateGroup?.id === groupId)
+          .flatMap((tr) => tr.clips.map((c) => c.id));
+        drag.current = { pointerId: e.pointerId, startClientX: e.clientX, isTouch: e.pointerType === "touch", excludeClipIds };
         e.currentTarget.setPointerCapture(e.pointerId);
       }}
       onPointerMove={(e) => {
         const current = drag.current;
-        if (!current || current.pointerId !== e.pointerId) return;
-        setDragOffsetSeconds((e.clientX - current.startClientX) / pixelsPerSecond);
+        if (!current || current.pointerId !== e.pointerId || !project) return;
+        const rawDelta = (e.clientX - current.startClientX) / pixelsPerSecond;
+        // The playhead is excluded from a TOUCH drag's own candidates for the same reason
+        // `TimelineClip.tsx`'s own move-drag excludes it there — see that file's comment on why an
+        // omnipresent screen-fixed playhead on mobile would otherwise be a near-constant snap target.
+        const points = snapPoints(project, { excludeClipIds: current.excludeClipIds, playhead: current.isTouch ? undefined : playhead });
+        const resolved = resolveMoveDrag({
+          rawDelta,
+          selectionStart: startSeconds,
+          selectionEnd: endSeconds,
+          points,
+          pixelsPerSecond,
+          fps,
+          pixelRadius: current.isTouch ? TOUCH_SNAP_PIXELS : SNAP_PIXELS,
+        });
+        setDragOffsetSeconds(resolved.delta);
+        onSnapGuideChange(resolved.target);
       }}
       onPointerUp={(e) => finishDrag(e, true)}
       onPointerCancel={(e) => finishDrag(e, false)}
