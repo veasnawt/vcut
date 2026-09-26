@@ -72,6 +72,7 @@ export function TemplatePreviewScreen({ onBack }: { onBack?: () => void }) {
   const trimTemplateSlot = useEditorStore((s) => s.trimTemplateSlot);
   const setTemplateClipText = useEditorStore((s) => s.setTemplateClipText);
   const setPlaying = useEditorStore((s) => s.setPlaying);
+  const setPlayhead = useEditorStore((s) => s.setPlayhead);
   const run = useEditorStore((s) => s.run);
 
   const clips = project ? templateClips(project) : [];
@@ -112,6 +113,11 @@ export function TemplatePreviewScreen({ onBack }: { onBack?: () => void }) {
   function selectClip(entry: TemplateClipEntry) {
     setSelectedClipId(entry.clip.id);
     setActiveTab(entry.asset.kind === "text" ? "text" : "video");
+    // Show the clip in the preview: pause and move the playhead to it. A little way in rather than exactly at its start, so
+    // a clip that fades or pops in is already fully on screen instead of caught mid-transition.
+    const length = entry.clip.sourceOut - entry.clip.sourceIn;
+    setPlaying(false);
+    setPlayhead(entry.clip.timelineStart + Math.min(0.35, Math.max(0, length) / 2));
   }
 
   const selected = clips.find((e) => e.clip.id === selectedClipId) ?? null;
