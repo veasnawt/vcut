@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import { buildExportPlan } from "../src/export/buildExportPlan.ts";
 import { computeTransformedBox } from "../src/playback/transformGeometry.ts";
 import { findClip } from "../src/project/createProject.ts";
+import { deserializeProject, serializeProject } from "../src/project/serialize.ts";
 import { applyGridLayout, cellFillTransform, cellToPixels, findGridLayout, GRID_LAYOUTS, stackCopies } from "../src/timeline/collage.ts";
 import { addClip } from "../src/timeline/operations.ts";
 import { clipsOf, colorAsset, emptyProject, videoTrackId } from "./fixture.ts";
@@ -97,6 +98,10 @@ describe("grid layout and stacked copies", () => {
     assert.ok((far.effects!.opacity) < (near.effects!.opacity));
     assert.ok(far.timelineStart > near.timelineStart);
     assert.equal(findGridLayout("nope"), undefined);
+    for (const id of result.clipIds) assert.equal(findClip(result.project, id)!.clip.echoOf, first, "copies point back at the original");
+    assert.equal(findClip(result.project, first)!.clip.echoOf, undefined);
+    const reloaded = deserializeProject(serializeProject(result.project));
+    assert.equal(findClip(reloaded, result.clipIds[0])!.clip.echoOf, first, "echoOf survives save and load");
   });
 });
 

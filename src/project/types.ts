@@ -919,6 +919,10 @@ export interface Clip {
   textAnimationOut?: TextInOutAnimation;
   /** A coloured outline and glow around the clip's visible shape (see `ClipOutline`). Absent = none. */
   outline?: ClipOutline;
+  /** Set on the offset copies `stackCopies` makes: the id of the clip they echo. Live preview draws such a copy from its
+   *  original's already-playing video instead of decoding the file a second (and third) time — phones only have a few
+   *  hardware video decoders, and stacked echoes were spending them all. Export still renders each copy on its own. */
+  echoOf?: string;
   /** Template clips only: the AI steps to run on whatever media fills this clip's slot, in order (see `Asset.aiOrigin`). */
   templateAiSteps?: AiRecipeStep[];
   /** Real per-word timing for `textAnimation.type === "wordHighlight"`, CLIP-RELATIVE seconds (same

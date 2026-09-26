@@ -1336,6 +1336,8 @@ export class PlaybackEngine {
    *  because the same asset can legitimately appear at two different timeline positions at once —
    *  one element can't be in two places. */
   private mediaFor(clip: Clip, kind: "video" | "image"): PoolElement | null {
+    const original = kind === "video" ? this.echoedOriginal(clip) : null;
+    if (original) return this.mediaFor(original, "video");
     const existing = this.pool.get(clip.id);
     // The URL this clip's media should load from RIGHT NOW: a video whose original couldn't be played gets a
     // preview proxy, which changes the URL under an element that was built from (and failed on) the old one.
@@ -1397,6 +1399,22 @@ export class PlaybackEngine {
     this.pool.set(clip.id, { element, lastUsed: performance.now(), assetId: clip.assetId, urlKey: kind === "video" ? stableUrlKey(url) : undefined });
     this.evictStale();
     return element;
+  }
+
+  /** The clip a stacked echo copy (`Clip.echoOf`) can borrow its picture from, or `null` when it must decode on its own: the
+   *  original is gone, plays different footage or at a different point, or is retimed. */
+  private echoedOriginal(clip: Clip): Clip | null {
+    if (!clip.echoOf || clip.reverse || (clip.speed !== undefined && clip.speed !== 1) || (clip.speedCurve && clip.speedCurve.length >= 2)) return null;
+    const project = this.host.getProject();
+    if (!project) return null;
+    for (const track of project.sequence.tracks) {
+      const other = track.clips.find((c) => c.id === clip.echoOf);
+      if (!other) continue;
+      if (other.echoOf || other.assetId !== clip.assetId || other.reverse) return null;
+      if ((other.speed !== undefined && other.speed !== 1) || (other.speedCurve && other.speedCurve.length >= 2)) return null;
+      return Math.abs(other.sourceIn - clip.sourceIn) < 1e-3 ? other : null;
+    }
+    return null;
   }
 
   /** Releases one pooled element. An `<img>` only needs its `src` dropped; a media element also has
@@ -2102,7 +2120,9 @@ export class PlaybackEngine {
               : Math.max(0, clipSourceTimeAtElapsed(clip, time - clip.timelineStart));
         // The track's own visibility no longer needs checking here: `drawVideoLayer` already skips
         // hidden tracks entirely before this is ever called.
-        this.syncMedia(clip.id, element, sourceTime, this.host.isPlaying(), clipSpeedAtElapsed(clip, time - clip.timelineStart), clip.reverse === true, followed !== null);
+        // An echo copy shares its original's element (see `mediaFor`), which the original already keeps in sync.
+        const borrowed = this.echoedOriginal(clip) !== null;
+        if (!borrowed) this.syncMedia(clip.id, element, sourceTime, this.host.isPlaying(), clipSpeedAtElapsed(clip, time - clip.timelineStart), clip.reverse === true, followed !== null);
         // A video clip's own audio is silenced/scaled when the clip itself is muted/gained, OR when the
         // whole track it's on is muted — matching what export does (`buildExportPlan.ts`'s own
         // `buildTrackStreams` folds `track.muted` into the same `hasAudio` check), so preview and output
@@ -2120,7 +2140,9 @@ export class PlaybackEngine {
         const { gain: transitionGain } = resolveAudioTransitionGain(track, clip, time);
         const audioGain = resolveClipGain(clip, time - clip.timelineStart) * transitionGain;
         const audioMuted = (clip.mutedAudio ?? false) || track.muted;
-        if (clip.reverse) {
+        if (borrowed) {
+          // no audio of its own: the original's element already feeds the mix
+        } else if (clip.reverse) {
           this.reverseClipActiveThisFrame = true;
           this.audioMixEngine.syncVideoClipAudio(clip, element, 0, true);
           this.audioMixEngine.syncRetimedVideoClipAudio(clip, sourceTime, clipSpeedAtElapsed(clip, time - clip.timelineStart), audioGain, audioMuted, this.host.isPlaying());

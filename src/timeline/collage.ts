@@ -252,7 +252,7 @@ export function stackCopies(project: Project, clipId: string, options: StackOpti
 
   // Farthest copy first at `baseIndex`, so the nearest ends up directly under the original.
   for (let i = count; i >= 1; i--) {
-    const copy: Clip = { ...structuredClone(original), id: newId("c") };
+    const copy: Clip = { ...structuredClone(original), id: newId("c"), echoOf: original.id };
     copy.timelineStart = Math.max(0, original.timelineStart + options.delay * i);
     copy.transform = {
       ...baseTransform,
