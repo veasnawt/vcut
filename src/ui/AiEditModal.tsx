@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Ai, Close, Refresh } from "@veasnawt/vicons";
 import { mediaUrl, thumbnailUrl } from "../api/client.ts";
-import { ReplaceClipAssetCommand, SwapClipAssetCommand } from "../commands/index.ts";
+import { AddClipCommand, ReplaceClipAssetCommand, SwapClipAssetCommand } from "../commands/index.ts";
 import {
   AI_EDIT_CATEGORIES,
   AI_EDIT_DEFAULT_CREATIVITY,
@@ -19,7 +19,9 @@ import {
   type AiEditPreserve,
   type AiEditTemplate,
 } from "../project/aiEdit.ts";
-import { findAsset, findClip } from "../project/createProject.ts";
+import { clipEnd, findAsset, findClip } from "../project/createProject.ts";
+import { defaultClipDuration } from "../timeline/operations.ts";
+import { nonOverlappingStart } from "../timeline/queries.ts";
 import type { Asset } from "../project/types.ts";
 import { useEditorStore } from "../store/editorStore.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
@@ -148,8 +150,17 @@ export function AiEditModal({ clipId, onClose }: { clipId: string; onClose: () =
   }
 
   function handleAddAsNew() {
-    if (!generatedAsset) return;
-    addAssetAtPlayhead(generatedAsset.id);
+    if (!generatedAsset || !project || !clip) return;
+    // Right after the clip being edited, on its own track, and never on top of a clip that is already there: the placement
+    // looks for the first free gap from the end of the current clip.
+    const found = findClip(project, clipId);
+    const sameKind = found && found.track.kind === (generatedAsset.kind === "audio" ? "audio" : "video") && !found.track.locked;
+    if (found && sameKind) {
+      const start = nonOverlappingStart(found.track, clipEnd(clip), defaultClipDuration(generatedAsset));
+      run(new AddClipCommand(found.track.id, generatedAsset.id, start));
+    } else {
+      addAssetAtPlayhead(generatedAsset.id, undefined, { avoidOverlap: true });
+    }
     setStatus(t("Added AI edited asset to timeline"));
     onClose();
   }
