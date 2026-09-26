@@ -5,7 +5,7 @@ import { Add, ChevronDown } from "@veasnawt/vicons";
 import { thumbnailUrl } from "../api/client.ts";
 import { AddTrackCommand, ReorderTrackCommand, SetClipTransitionCommand } from "../commands/index.ts";
 import { OUTRO_DURATION_SECONDS } from "../export/outro.ts";
-import { clipDuration, sequenceDuration } from "../project/createProject.ts";
+import { clipDuration, clipEnd, sequenceDuration } from "../project/createProject.ts";
 import { DEFAULT_TEXT_STYLE, type Track, type TrackKind } from "../project/types.ts";
 import { trackKindForAsset } from "../timeline/operations.ts";
 import { useEditorStore } from "../store/editorStore.ts";
@@ -24,6 +24,7 @@ import { TimelineClip } from "./TimelineClip.tsx";
 import { TransitionJunction } from "./TransitionJunction.tsx";
 import { ACCEPTED_EXTENSIONS_BY_KIND, TrackHeader } from "./TrackHeader.tsx";
 import { TrackKindPickerMenu } from "./TrackKindPickerMenu.tsx";
+import { TemplateGroupLaneBar, TemplateGroupRowHeader } from "./TemplateGroupRow.tsx";
 import { TemplateGroupPanel } from "./TemplateGroupPanel.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 import { useIsMobile } from "./useIsMobile.ts";
@@ -643,24 +644,64 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
     [isMobile, recording]
   );
 
-  /** Which track row a vertical pointer position falls on — a running sum of each track's own height
-   *  rather than a single division, since rows are no longer all `TRACK_HEIGHT` tall below `lg` (an
-   *  empty track is shorter — see `isTrackCompact`). */
+  /** Every real track (unchanged), OR — for every track sharing one `Track.templateGroup.id` — a SINGLE
+   *  synthetic row standing in for all of them (see `TemplateGroupRow.tsx`'s own doc comment for why).
+   *  Built once per render off `project.sequence.tracks` and consumed everywhere a "how many rows, how
+   *  tall" question comes up (both render passes below, plus `resolveTrackAt`), so those two things can
+   *  never disagree with each other about how many rows there actually are. */
+  interface TrackDisplayRow {
+    type: "track";
+    track: Track;
+  }
+  interface GroupDisplayRow {
+    type: "group";
+    groupId: string;
+    name: string;
+    tracks: Track[];
+  }
+  const displayRows = useMemo((): (TrackDisplayRow | GroupDisplayRow)[] => {
+    const tracks = project?.sequence.tracks;
+    if (!tracks) return [];
+    const rows: (TrackDisplayRow | GroupDisplayRow)[] = [];
+    const seenGroups = new Set<string>();
+    for (const track of tracks) {
+      const group = track.templateGroup;
+      if (!group) {
+        rows.push({ type: "track", track });
+        continue;
+      }
+      if (seenGroups.has(group.id)) continue;
+      seenGroups.add(group.id);
+      rows.push({ type: "group", groupId: group.id, name: group.name, tracks: tracks.filter((t) => t.templateGroup?.id === group.id) });
+    }
+    return rows;
+  }, [project?.sequence.tracks]);
+
+  const rowHeight = useCallback(
+    (row: TrackDisplayRow | GroupDisplayRow): number => (row.type === "group" ? TRACK_HEIGHT : isTrackCompact(row.track) ? EMPTY_TRACK_HEIGHT : TRACK_HEIGHT),
+    [isTrackCompact]
+  );
+
+  /** Which track row a vertical pointer position falls on — a running sum of each ROW's own height
+   *  (see `displayRows` above) rather than a single division, since rows are no longer all `TRACK_HEIGHT`
+   *  tall below `lg` (an empty track is shorter — see `isTrackCompact`) NOR one row per real track (a
+   *  collapsed template group is one row for several). A collapsed group's own row resolves to `null` —
+   *  dropping media directly onto its summary bar isn't supported; the "Edit template" panel is the only
+   *  way into its contents. */
   const resolveTrackAt = useCallback(
     (clientY: number): string | null => {
       const lanes = lanesRef.current;
-      const tracks = project?.sequence.tracks;
-      if (!lanes || !tracks) return null;
+      if (!lanes) return null;
       let y = clientY - lanes.getBoundingClientRect().top;
       if (y < 0) return null;
-      for (const track of tracks) {
-        const h = isTrackCompact(track) ? EMPTY_TRACK_HEIGHT : TRACK_HEIGHT;
-        if (y < h) return track.id;
+      for (const row of displayRows) {
+        const h = rowHeight(row);
+        if (y < h) return row.type === "group" ? null : row.track.id;
         y -= h;
       }
       return null;
     },
-    [project?.sequence.tracks, isTrackCompact]
+    [displayRows, rowHeight]
   );
 
   /** Whether a screen point falls on the "add track" row rendered right after the last real track
@@ -1179,18 +1220,21 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
                 rather than being a second independently-scrollable area that could drift out of sync. */}
             <div className="flex-1 overflow-hidden">
               <div ref={headerListRef}>
-                {project.sequence.tracks.map((track) => (
-                  <TrackHeader
-                    key={track.id}
-                    track={track}
-                    height={isTrackCompact(track) ? EMPTY_TRACK_HEIGHT : TRACK_HEIGHT}
-                    dropIndicator={trackDropIndicator?.trackId === track.id ? trackDropIndicator.position : null}
-                    onDragOverRow={(trackId, position) => setTrackDropIndicator({ trackId, position })}
-                    onDropRow={dropTrackOnRow}
-                    onDragEndRow={() => setTrackDropIndicator(null)}
-                    onOpenGroup={setOpenGroupId}
-                  />
-                ))}
+                {displayRows.map((row) =>
+                  row.type === "group" ? (
+                    <TemplateGroupRowHeader key={row.groupId} name={row.name} trackCount={row.tracks.length} height={TRACK_HEIGHT} />
+                  ) : (
+                    <TrackHeader
+                      key={row.track.id}
+                      track={row.track}
+                      height={rowHeight(row)}
+                      dropIndicator={trackDropIndicator?.trackId === row.track.id ? trackDropIndicator.position : null}
+                      onDragOverRow={(trackId, position) => setTrackDropIndicator({ trackId, position })}
+                      onDropRow={dropTrackOnRow}
+                      onDragEndRow={() => setTrackDropIndicator(null)}
+                    />
+                  )
+                )}
                 <div
                   style={{ height: NEW_TRACK_ROW_HEIGHT }}
                   className={`flex items-center border-b border-white/10 px-2 transition ${
@@ -1373,7 +1417,30 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
               }}
               onMouseDown={beginMarquee}
             >
-              {project.sequence.tracks.map((track) => (
+              {displayRows.map((row) => {
+                if (row.type === "group") {
+                  const groupClips = row.tracks.flatMap((tr) => tr.clips);
+                  const start = groupClips.length ? Math.min(...groupClips.map((c) => c.timelineStart)) : 0;
+                  const end = groupClips.length ? Math.max(...groupClips.map((c) => clipEnd(c))) : 0;
+                  return (
+                    <div key={row.groupId} style={{ height: TRACK_HEIGHT }} className="relative border-b border-white/10 bg-white/[0.015]">
+                      {isMobile && (
+                        <div style={{ position: "absolute", left: -HEADER_WIDTH - 4, top: 0, bottom: 0, width: HEADER_WIDTH }} className="z-10">
+                          <TemplateGroupRowHeader name={row.name} trackCount={row.tracks.length} height={TRACK_HEIGHT} />
+                        </div>
+                      )}
+                      <TemplateGroupLaneBar
+                        name={row.name}
+                        startSeconds={start}
+                        endSeconds={end}
+                        pixelsPerSecond={pixelsPerSecond}
+                        onEdit={() => setOpenGroupId(row.groupId)}
+                      />
+                    </div>
+                  );
+                }
+                const track = row.track;
+                return (
                 <div
                   key={track.id}
                   style={{ height: isTrackCompact(track) ? EMPTY_TRACK_HEIGHT : TRACK_HEIGHT }}
@@ -1412,7 +1479,6 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
                         onDragOverRow={(trackId, position) => setTrackDropIndicator({ trackId, position })}
                         onDropRow={dropTrackOnRow}
                         onDragEndRow={() => setTrackDropIndicator(null)}
-                        onOpenGroup={setOpenGroupId}
                       />
                     </div>
                   )}
@@ -1501,7 +1567,8 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
               {/* Drop-zone twin of the header column's `AddTrackButton` row above — same Y position
                   (both sit right after the same track list, and the header column tracks this one's
                   scroll via the transform above), hit-tested by `isOverNewTrackRow` via its own ref

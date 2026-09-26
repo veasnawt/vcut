@@ -2,7 +2,7 @@
 
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDown, ArrowUp, Delete, Lock, Menu, Music, Store, Text as TextIcon, Unlock, Video, Visibility, VisibilityOff } from "@veasnawt/vicons";
+import { ArrowDown, ArrowUp, Delete, Lock, Menu, Music, Text as TextIcon, Unlock, Video, Visibility, VisibilityOff } from "@veasnawt/vicons";
 import { MoveTrackLayerCommand, RemoveTrackCommand, SetTrackFlagCommand } from "../commands/index.ts";
 import { useTranslation } from "../i18n/useTranslation.ts";
 import type { Track } from "../project/types.ts";
@@ -275,7 +275,6 @@ export function TrackHeader({
   onDragOverRow,
   onDropRow,
   onDragEndRow,
-  onOpenGroup,
 }: {
   track: Track;
   /** Timeline.tsx's own `isTrackCompact` result, already resolved to a pixel height there — this
@@ -287,9 +286,6 @@ export function TrackHeader({
   onDragOverRow: (trackId: string, position: "before" | "after") => void;
   onDropRow: (sourceTrackId: string, targetTrackId: string, position: "before" | "after") => void;
   onDragEndRow: () => void;
-  /** Opens `TemplateGroupPanel.tsx` for `track.templateGroup.id` — only called when the row actually
-   *  shows the badge below, i.e. only when `track.templateGroup` is set. */
-  onOpenGroup: (groupId: string) => void;
 }) {
   const t = useTranslation();
   const activeTrackId = useEditorStore((s) => s.activeTrackId);
@@ -348,12 +344,6 @@ export function TrackHeader({
         />
       )}
 
-      {/* One continuous band down the left edge of every track a single "Insert into Timeline" created
-          together (`Track.templateGroup`) — needs no cross-row coordination since adjacent rows sharing
-          the same group naturally form one unbroken stripe, which is exactly what reads as "these belong
-          together" without a label on every single row. */}
-      {track.templateGroup && <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-[3px] bg-sky-400/70" />}
-
       <span
         draggable
         onDragStart={(e) => {
@@ -388,24 +378,6 @@ export function TrackHeader({
           visible at a glance rather than something the user has to remember. */}
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${isActive ? "bg-sky-400" : "bg-transparent"}`} />
       <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-white/80">{track.name}</span>
-
-      {/* Opens `TemplateGroupPanel.tsx` — every clip from this same "Insert into Timeline" across
-          however many tracks it created, in one place, rather than making the user hunt for them via
-          the stripe alone. Same `Store` glyph as the toolbar's own "Templates" button, for one
-          consistent "this came from a template" visual language across the app. */}
-      {track.templateGroup && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onOpenGroup(track.templateGroup!.id);
-          }}
-          title={track.templateGroup.name}
-          aria-label={t("Manage {name}", { name: track.templateGroup.name })}
-          className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded text-sky-300/80 transition hover:bg-sky-400/10 hover:text-sky-300"
-        >
-          <Store size={13} />
-        </button>
-      )}
 
       {/* Everything else — Lock/Visibility/Mute/Solo/Import/Delete — lives in here now instead of
           permanently in the row; see `TrackActionsMenu`'s own doc comment for why. */}

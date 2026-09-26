@@ -70,7 +70,23 @@ export function TemplateAiRunDialog({ onDone, onStop }: { onDone: () => void; on
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-3 sm:items-center" role="dialog" aria-modal="true">
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-3 sm:items-center"
+      role="dialog"
+      aria-modal="true"
+      // This used to be the only fixed-backdrop dialog in the app without this: it only ever rendered
+      // from `TemplateFillScreen.tsx`, a plain full-screen view with no ancestor of its own that closes
+      // on a stray click, so a bare click bubbling past it was harmless there. `ImportTemplateDialog.tsx`
+      // now also renders this (the in-editor "Templates" tool's own AI-effects gate), nested inside ITS
+      // OWN backdrop, which DOES close on any click (`onClick={onClose}`) — without this, clicking "Run
+      // AI effects" (or anything else in here) bubbled straight up and closed the whole Templates dialog
+      // the instant it was clicked. The AI run itself kept going regardless (`runTemplateAiStep` is a
+      // store action, not tied to this component staying mounted), so nothing actually broke — but its
+      // own "Applying AI effects…" progress UI vanished immediately, making a real, multi-minute
+      // in-progress run look like nothing had happened at all: a real, reported "it's not working"
+      // complaint that was actually just "it's running invisibly."
+      onClick={(e) => e.stopPropagation()}
+    >
       <div className="w-full max-w-md rounded-2xl border border-white/10 bg-[#14161c] p-4 shadow-2xl">
         {phase === "review" && (
           <>
