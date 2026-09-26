@@ -1252,4 +1252,13 @@ export const RESOLUTION_PRESETS = [
   { label: "Square 1080 × 1080", width: 1080, height: 1080 },
 ] as const;
 
+/** The preset that suits a picture of `width` x `height`: anything clearly taller than wide is Vertical (so 4:5 posts land
+ *  there, not in Square), anything clearly wider is Landscape (4:3 included), and near-square media is Square. The New
+ *  Project dialog uses it to pick an aspect ratio from the media a user adds. */
+export function closestResolutionPreset(width: number, height: number): (typeof RESOLUTION_PRESETS)[number] {
+  if (!(width > 0) || !(height > 0)) return RESOLUTION_PRESETS[0];
+  const ratio = width / height;
+  return ratio < 0.85 ? RESOLUTION_PRESETS[0] : ratio > 1.18 ? RESOLUTION_PRESETS[1] : RESOLUTION_PRESETS[2];
+}
+
 export const FPS_PRESETS = [24, 25, 30, 50, 60] as const;

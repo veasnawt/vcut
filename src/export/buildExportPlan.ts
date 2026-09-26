@@ -3428,7 +3428,10 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
             segment.to.clip.gain ?? 1,
             undefined,
             undefined,
-            false,
+            // Padded like the outgoing side: a clip whose audio stream is a little shorter than its picture (AI-generated
+            // video often is) would hand `acrossfade` less than `D`, and an over-long crossfade makes garbage samples that
+            // fail the AAC encode ("Invalid argument") on the server's FFmpeg.
+            true,
             segment.to.clip,
             toElapsedAtSegmentStart
           );
@@ -3556,7 +3559,7 @@ export function buildExportPlan(project: Project, options: ExportPlanOptions): E
           (segment.to.clip.gain ?? 1) * (track.gain ?? 1),
           undefined,
           undefined,
-          false,
+          true, // padded, like the outgoing side — see the video-track transition above
           segment.to.clip,
           toElapsedAtSegmentStart
         );

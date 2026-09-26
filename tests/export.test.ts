@@ -2733,6 +2733,24 @@ describe("buildExportPlan with transitions", () => {
     assert.ok(closeTo(duration, 10));
   });
 
+  it("pads BOTH sides of a transition's audio so acrossfade never gets less than its duration (regression)", () => {
+    // Real production failure: AI-generated clips often have an audio stream a little shorter than their picture. An
+    // `acrossfade` longer than one of its inputs produces garbage samples (values around 1e31), and the server's AAC
+    // encoder then aborts with "Invalid argument". Only the outgoing side used to be padded.
+    const base = emptyProject([videoAsset("a", 5), videoAsset("b", 5)]);
+    let project = addClip(base, videoTrackId(base), "a", 0);
+    const [clipA] = clipsOf(project, videoTrackId(project));
+    project = addClip(project, videoTrackId(project), "b", clipEnd(clipA));
+    const [, clipB] = clipsOf(project, videoTrackId(project));
+    project = setClipTransitionIn(project, clipB.id, { duration: 1, type: "crossfade" });
+
+    const graph = filterGraph(plan(project).args);
+
+    assert.match(graph, /acrossfade=d=/);
+    assert.match(graph, /\[\d+:a\][^;]*apad=whole_dur=[^;]*\[a0_1_from\]/);
+    assert.match(graph, /\[\d+:a\][^;]*apad=whole_dur=[^;]*\[a0_1_to\]/);
+  });
+
   it("a keyframed clip on either side of a transition normalizes its concat timebase so xfade can accept it (regression)", () => {
     // Real crash reported against an actual user project: `pushKeyframedClipVideoFilters`'s own
     // `concat=` over irregular keyframe slices can let FFmpeg negotiate a high-precision output
