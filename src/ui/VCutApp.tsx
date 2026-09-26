@@ -4,10 +4,19 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Capacitor } from "@capacitor/core";
 import { getSupabaseBrowserClient, useSupabaseSession } from "@veasnawt/auth";
+// Every distinct toolbar tool needs its OWN icon — a real, reported bug otherwise: Scopes and Beat sync
+// both rendered `<Gauge>`, and since both can be visible at once (Scopes isn't gated on a selection;
+// Beat sync shows once a video clip is selected), they were visually indistinguishable, not just
+// thematically redundant. Before wiring up a NEW toolbar tool, grep this file for the icon you're about
+// to give it and pick a different one if it's already spoken for. The one deliberate exception: a
+// collapsible GROUP's own summary button (Text, Audio) reusing one of its own child tools' icon (Font's
+// `Text`, Extract Audio's `Music`) is fine, since the group and that specific child are never both on
+// screen at once — the group collapses into exactly that child when there's only one thing to show.
 import {
   Ai,
   ArrowLeft,
   Art,
+  BarChart,
   ChevronLeft,
   ChevronDown,
   ChevronRight,
@@ -765,7 +774,7 @@ function StatusBar({
  shortLabel: t("Beats"),
                       label: t("Beat sync"),
                       description: t("Find the beat of your music and cut clips to it"),
-                      icon: <Gauge size={16} />,
+                      icon: <BarChart size={16} />,
                       onSelect: () => {
                         closeAllToolbarTools();
                         setShowBeatSync(true);
@@ -1236,7 +1245,7 @@ function StatusBar({
         )}
         {project && selectedClipIds.some((id) => findClip(project, id)?.track.kind === "video") && (
           <ToolbarButton title={t("Find the beat of your music and cut clips to it")} label={t("Beat sync")} active={showBeatSync} onClick={() => setShowBeatSync(true)}>
-            <Gauge size={18} />
+            <BarChart size={18} />
           </ToolbarButton>
         )}
 
