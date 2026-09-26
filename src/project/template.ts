@@ -536,8 +536,24 @@ export function newTemplateId(): string {
   return newId("tpl");
 }
 
-/** One AI step still waiting to run on a filled template slot. */
+/** Same asset, same step, same exact source window = the same edit — one duplicated/stacked clip using
+ *  the identical picked media as another needs its AI step computed once, not once per copy. The raw
+ *  `sourceIn`/`sourceOut` (not a rounded duration) is what actually distinguishes two DIFFERENT video
+ *  windows of otherwise-identical length — the same precision the per-tool caches in
+ *  `editorStore.ts`'s own `runTemplateAiStep` already key their video requests by. For an image, which
+ *  has no such "which frames" meaning, this still just needs the two clips to agree on the same trim
+ *  numbers, which any true duplicate already does. */
+function templateAiTaskKey(clip: Clip, step: AiRecipeStep): string {
+  return `${clip.assetId}|${JSON.stringify(step)}|${clip.sourceIn}|${clip.sourceOut}`;
+}
+
+/** One AI step still waiting to run on a filled template slot — one row per DISTINCT edit needed, not
+ *  one per clip (see `templateAiTaskKey`'s own doc comment: a template that stacks several trimmed
+ *  copies of the same AI-edited source used to list — and, worse, actually re-run and re-bill — that
+ *  same edit once per copy). */
 export interface TemplateAiTask {
+  /** The clip actually run to resolve this task — any one of `affectedClipIds` works equally well since
+   *  they all share the identical signature; `runTemplateAiStep` fans the one result out to the rest. */
   clipId: string;
   step: AiRecipeStep;
   /** How many steps this clip still has left, including this one. */
@@ -545,29 +561,63 @@ export interface TemplateAiTask {
   label: string;
   assetName: string;
   credits: number;
+  /** Every clip (including `clipId`) sharing this exact signature — what `runTemplateAiStep` resolves
+   *  together in one run once `clipId` itself is done. */
+  affectedClipIds: string[];
 }
 
 /** The next AI step of every clip whose slot has been filled with real media — what the template run walks through.
- *  A clip whose slot is still an open placeholder is skipped (nothing to run on yet). */
+ *  A clip whose slot is still an open placeholder is skipped (nothing to run on yet). Deduplicated by
+ *  `templateAiTaskKey` — see `TemplateAiTask`'s own doc comment. */
 export function pendingTemplateAiTasks(project: Project): TemplateAiTask[] {
-  const tasks: TemplateAiTask[] = [];
+  const groups = new Map<string, { clipIds: string[]; step: AiRecipeStep; assetName: string; credits: number; remaining: number }>();
   for (const track of project.sequence.tracks) {
     for (const clip of track.clips) {
       const step = clip.templateAiSteps?.[0];
       if (!step) continue;
       const asset = project.assets.find((a) => a.id === clip.assetId);
       if (!asset || asset.templatePlaceholder) continue;
-      tasks.push({
-        clipId: clip.id,
+      const key = templateAiTaskKey(clip, step);
+      const existing = groups.get(key);
+      if (existing) {
+        existing.clipIds.push(clip.id);
+        continue;
+      }
+      groups.set(key, {
+        clipIds: [clip.id],
         step,
-        remaining: clip.templateAiSteps!.length,
-        label: aiStepLabel(step),
         assetName: asset.name,
         credits: estimateAiStepCredits(step, clipDuration(clip), asset.kind === "image"),
+        remaining: clip.templateAiSteps!.length,
       });
     }
   }
-  return tasks;
+  return [...groups.values()].map((g) => ({
+    clipId: g.clipIds[0],
+    step: g.step,
+    remaining: g.remaining,
+    label: aiStepLabel(g.step),
+    assetName: g.assetName,
+    credits: g.credits,
+    affectedClipIds: g.clipIds,
+  }));
+}
+
+/** Every clip sharing `clipId`'s own exact `templateAiTaskKey` (including `clipId` itself) — what
+ *  `runTemplateAiStep` fans a single computed result out to instead of running the same edit again for
+ *  each one. `[]` if `clipId` has no pending step of its own (already resolved, or never had one). */
+export function matchingTemplateAiClipIds(project: Project, clipId: string): string[] {
+  const all = project.sequence.tracks.flatMap((t) => t.clips);
+  const target = all.find((c) => c.id === clipId);
+  const step = target?.templateAiSteps?.[0];
+  if (!target || !step) return [];
+  const targetKey = templateAiTaskKey(target, step);
+  return all
+    .filter((c) => {
+      const s = c.templateAiSteps?.[0];
+      return s ? templateAiTaskKey(c, s) === targetKey : false;
+    })
+    .map((c) => c.id);
 }
 
 /** A step ran: the clip's next step (if any) is now the one to run. */

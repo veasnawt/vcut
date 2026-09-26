@@ -37,7 +37,15 @@ import { assetFromBundledSfx, type SfxDefinition } from "../project/sfx.ts";
 import type { MusicTrack } from "../project/music.ts";
 import { analyzeAudioUrl } from "../audio/beatAnalyze.ts";
 import { denormalizeRegion, normalizeRegion, withAiOrigin } from "../project/aiRecipe.ts";
-import { buildProjectFromTemplate, completeTemplateAiStep, fillTemplateSlot, skipTemplateAiSteps as skipTemplateAiStepsInProject, setTemplateClipText, trimTemplateSlot } from "../project/template.ts";
+import {
+  buildProjectFromTemplate,
+  completeTemplateAiStep,
+  fillTemplateSlot,
+  matchingTemplateAiClipIds,
+  skipTemplateAiSteps as skipTemplateAiStepsInProject,
+  setTemplateClipText,
+  trimTemplateSlot,
+} from "../project/template.ts";
 import type { TextStylePreset } from "../project/textStylePresets.ts";
 import type { Asset, Clip, Project, TextStyle } from "../project/types.ts";
 import { IDENTITY_TRANSFORM } from "../project/types.ts";
@@ -2013,6 +2021,11 @@ export const useEditorStore = create<EditorState>((set, get) => {
       const step = found?.clip.templateAiSteps?.[0];
       const asset = found ? findAsset(project, found.clip.assetId) : undefined;
       if (!found || !step || !asset) return { ok: false, error: "That clip no longer exists" };
+      // Every OTHER clip that needs this exact same edit — a template that stacks several trimmed
+      // copies of the same AI-edited source (a real, reported case: one picked photo used for a dozen-
+      // plus "AI Edit" clips) used to run and re-bill the identical request once per copy. Computed up
+      // front, before `clipId`'s own step is cleared below (after which it would no longer match itself).
+      const siblingIds = matchingTemplateAiClipIds(project, clipId).filter((id) => id !== clipId);
       try {
         // The server reads the clip and its source window from the SAVED project.
         await get().save();
@@ -2026,9 +2039,18 @@ export const useEditorStore = create<EditorState>((set, get) => {
             }
             const tagged = withAiOrigin(cutout.asset, asset.id, { ...step, sourceStart: found.clip.sourceIn });
             get().run(new ApplyVideoCutoutCommand(clipId, tagged, { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds }));
+            for (const siblingId of siblingIds) get().run(new ApplyVideoCutoutCommand(siblingId, tagged, { keyColor: cutout.keyColor, windowSeconds: cutout.windowSeconds }));
           } else {
-            const result = await api.removeBackground(projectId, asset.id, clipId);
-            get().run(new SwapClipAssetCommand(clipId, withAiOrigin(result, asset.id, step)));
+            // An image has no source window to key by — same asset, same step is the whole signature.
+            const cacheKey = `${projectId}|${asset.id}|cutout`;
+            let result = templateAiResults.get(cacheKey)?.asset;
+            if (!result) {
+              result = await api.removeBackground(projectId, asset.id, clipId);
+              templateAiResults.set(cacheKey, { asset: result });
+            }
+            const tagged = withAiOrigin(result, asset.id, step);
+            get().run(new SwapClipAssetCommand(clipId, tagged));
+            for (const siblingId of siblingIds) get().run(new SwapClipAssetCommand(siblingId, tagged));
           }
         } else if (step.tool === "ai-edit") {
           const options: AiEditRequestOptions = { preserve: step.preserve, creativity: step.creativity ?? creativityFromStrength(step.strength) };
@@ -2039,10 +2061,19 @@ export const useEditorStore = create<EditorState>((set, get) => {
               edited = await api.runAiVideoEdit(projectId, clipId, step.prompt ?? "", options).done;
               templateAiResults.set(cacheKey, { asset: edited });
             }
-            get().run(new ReplaceClipAssetCommand(clipId, withAiOrigin(edited, asset.id, step)));
+            const tagged = withAiOrigin(edited, asset.id, step);
+            get().run(new ReplaceClipAssetCommand(clipId, tagged));
+            for (const siblingId of siblingIds) get().run(new ReplaceClipAssetCommand(siblingId, tagged));
           } else {
-            const result = await api.runAiEdit(projectId, asset.id, clipId, step.prompt ?? "", options);
-            get().run(new SwapClipAssetCommand(clipId, withAiOrigin(result, asset.id, step)));
+            const cacheKey = `${projectId}|${asset.id}|ai-edit|${step.prompt}|${options.creativity}|${(options.preserve ?? []).join(",")}`;
+            let result = templateAiResults.get(cacheKey)?.asset;
+            if (!result) {
+              result = await api.runAiEdit(projectId, asset.id, clipId, step.prompt ?? "", options);
+              templateAiResults.set(cacheKey, { asset: result });
+            }
+            const tagged = withAiOrigin(result, asset.id, step);
+            get().run(new SwapClipAssetCommand(clipId, tagged));
+            for (const siblingId of siblingIds) get().run(new SwapClipAssetCommand(siblingId, tagged));
           }
         } else {
           const rect = step.region ? denormalizeRegion(step.region, asset) : null;
@@ -2062,10 +2093,12 @@ export const useEditorStore = create<EditorState>((set, get) => {
               })
               .catch(reject);
           });
-          get().run(new ReplaceClipAssetCommand(clipId, withAiOrigin(result, asset.id, step)));
+          const tagged = withAiOrigin(result, asset.id, step);
+          get().run(new ReplaceClipAssetCommand(clipId, tagged));
+          for (const siblingId of siblingIds) get().run(new ReplaceClipAssetCommand(siblingId, tagged));
         }
         const after = get().project;
-        if (after) applyProject(completeTemplateAiStep(after, clipId));
+        if (after) applyProject([clipId, ...siblingIds].reduce((p, id) => completeTemplateAiStep(p, id), after));
         return { ok: true };
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) };

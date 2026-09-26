@@ -4,6 +4,7 @@ import {
   fillTemplateSlot,
   buildProjectFromTemplate,
   instantiateTemplateContent,
+  matchingTemplateAiClipIds,
   pendingTemplateAiTasks,
   sanitizeProjectForTemplate,
   setTemplateClipText,
@@ -886,6 +887,67 @@ describe("InsertTemplateCommand + pending AI steps", () => {
     assert.equal(tasks[0].assetName, "users-pick.mp4");
     const insertedClip = result.sequence.tracks.find((t) => command.createdTrackIds.includes(t.id))!.clips[0];
     assert.equal(tasks[0].clipId, insertedClip.id);
+  });
+});
+
+describe("pendingTemplateAiTasks / matchingTemplateAiClipIds", () => {
+  it("dedupes many clips sharing the exact same filled asset+step+window into one task — a real, reported bug: a picked photo used for a dozen-plus stacked \"AI Edit\" clips used to run and re-bill the identical edit once per clip", () => {
+    const original = imageAsset("original");
+    const aiResult = withAiOrigin(imageAsset("aiResult"), "original", { tool: "ai-edit", prompt: "make it pop" });
+    let templateProject = emptyProject([original, aiResult]);
+    for (let i = 0; i < 5; i++) templateProject = addClip(templateProject, videoTrackId(templateProject), "aiResult", i * 3);
+    // `addClip`'s own overlap-carving would otherwise unevenly truncate whichever clips landed close
+    // enough together to collide — normalize every clip to the identical window explicitly so this test
+    // exercises exactly "five true duplicates," not an accidental side effect of clip spacing.
+    const trackId = videoTrackId(templateProject);
+    templateProject = {
+      ...templateProject,
+      sequence: {
+        ...templateProject.sequence,
+        tracks: templateProject.sequence.tracks.map((t) => (t.id === trackId ? { ...t, clips: t.clips.map((c) => ({ ...c, sourceIn: 0, sourceOut: 2 })) } : t)),
+      },
+    };
+    const resolved = sanitizeProjectForTemplate(templateProject);
+
+    const built = buildProjectFromTemplate("draft", "Stacked", resolved);
+    const slot = templateSlots(built)[0];
+    const filled = fillTemplateSlot(built, slot.assetId, imageAsset("users-pick"));
+
+    const tasks = pendingTemplateAiTasks(filled);
+    assert.equal(tasks.length, 1, "five identical duplicates should collapse into one task");
+    assert.equal(tasks[0].affectedClipIds.length, 5);
+
+    const matched = matchingTemplateAiClipIds(filled, tasks[0].clipId);
+    assert.deepEqual(new Set(matched), new Set(tasks[0].affectedClipIds));
+  });
+
+  it("does not merge two clips sharing a slot but trimmed to different lengths — a genuinely different edit each", () => {
+    const original = videoAsset("original", 20);
+    const aiResult = withAiOrigin(videoAsset("aiResult", 20), "original", { tool: "cutout" });
+    let templateProject = emptyProject([original, aiResult]);
+    templateProject = addClip(templateProject, videoTrackId(templateProject), "aiResult", 0);
+    templateProject = addClip(templateProject, videoTrackId(templateProject), "aiResult", 10);
+    // Same shared slot (`templateSlotCandidates`' own "different trims, one slot" grouping), but
+    // different trim LENGTHS — `fillTemplateSlot` gives each its own correctly-sized window off the
+    // real pick, so after filling they still don't actually match and must stay separate tasks.
+    const trackId = videoTrackId(templateProject);
+    templateProject = {
+      ...templateProject,
+      sequence: {
+        ...templateProject.sequence,
+        tracks: templateProject.sequence.tracks.map((t) =>
+          t.id === trackId ? { ...t, clips: t.clips.map((c, i) => (i === 0 ? { ...c, sourceIn: 0, sourceOut: 3 } : { ...c, sourceIn: 0, sourceOut: 6 })) } : t
+        ),
+      },
+    };
+    const resolved = sanitizeProjectForTemplate(templateProject);
+
+    const built = buildProjectFromTemplate("draft", "Different lengths", resolved);
+    const slot = templateSlots(built)[0];
+    const filled = fillTemplateSlot(built, slot.assetId, videoAsset("users-pick", 20));
+
+    const tasks = pendingTemplateAiTasks(filled);
+    assert.equal(tasks.length, 2, "different trim lengths must stay separate tasks");
   });
 });
 
