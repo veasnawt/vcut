@@ -107,6 +107,20 @@ export const AI_EDIT_TEMPLATES: AiEditTemplate[] = [
     look: { filter: "saturate(1.2) brightness(1.08) contrast(.92)", tint: grad("rgba(150,210,255,.35)", "rgba(255,190,220,.35)") },
   },
   {
+    id: "street-mural",
+    title: "Street Mural",
+    description: "You, real, in front of a giant anime graffiti wall",
+    category: "anime",
+    featured: true,
+    prompt:
+      "Keep the real person from the photo completely photorealistic and unchanged: same face, same pose, same outfit and hair, natural skin texture, no anime effect, no smoothing, no beauty filter. " +
+      "Place them naturally in an outdoor urban street, standing slightly off-centre, in front of a huge wall covered edge to edge by a 2D anime mural, with no bare concrete or brick showing. " +
+      "The mural is a bold anime-style illustration of the same person in a different, dynamic pose: same face, hairstyle and outfit, thick clean black outlines, flat 2-3 tone cel shading, vibrant saturated colours, spray-paint textures mixed with brush strokes, street tags, paint drips and splashes, strictly 2D. " +
+      "The mural is far larger than the person and fully visible behind them. " +
+      "Blend them into the scene: matching light direction, a soft contact shadow under their feet, correct perspective, paint splashes on the ground, no cut-out edges, halos or seams.",
+    look: { filter: "saturate(1.5) contrast(1.2)", tint: grad("rgba(255,60,140,.35)", "rgba(255,220,0,.3)") },
+  },
+  {
     id: "manga-panel",
     title: "Manga Panel",
     description: "Black and white manga with screen tones",
