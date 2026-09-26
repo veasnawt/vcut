@@ -874,6 +874,12 @@ function parseTrack(raw: Record<string, unknown>): Track {
     ...(typeof raw.pan === "number" && Number.isFinite(raw.pan) && raw.pan !== 0
       ? { pan: Math.min(1, Math.max(-1, raw.pan)) }
       : null),
+    ...(typeof raw.templateGroup === "object" &&
+    raw.templateGroup !== null &&
+    typeof (raw.templateGroup as Record<string, unknown>).id === "string" &&
+    typeof (raw.templateGroup as Record<string, unknown>).name === "string"
+      ? { templateGroup: { id: (raw.templateGroup as Record<string, unknown>).id as string, name: (raw.templateGroup as Record<string, unknown>).name as string } }
+      : null),
   };
 }
 

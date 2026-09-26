@@ -764,7 +764,7 @@ describe("InsertTemplateCommand", () => {
     const templateProject = addClip(templateBase, videoTrackId(templateBase), "tpl", 0);
     const resolved = sanitizeProjectForTemplate(templateProject);
 
-    const command = new InsertTemplateCommand(resolved, 20);
+    const command = new InsertTemplateCommand(resolved, 20, "Test Template");
     const result = command.apply(project);
 
     assert.equal(result.sequence.tracks.length, originalTrackCount + resolved.tracks.length);
@@ -783,7 +783,7 @@ describe("InsertTemplateCommand", () => {
     const templateProject = addClip(templateBase, videoTrackId(templateBase), "tpl", 0);
     const resolved = sanitizeProjectForTemplate(templateProject);
 
-    const command = new InsertTemplateCommand(resolved, 0);
+    const command = new InsertTemplateCommand(resolved, 0, "Test Template");
     command.apply(project);
 
     assert.deepEqual(command.revert(), project);
@@ -793,7 +793,44 @@ describe("InsertTemplateCommand", () => {
     const templateBase = emptyProject([videoAsset("tpl")]);
     const templateProject = addClip(templateBase, videoTrackId(templateBase), "tpl", 0);
     const resolved = sanitizeProjectForTemplate(templateProject);
-    const command = new InsertTemplateCommand(resolved, 0);
+    const command = new InsertTemplateCommand(resolved, 0, "Test Template");
     assert.throws(() => command.revert(), /never applied/);
+  });
+
+  it("tags every track it creates with the same templateGroup, carrying the template's own name", () => {
+    let templateBase = emptyProject([videoAsset("tpl"), textAsset()]);
+    templateBase = addTrack(templateBase, "text");
+    let templateProject = addClip(templateBase, videoTrackId(templateBase), "tpl", 0);
+    templateProject = addClip(templateProject, textTrackId(templateProject), "text1", 0);
+    const resolved = sanitizeProjectForTemplate(templateProject);
+
+    const project = emptyProject([videoAsset("existing")]);
+    const command = new InsertTemplateCommand(resolved, 0, "My Template");
+    const result = command.apply(project);
+
+    const insertedTracks = result.sequence.tracks.filter((t) => command.createdTrackIds.includes(t.id));
+    assert.ok(insertedTracks.length >= 2, "expected at least the video and text tracks to be inserted");
+    const groupIds = new Set(insertedTracks.map((t) => t.templateGroup?.id));
+    assert.equal(groupIds.size, 1, "every inserted track should share one group id");
+    for (const track of insertedTracks) assert.equal(track.templateGroup?.name, "My Template");
+    // The pre-existing track is never tagged — only what THIS insert created.
+    const untouchedTrack = result.sequence.tracks.find((t) => !command.createdTrackIds.includes(t.id))!;
+    assert.equal(untouchedTrack.templateGroup, undefined);
+  });
+
+  it("mints a fresh group id each time the same template is inserted again", () => {
+    const templateBase = emptyProject([videoAsset("tpl")]);
+    const templateProject = addClip(templateBase, videoTrackId(templateBase), "tpl", 0);
+    const resolved = sanitizeProjectForTemplate(templateProject);
+    const project = emptyProject([videoAsset("existing")]);
+
+    const first = new InsertTemplateCommand(resolved, 0, "My Template");
+    const afterFirst = first.apply(project);
+    const second = new InsertTemplateCommand(resolved, 5, "My Template");
+    const afterSecond = second.apply(afterFirst);
+
+    const firstGroupId = afterSecond.sequence.tracks.find((t) => first.createdTrackIds.includes(t.id))!.templateGroup!.id;
+    const secondGroupId = afterSecond.sequence.tracks.find((t) => second.createdTrackIds.includes(t.id))!.templateGroup!.id;
+    assert.notEqual(firstGroupId, secondGroupId);
   });
 });

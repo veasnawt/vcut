@@ -1075,6 +1075,17 @@ export interface Track {
    *  `Sequence.masterPan`: panning the whole mix isn't a per-channel routing question the same way it is
    *  for an individual track, so the Mixer's Master strip has a fader but no pan knob. */
   pan?: number;
+  /** Set on every track ONE "Insert into Timeline" (the in-editor Templates tool, `InsertTemplateCommand`)
+   *  drops in together — never on a track built any other way (a plain `+ Add track`, a project's own
+   *  starting tracks). Purely a UI grouping label: the Timeline bands tracks sharing one `id` together
+   *  with `name` shown once, and offers removing the whole group in one action — nothing in playback,
+   *  export or any other command reads this field, so leaving it on (a stale group after some of its
+   *  clips get moved out or deleted) never breaks anything, it just stops describing every clip on the
+   *  track. Not the "real single track" a mixed-kind template's clips can't literally share (a track's
+   *  own `kind` is fixed to one of video/text/audio) — this is the practical equivalent: one clearly-
+   *  labeled, single unit in the track list instead of several unlabeled tracks a user has to piece
+   *  together themselves. */
+  templateGroup?: { id: string; name: string };
 }
 
 export interface Sequence {

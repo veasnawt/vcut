@@ -157,7 +157,8 @@ export function ImportTemplateDialog({ onClose }: { onClose: () => void }) {
       run(
         new InsertTemplateCommand(
           { width: draft.sequence.width, height: draft.sequence.height, fps: draft.sequence.fps, tracks: draft.sequence.tracks, assets: draft.assets },
-          playhead
+          playhead,
+          draftName
         )
       );
       setStatus(t('Inserted "{name}" into the timeline', { name: draftName }));

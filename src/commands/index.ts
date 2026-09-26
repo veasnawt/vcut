@@ -1989,17 +1989,27 @@ export class InsertTemplateCommand implements Command {
   label = "Insert Template";
   private resolved: TemplateProjectData;
   private offsetSeconds: number;
+  private templateName: string;
   private previousProject: Project | null = null;
   createdTrackIds: string[] = [];
+  /** Fixed at construction, not per-apply, for the same reason `AddClipCommand.clipId` is — redo must
+   *  reproduce the exact same group id a later command (or the Timeline's own selection state) may
+   *  already be holding onto, not mint a new one every time this same insert is redone. */
+  private readonly groupId = newId("tplgroup");
 
-  constructor(resolved: TemplateProjectData, offsetSeconds: number) {
+  constructor(resolved: TemplateProjectData, offsetSeconds: number, templateName: string) {
     this.resolved = resolved;
     this.offsetSeconds = offsetSeconds;
+    this.templateName = templateName;
   }
 
   apply(project: Project): Project {
     this.previousProject = project;
     const { assets, tracks } = instantiateTemplateContent(this.resolved, this.offsetSeconds);
+    // Every track this ONE insert creates is tagged with the same group — see `Track.templateGroup`'s
+    // own doc comment for what the Timeline does with it and why this is the practical stand-in for
+    // "one single track" a mixed-kind template's own clips can never literally share.
+    for (const track of tracks) track.templateGroup = { id: this.groupId, name: this.templateName };
     this.createdTrackIds = tracks.map((t) => t.id);
     const draft = structuredClone(project);
     draft.assets = [...draft.assets, ...assets];

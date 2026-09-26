@@ -1,4 +1,4 @@
-import { getAccessToken } from "@veasnawt/auth";
+import { getAccessToken, getCachedAccessToken } from "@veasnawt/auth";
 import { unwrap } from "./client.ts";
 
 /** Templates only ever live on the one live vcut.io deployment (see `studios/vcut/app/api/vcut/_lib/
@@ -58,8 +58,19 @@ export async function listMyTemplates(): Promise<TemplateRow[]> {
   return templates;
 }
 
+/** `<img>`/`<video src>` can't attach an `Authorization` header, so — same fix `hostedClient.ts`'s own
+ *  identically-named functions already use, and `client.ts`'s `mediaUrl`/`sseUrl` before that — the
+ *  token rides along as a `?token=` query param instead (`requireSessionUser`, server-side, accepts
+ *  either). Without it, a PRIVATE template's own preview/poster came back 403 for anyone but a request
+ *  that happens to carry cookies vcut.io never sets, which is every request from here: a real, reported
+ *  bug — "My Templates" showed a black thumbnail for every one of the account's own NON-public
+ *  templates, in the in-editor Templates tool's own browse grid (`ImportTemplateDialog.tsx`), the one
+ *  caller in `packages/vcut/src/ui` that uses these two functions today. A public template's own
+ *  thumbnail worked fine either way (the route allows a signed-out request once `is_public` is true),
+ *  which is exactly the split the report described. */
 function centralAssetUrl(path: string): string {
-  return `${BASE}${path}`;
+  const token = getCachedAccessToken();
+  return token ? `${BASE}${path}?token=${encodeURIComponent(token)}` : `${BASE}${path}`;
 }
 
 export function templatePreviewUrl(templateId: string): string {

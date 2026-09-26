@@ -477,6 +477,36 @@ export function templateClips(project: Project): TemplateClipEntry[] {
     .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
 }
 
+/** One clip belonging to an inserted template group (`Track.templateGroup`), paired with the real asset
+ *  it plays and the track it's on — what `TemplateGroupPanel.tsx` lists so a user can manage every clip
+ *  a single "Insert into Timeline" added, in one place, instead of hunting across whichever tracks it
+ *  landed on. Includes audio (unlike `TemplateClipEntry`/`templateClips` above, which is scoped to the
+ *  guided-template screen's own visual-clips-only filmstrip) — a group's own music is just as much
+ *  "part of the group" as its footage. */
+export interface TemplateGroupEntry {
+  track: Track;
+  clip: Clip;
+  asset: Asset;
+}
+
+/** Every clip on a track tagged with `templateGroup.id === groupId`, in timeline order — `[]` once every
+ *  such track has been removed (the group is gone) or if the id never matched anything. */
+export function templateGroupClips(project: Project, groupId: string): TemplateGroupEntry[] {
+  return project.sequence.tracks
+    .filter((t) => t.templateGroup?.id === groupId)
+    .flatMap((track) => track.clips.map((clip) => ({ track, clip, asset: project.assets.find((a) => a.id === clip.assetId) })))
+    .filter((e): e is TemplateGroupEntry => Boolean(e.asset))
+    .sort((a, b) => a.clip.timelineStart - b.clip.timelineStart);
+}
+
+/** Every track tagged with `templateGroup.id === groupId`, in their current timeline order — what
+ *  `RemoveTemplateGroupCommand` removes as one step, and what a group's own displayed name is read off
+ *  (every track in a group carries the identical `{id, name}`, so the first one found is representative
+ *  of all of them). */
+export function templateGroupTracks(project: Project, groupId: string): Track[] {
+  return project.sequence.tracks.filter((t) => t.templateGroup?.id === groupId);
+}
+
 /** Updates a text clip's own CONTENT — the only thing a template-origin project's Text tab lets you
  *  change (structure/timing/style stay locked, same "content editable, structure locked" boundary
  *  `TemplatePreviewScreen.tsx`'s own doc comment establishes for video/image too). Lives on the ASSET,

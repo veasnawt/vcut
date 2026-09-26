@@ -507,6 +507,26 @@ describe("project serialization", () => {
     assert.throws(() => deserializeProject(JSON.stringify(raw)), ProjectFormatError);
   });
 
+  it("round-trips a track's templateGroup", () => {
+    const base = emptyProject();
+    const raw = JSON.parse(serializeProject(base));
+    raw.sequence.tracks[0].templateGroup = { id: "tplgroup_1", name: "Neon Noir" };
+
+    const restored = deserializeProject(JSON.stringify(raw));
+
+    assert.deepEqual(restored.sequence.tracks[0].templateGroup, { id: "tplgroup_1", name: "Neon Noir" });
+  });
+
+  it("drops a malformed templateGroup rather than throwing", () => {
+    const base = emptyProject();
+    const raw = JSON.parse(serializeProject(base));
+    raw.sequence.tracks[0].templateGroup = { id: "tplgroup_1" }; // missing name
+
+    const restored = deserializeProject(JSON.stringify(raw));
+
+    assert.equal(restored.sequence.tracks[0].templateGroup, undefined);
+  });
+
   it("round-trips a track's gain and the sequence's masterGain", () => {
     const base = emptyProject();
     const raw = JSON.parse(serializeProject(base));
