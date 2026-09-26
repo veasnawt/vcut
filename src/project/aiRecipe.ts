@@ -66,8 +66,17 @@ export interface TemplateAiSummary {
 export function templateAiSummary(tracks: readonly { clips: readonly Clip[] }[], assets: readonly Asset[]): TemplateAiSummary {
   let steps = 0;
   let credits = 0;
-  // Clips of the same footage with the same step and length share ONE run (the template runner reuses the result), so the cost is
-  // counted once — e.g. a cutout used for a subject and its stacked echo copies.
+  // Clips of the same footage with the same step share ONE run (the template runner reuses the result — see
+  // `project/template.ts`'s own `pendingTemplateAiTasks`/`matchingTemplateAiClipIds`, which this key must stay
+  // in sync with or the review screen's own quoted total disagrees with what its itemized list below it shows),
+  // so the cost is counted once — e.g. a cutout used for a subject and its stacked echo copies. A VIDEO also
+  // needs the same exact trim window to count as the same edit (two different windows of otherwise-identical
+  // length can show genuinely different content); an IMAGE has no such "which frames" meaning at all — trimming
+  // a still to a different LENGTH never changes what the edit itself does, so its window is deliberately left
+  // OUT of the key. A real, reported case otherwise: a template with the same edited photo trimmed to several
+  // different lengths across its stacked copies quoted an inflated total (one edit's worth of credits times how
+  // many different lengths happened to appear) even after the itemized list itself was already fixed to collapse
+  // to one row.
   const seen = new Set<string>();
   for (const track of tracks) {
     for (const clip of track.clips) {
@@ -76,7 +85,8 @@ export function templateAiSummary(tracks: readonly { clips: readonly Clip[] }[],
       const isImage = asset?.kind === "image";
       const seconds = clipDuration(clip);
       for (const step of clip.templateAiSteps) {
-        const key = `${clip.assetId}|${JSON.stringify(step)}|${Math.round(seconds * 100)}`;
+        const window = isImage ? "" : `|${Math.round(seconds * 100)}`;
+        const key = `${clip.assetId}|${JSON.stringify(step)}${window}`;
         if (seen.has(key)) continue;
         seen.add(key);
         steps += 1;

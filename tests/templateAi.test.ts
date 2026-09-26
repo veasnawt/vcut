@@ -185,4 +185,17 @@ describe("template AI cost", () => {
     // two lengths (3 s x2 -> one run, 4 s -> another)
     assert.equal(summary.steps, 2);
   });
+
+  it("counts ONE run for an image edit even across different trim lengths — a still has no 'which frames' to disagree about", () => {
+    // A real, reported case: a review screen's own itemized list correctly collapsed several stacked
+    // copies of the same AI-edited photo into one row, but this function's own separate dedup key still
+    // counted each distinct trim LENGTH as its own edit, quoting an inflated "Estimated total" (one
+    // edit's worth of credits times how many different lengths happened to appear) that disagreed with
+    // the single row shown right below it.
+    const raw = image("raw");
+    const edited = withAiOrigin(image("edited"), "raw", editStep);
+    const template = sanitizeProjectForTemplate(build([raw, edited], [[clip("a", "edited")], [clip("b", "edited", { sourceOut: 3 })], [clip("c", "edited", { sourceOut: 8 })]]));
+    const summary = templateAiSummary(template.tracks, template.assets);
+    assert.equal(summary.steps, 1);
+  });
 });
