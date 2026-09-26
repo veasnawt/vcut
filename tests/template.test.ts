@@ -14,7 +14,7 @@ import {
   templateVideoAssets,
   trimTemplateSlot,
 } from "../src/project/template.ts";
-import { InsertTemplateCommand } from "../src/commands/index.ts";
+import { InsertTemplateCommand, RemoveTemplateGroupCommand, ReplaceTemplateClipCommand } from "../src/commands/index.ts";
 import { addClip, addTrack, setClipTransform } from "../src/timeline/operations.ts";
 import {
   audioAsset,
@@ -832,5 +832,109 @@ describe("InsertTemplateCommand", () => {
     const firstGroupId = afterSecond.sequence.tracks.find((t) => first.createdTrackIds.includes(t.id))!.templateGroup!.id;
     const secondGroupId = afterSecond.sequence.tracks.find((t) => second.createdTrackIds.includes(t.id))!.templateGroup!.id;
     assert.notEqual(firstGroupId, secondGroupId);
+  });
+});
+
+describe("ReplaceTemplateClipCommand", () => {
+  it("keeps the clip's own trim window length, shrinking to fit a shorter replacement", () => {
+    const base = emptyProject([videoAsset("v1", 10)]);
+    let project = addClip(base, videoTrackId(base), "v1", 0);
+    const trackId = videoTrackId(project);
+    const clipId = clipsOf(project, trackId)[0].id;
+    project = {
+      ...project,
+      sequence: {
+        ...project.sequence,
+        tracks: project.sequence.tracks.map((t) => (t.id === trackId ? { ...t, clips: t.clips.map((c) => ({ ...c, sourceIn: 0, sourceOut: 3 })) } : t)),
+      },
+    };
+
+    // A longer replacement keeps the original 3s window rather than growing to fill the new asset.
+    const longer = videoAsset("v2", 20);
+    const withLonger = new ReplaceTemplateClipCommand(clipId, longer).apply({ ...project, assets: [...project.assets, longer] });
+    const clipAfterLonger = clipsOf(withLonger, trackId)[0];
+    assert.equal(clipAfterLonger.assetId, "v2");
+    assert.equal(clipAfterLonger.sourceOut - clipAfterLonger.sourceIn, 3);
+
+    // A SHORTER replacement shrinks the window to fit rather than running past the new asset's end.
+    const shorter = videoAsset("v3", 2);
+    const withShorter = new ReplaceTemplateClipCommand(clipId, shorter).apply({ ...project, assets: [...project.assets, shorter] });
+    const clipAfterShorter = clipsOf(withShorter, trackId)[0];
+    assert.equal(clipAfterShorter.assetId, "v3");
+    assert.equal(clipAfterShorter.sourceOut - clipAfterShorter.sourceIn, 2);
+  });
+
+  it("undoes back to the exact project it started from", () => {
+    const base = emptyProject([videoAsset("v1", 10)]);
+    const project = addClip(base, videoTrackId(base), "v1", 0);
+    const clipId = clipsOf(project, videoTrackId(project))[0].id;
+    const replacement = videoAsset("v2", 5);
+
+    const command = new ReplaceTemplateClipCommand(clipId, replacement);
+    command.apply({ ...project, assets: [...project.assets, replacement] });
+
+    assert.deepEqual(command.revert(), { ...project, assets: [...project.assets, replacement] });
+  });
+
+  it("throws a clear error if the clip no longer exists", () => {
+    const base = emptyProject([videoAsset("v1", 10)]);
+    const project = addClip(base, videoTrackId(base), "v1", 0);
+    const command = new ReplaceTemplateClipCommand("nonexistent-clip", videoAsset("v2", 5));
+    assert.throws(() => command.apply(project), /no longer exists/);
+  });
+
+  it("throws a clear error if undone before ever being applied", () => {
+    const command = new ReplaceTemplateClipCommand("clip1", videoAsset("v2", 5));
+    assert.throws(() => command.revert(), /never applied/);
+  });
+});
+
+describe("RemoveTemplateGroupCommand", () => {
+  it("removes every track sharing the given group id, leaving other tracks untouched", () => {
+    const project = emptyProject([videoAsset("existing")]);
+    const templateBase = emptyProject([videoAsset("tpl"), textAsset()]);
+    let templateProject = addTrack(templateBase, "text");
+    templateProject = addClip(templateProject, videoTrackId(templateProject), "tpl", 0);
+    templateProject = addClip(templateProject, textTrackId(templateProject), "text1", 0);
+    const resolved = sanitizeProjectForTemplate(templateProject);
+
+    const insert = new InsertTemplateCommand(resolved, 0, "My Template");
+    const afterInsert = insert.apply(project);
+    const groupId = afterInsert.sequence.tracks.find((t) => insert.createdTrackIds.includes(t.id))!.templateGroup!.id;
+    const originalTrackCount = afterInsert.sequence.tracks.length;
+
+    const remove = new RemoveTemplateGroupCommand(groupId);
+    const result = remove.apply(afterInsert);
+
+    assert.equal(result.sequence.tracks.length, originalTrackCount - insert.createdTrackIds.length);
+    assert.ok(result.sequence.tracks.every((t) => t.templateGroup?.id !== groupId));
+    // The project's own pre-existing track survives untouched.
+    assert.ok(result.sequence.tracks.some((t) => t.id === videoTrackId(project)));
+  });
+
+  it("is a harmless no-op when the group is already gone", () => {
+    const project = emptyProject([videoAsset("existing")]);
+    const result = new RemoveTemplateGroupCommand("tplgroup_nonexistent").apply(project);
+    assert.deepEqual(result.sequence.tracks, project.sequence.tracks);
+  });
+
+  it("undoes back to the exact project it started from", () => {
+    const project = emptyProject([videoAsset("existing")]);
+    const templateBase = emptyProject([videoAsset("tpl")]);
+    const templateProject = addClip(templateBase, videoTrackId(templateBase), "tpl", 0);
+    const resolved = sanitizeProjectForTemplate(templateProject);
+    const insert = new InsertTemplateCommand(resolved, 0, "My Template");
+    const afterInsert = insert.apply(project);
+    const groupId = afterInsert.sequence.tracks.find((t) => insert.createdTrackIds.includes(t.id))!.templateGroup!.id;
+
+    const command = new RemoveTemplateGroupCommand(groupId);
+    command.apply(afterInsert);
+
+    assert.deepEqual(command.revert(), afterInsert);
+  });
+
+  it("throws a clear error if undone before ever being applied", () => {
+    const command = new RemoveTemplateGroupCommand("tplgroup_1");
+    assert.throws(() => command.revert(), /never applied/);
   });
 });

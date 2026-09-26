@@ -24,6 +24,7 @@ import { TimelineClip } from "./TimelineClip.tsx";
 import { TransitionJunction } from "./TransitionJunction.tsx";
 import { ACCEPTED_EXTENSIONS_BY_KIND, TrackHeader } from "./TrackHeader.tsx";
 import { TrackKindPickerMenu } from "./TrackKindPickerMenu.tsx";
+import { TemplateGroupPanel } from "./TemplateGroupPanel.tsx";
 import { useHostedCreditsGate } from "./useHostedCreditsGate.ts";
 import { useIsMobile } from "./useIsMobile.ts";
 
@@ -205,6 +206,11 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
   const [trackDropIndicator, setTrackDropIndicator] = useState<{ trackId: string; position: "before" | "after" } | null>(
     null
   );
+  /** Which `Track.templateGroup.id`, if any, `TemplateGroupPanel.tsx` is currently open for — opened by
+   *  the badge `TrackHeader.tsx` shows on every track belonging to that group. Lives here (rather than
+   *  in `TrackHeader` itself) since either of that component's two call sites below — desktop sidebar or
+   *  mobile inline gutter — can open it, and only one panel should ever be open at a time. */
+  const [openGroupId, setOpenGroupId] = useState<string | null>(null);
   /** Client X of the pointer while it's over the ruler (hovering OR actively scrubbing) — null means
    *  "don't show the tooltip". Only the X coordinate is stored; the TIME it corresponds to is derived
    *  fresh on every render from `timeFromEvent`, which already accounts for the container's current
@@ -1182,6 +1188,7 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
                     onDragOverRow={(trackId, position) => setTrackDropIndicator({ trackId, position })}
                     onDropRow={dropTrackOnRow}
                     onDragEndRow={() => setTrackDropIndicator(null)}
+                    onOpenGroup={setOpenGroupId}
                   />
                 ))}
                 <div
@@ -1405,6 +1412,7 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
                         onDragOverRow={(trackId, position) => setTrackDropIndicator({ trackId, position })}
                         onDropRow={dropTrackOnRow}
                         onDragEndRow={() => setTrackDropIndicator(null)}
+                        onOpenGroup={setOpenGroupId}
                       />
                     </div>
                   )}
@@ -1732,6 +1740,8 @@ export function Timeline({ onCollapse }: { onCollapse?: () => void } = {}) {
           }}
         />
       )}
+
+      {openGroupId && <TemplateGroupPanel groupId={openGroupId} onClose={() => setOpenGroupId(null)} />}
     </section>
   );
 }

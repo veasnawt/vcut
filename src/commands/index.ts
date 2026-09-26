@@ -54,7 +54,7 @@ import {
 import type { VideoCutoutInfo } from "../timeline/operations.ts";
 import { applyGridLayout, stackCopies } from "../timeline/collage.ts";
 import { fitClipsToBeats, splitClipAtBeats } from "../timeline/beatSync.ts";
-import { instantiateTemplateContent, type TemplateProjectData } from "../project/template.ts";
+import { fillTemplateSlot, instantiateTemplateContent, type TemplateProjectData } from "../project/template.ts";
 import type { CellSource, GridOptions, StackOptions } from "../timeline/collage.ts";
 import { snapToFrame } from "../timeline/time.ts";
 import { hasTextStyleKeyframes } from "../timeline/keyframes.ts";
@@ -2014,6 +2014,74 @@ export class InsertTemplateCommand implements Command {
     const draft = structuredClone(project);
     draft.assets = [...draft.assets, ...assets];
     draft.sequence.tracks = [...draft.sequence.tracks, ...tracks];
+    draft.updatedAt = Date.now();
+    return draft;
+  }
+
+  revert(): Project {
+    if (!this.previousProject) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return this.previousProject;
+  }
+}
+
+/** Replaces the media one clip in an inserted template group plays (`TemplateGroupPanel.tsx`'s own
+ *  per-row Replace) — reuses `fillTemplateSlot`'s exact math rather than `SwapClipAssetCommand`'s (keeps
+ *  literal `sourceIn`/`sourceOut`, which a SHORTER replacement would run past) or
+ *  `ReplaceClipAssetCommand`'s (resets to the new asset's own FULL length, discarding the clip's own
+ *  chosen trim window) — a template clip's own window length is deliberate (however long the template's
+ *  author trimmed it to), and swapping its content should keep that length, shrinking only if the new
+ *  pick is itself shorter, exactly like filling a guided template's own slot already does. Unlike the
+ *  store's own `fillTemplateSlot` ACTION (used for that guided flow, which has no undo feature at all),
+ *  this is undoable — a clip in an already-inserted, now-ordinary group is a normal, undo-capable clip
+ *  like any other. Matches on the clip's CURRENT `assetId` (not a `templatePlaceholder`, which is long
+ *  gone here) — see `fillTemplateSlot`'s own doc comment: any OTHER clip in the group that happens to
+ *  share the exact same asset updates too, the same "replace this footage everywhere it's used"
+ *  convention a template's own slots already establish. */
+export class ReplaceTemplateClipCommand implements Command {
+  label = "Replace Clip";
+  private clipId: string;
+  private newAsset: Asset;
+  private previousProject: Project | null = null;
+
+  constructor(clipId: string, newAsset: Asset) {
+    this.clipId = clipId;
+    this.newAsset = newAsset;
+  }
+
+  apply(project: Project): Project {
+    this.previousProject = project;
+    const found = findClip(project, this.clipId);
+    if (!found) throw new EditError("That clip no longer exists");
+    return fillTemplateSlot(project, found.clip.assetId, this.newAsset);
+  }
+
+  revert(): Project {
+    if (!this.previousProject) throw new Error(`Cannot undo "${this.label}" — it was never applied`);
+    return this.previousProject;
+  }
+}
+
+/** Removes every track tagged with `templateGroup.id === groupId` in one undoable step —
+ *  `TemplateGroupPanel.tsx`'s own "Remove this template from the timeline," for backing out of an
+ *  "Insert into Timeline" entirely instead of deleting each of its tracks by hand. Whole-project
+ *  snapshot/restore (same shape `StackCopiesCommand`/`InsertTemplateCommand` already use above) rather
+ *  than `TrackScopedCommand`'s per-track memento — this touches however many tracks the group happens to
+ *  have, not one fixed track. A no-op (not an error) if the group is already gone by the time this runs
+ *  (a stale panel left open after some other change already removed every track in it) — nothing left to
+ *  remove is a normal, harmless outcome here, not a broken state worth surfacing as a failure. */
+export class RemoveTemplateGroupCommand implements Command {
+  label = "Remove Template";
+  private groupId: string;
+  private previousProject: Project | null = null;
+
+  constructor(groupId: string) {
+    this.groupId = groupId;
+  }
+
+  apply(project: Project): Project {
+    this.previousProject = project;
+    const draft = structuredClone(project);
+    draft.sequence.tracks = draft.sequence.tracks.filter((t) => t.templateGroup?.id !== this.groupId);
     draft.updatedAt = Date.now();
     return draft;
   }
